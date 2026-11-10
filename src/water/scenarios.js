@@ -81,15 +81,16 @@ export function createScenarios({ ocean, dolphin, input, water }) {
     return result;
   }
 
-  function findFace(targetSlope = -0.24) {
+  function findFace(targetSlope = -0.24, allowBreaking = true) {
     const dirX = dx();
     const dirZ = dz();
     let face = null;
     for (let gx = -80; gx <= 80; gx += 2) {
       for (let gz = -80; gz <= 80; gz += 2) {
-        const x = 120 + gx;
-        const z = 40 + gz;
+        const x = TUNING.water.surfZoneX + gx;
+        const z = TUNING.water.surfZoneZ + gz;
         const s = water.sampleSurface(x, z, {});
+        if (!allowBreaking && s.breakMask > 0.2) continue;
         const along = s.slopeX * dirX + s.slopeZ * dirZ;
         if (s.height < -0.7 || s.height > 0.7) continue;
         const score = Math.abs(along - targetSlope) + Math.abs(s.height) * 0.03;
@@ -218,12 +219,88 @@ export function createScenarios({ ocean, dolphin, input, water }) {
       };
     },
 
+    /**
+     * Scenario 4: drop into a shoaling, breaking face and hold W. Records
+     * aeration, buoyancy, breaker-jet force and whether the animal is thrown.
+     */
+    async shoalingBreak(name = "moderate", seconds = 6) {
+      const saved = saveState();
+      const savedPreset = TUNING.water.preset;
+      await preset(name);
+      const dirX = water.peak.dx;
+      const dirZ = water.peak.dz;
+      let face = null;
+      for (let gx = -70; gx <= 70; gx += 2) {
+        for (let gz = -70; gz <= 70; gz += 2) {
+          const x = TUNING.water.surfZoneX + gx;
+          const z = TUNING.water.surfZoneZ + gz;
+          const s = water.sampleSurface(x, z, {});
+          const along = s.slopeX * dirX + s.slopeZ * dirZ;
+          if (s.breakMask > 0.25 && s.depth > 2.5 && s.depth < 6 && along < -0.1) {
+            const score = s.breakMask * 1.4 - along;
+            if (!face || score > face.score) face = { x, z, s, along, score };
+          }
+        }
+      }
+      if (!face) {
+        restoreState(saved);
+        return { error: "no breaking face found" };
+      }
+      const yaw = Math.atan2(dirX, dirZ);
+      dolphin.position.set(face.x, face.s.height - 0.15, face.z);
+      dolphin.yaw = dolphin.targetYaw = yaw;
+      dolphin.pitch = dolphin.targetPitch = 0.06;
+      dolphin.velocity.set(dirX * water.stats.peakPhaseSpeed * 0.9, 0.2, dirZ * water.stats.peakPhaseSpeed * 0.9);
+      input.keys.add("KeyW");
+      const rows = [];
+      const n = Math.round((seconds * 1000) / 150);
+      try {
+        for (let i = 0; i < n; i++) {
+          await sleep(150);
+          const surf = ocean.getWaterHeight(dolphin.position.x, dolphin.position.z);
+          rows.push({
+            rel: dolphin.position.y - surf,
+            speed: dolphin.speed,
+            air: dolphin.airborne,
+            aeration: dolphin.hydro.aeration,
+            breakMask: dolphin.hydro.breakMask || 0,
+            buoy: dolphin.hydro.buoyancyForce,
+            lung: dolphin.hydro.lungForce,
+            jet: dolphin.hydro.waterVelocityX * dirX + dolphin.hydro.waterVelocityZ * dirZ,
+            fwd: dolphin.hydro.forwardForce,
+            vy: dolphin.velocity.y,
+            impact: dolphin.impact,
+          });
+        }
+      } finally {
+        input.keys.delete("KeyW");
+        restoreState(saved);
+        await preset(savedPreset, 300);
+      }
+      const rel = rows.map((r) => r.rel);
+      return {
+        slope: face.along,
+        depth: face.s.depth,
+        breakMask: face.s.breakMask,
+        relMin: Math.min(...rel),
+        relMax: Math.max(...rel),
+        speedMax: Math.max(...rows.map((r) => r.speed)),
+        airFraction: rows.filter((r) => r.air).length / rows.length,
+        aerationMax: Math.max(...rows.map((r) => r.aeration)),
+        jetMax: Math.max(...rows.map((r) => r.jet)),
+        impactMax: Math.max(...rows.map((r) => r.impact)),
+        buoyMin: Math.min(...rows.map((r) => r.buoy)),
+        samples: rows,
+      };
+    },
+
     /** Scenario 3 live: find a face, hold W with a slight nose-up trim. */
     async faceHold(name = "moderate", seconds = 4) {
       const saved = saveState();
       const savedPreset = TUNING.water.preset;
       await preset(name);
-      const face = findFace(-0.2);
+      let face = findFace(-0.2, false);
+      if (!face) face = findFace(-0.2, true);
       const yaw = yawAlong();
       dolphin.position.set(face.x, face.s.height, face.z);
       dolphin.yaw = dolphin.targetYaw = yaw;

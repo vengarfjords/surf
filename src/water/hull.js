@@ -168,6 +168,7 @@ export class Hull {
       lungForce: 0,
       forwardForce: 0,
       aeration: 0,
+      breakMask: 0,
       waterVelocityX: 0,
       waterVelocityY: 0,
       waterVelocityZ: 0,
@@ -367,7 +368,8 @@ export class Hull {
     // No displaced water, no buoyancy: fade the lung term out as the hull
     // leaves the surface instead of letting it launch the animal clear.
     const lungSubmersion = clamp(wetFraction / 0.55, 0, 1);
-    const lungForce = RHO * movement.gravity * this.volume * lungFraction * lungSubmersion;
+    const lungForce =
+      RHO * (1 - aeration) * movement.gravity * this.volume * lungFraction * lungSubmersion;
     this.force.y += lungForce;
     this.result.lungForce = lungForce;
 
@@ -404,6 +406,7 @@ export class Hull {
     this.result.slamForce = slamForce;
     this.result.forwardForce = this.force.dot(dolphin.forward);
     this.result.aeration = aeration;
+    this.result.breakMask = c.breakMask || 0;
     this.result.waterVelocityX = this.waterVel.x;
     this.result.waterVelocityY = this.waterVel.y;
     this.result.waterVelocityZ = this.waterVel.z;

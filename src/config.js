@@ -218,6 +218,8 @@ export const TUNING = {
   water: {
     seed: 20261109,
     preset: "moderate",
+    surfZoneX: 260,
+    surfZoneZ: 140,
     swellHeight: 2.15,
     swellWavelength: 58,
     swellWavelengthSpread: 0.17,
@@ -238,6 +240,18 @@ export const TUNING = {
     foamThreshold: 0.56,
     foamAmount: 0.8,
     detailStrength: 0.55,
+    // M3 depth response. The wave spectrum is evaluated with finite-depth
+    // dispersion and Green's-law shoaling using the baked bathymetry; the
+    // breaker is a saturated, aerated crest (a heightfield cannot overhang).
+    depthResponse: true,
+    shoalReference: 12,
+    shoalStrength: 0.25,
+    breakRatio: 0.85,
+    breakSoftness: 0.12,
+    breakerJet: 0.65,
+    breakerLip: 0.12,
+    aerationAmount: 0.85,
+    foamPersistence: 0.6,
     // Radial clipmap dimensions (camera-following, exponential in radius).
     surfaceRadius: 7000,
     surfaceRings: 220,
@@ -420,6 +434,15 @@ export const TUNE_CONTROLS = [
   { path: "water.timeScale", label: "wave time scale", min: 0, max: 2, step: 0.01 },
   { path: "water.foamAmount", label: "whitecap amount", min: 0, max: 1.6, step: 0.01 },
   { path: "water.foamThreshold", label: "whitecap threshold", min: 0.15, max: 1, step: 0.01 },
+  { path: "water.depthResponse", label: "depth response", type: "toggle" },
+  { path: "water.shoalReference", label: "shoal reference depth", min: 4, max: 25, step: 0.5 },
+  { path: "water.shoalStrength", label: "shoaling strength", min: 0, max: 0.5, step: 0.01 },
+  { path: "water.breakRatio", label: "break H/h", min: 0.5, max: 1.2, step: 0.01 },
+  { path: "water.breakSoftness", label: "break softness", min: 0.02, max: 0.3, step: 0.01 },
+  { path: "water.breakerLip", label: "breaker lip", min: 0, max: 0.4, step: 0.01 },
+  { path: "water.breakerJet", label: "breaker jet", min: 0, max: 2, step: 0.05 },
+  { path: "water.aerationAmount", label: "aeration", min: 0, max: 1, step: 0.01 },
+  { path: "water.foamPersistence", label: "foam persistence", min: 0, max: 1, step: 0.01 },
   { path: "hydro.buoyancyRatio", label: "buoyancy ratio", min: 0.9, max: 1.05, step: 0.001 },
   { path: "hydro.lungFraction", label: "lung buoyancy", min: 0, max: 0.4, step: 0.005 },
   { path: "hydro.lungDepthScale", label: "lung depth scale", min: 0.3, max: 4, step: 0.05 },

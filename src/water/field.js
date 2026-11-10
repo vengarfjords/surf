@@ -1,5 +1,5 @@
 import { TUNING } from "../config.js";
-import { seabedHeight } from "../utils.js";
+import { clamp, seabedHeight, smoothstep } from "../utils.js";
 import { applyPreset, buildSpectrum } from "./spectrum.js";
 
 const G = 9.81;
@@ -19,9 +19,11 @@ const RHO = 1025;
  * same Q, so both sides agree.
  */
 export class WaveField {
-  constructor(cfg = TUNING.water) {
+  constructor(cfg = TUNING.water, bathy = null) {
     this.time = 0;
     this.lastSample = {};
+    this.bathy = bathy;
+    this._depthScratch = {};
     this.rebuild(cfg);
   }
 
@@ -67,7 +69,50 @@ export class WaveField {
       if (!peak || c.amp > peak.amp) peak = c;
     }
     this.peak = peak;
+    this.peakIndex = peak ? components.indexOf(peak) : -1;
+    this.peakK = peak ? peak.k : 1;
+    this.peakKx = peak ? peak.kx : 1;
+    this.peakKz = peak ? peak.kz : 0;
+    this.peakOmega = peak ? peak.omega : 1;
+    this.peakPhase = peak ? peak.phase0 : 0;
     this.setTime(this.time);
+  }
+
+  /** Local depth, finite-depth wavenumber scale and Green's-law shoaling. */
+  depthState(x, z, out = this._depthScratch) {
+    const cfg = TUNING.water;
+    const depth = this.bathy ? Math.max(0.3, this.bathy.sampleDepth(x, z)) : 18;
+    if (!cfg.depthResponse) {
+      out.depth = depth;
+      out.ratio = 1;
+      out.shoal = 1;
+      out.shoalRaw = 1;
+      out.breakMask = 0;
+      out.x0 = this.peakK * depth;
+      return out;
+    }
+    const x0 = Math.max(1e-4, this.peakK * depth);
+    // Approximate solution of k tanh(k h) = k0: k/k0 = 1/sqrt(tanh(k0 h)).
+    // Exact in deep water and within a few percent of the finite-depth root
+    // in the shoaling band used here.
+    const ratio = clamp(1 / Math.sqrt(Math.tanh(x0)), 0.65, 4.5);
+    const shoalRaw = clamp(Math.pow(cfg.shoalReference / depth, cfg.shoalStrength), 0.5, 3.2);
+    const hsLocal = this.stats.height * shoalRaw;
+    const breakMask = smoothstep(
+      cfg.breakRatio - cfg.breakSoftness,
+      cfg.breakRatio + cfg.breakSoftness,
+      hsLocal / depth
+    );
+    // Once breaking, the height cannot keep growing; saturate near H/h.
+    const cap = (cfg.breakRatio * depth) / Math.max(0.3, this.stats.height);
+    const shoal = Math.min(shoalRaw, Math.max(0.55, cap * 1.05));
+    out.depth = depth;
+    out.ratio = ratio;
+    out.shoal = shoal;
+    out.shoalRaw = shoalRaw;
+    out.breakMask = breakMask;
+    out.x0 = x0;
+    return out;
   }
 
   setPreset(name) {
@@ -83,17 +128,18 @@ export class WaveField {
     for (let i = 0; i < n; i++) {
       this.phase[i] = this.phase0[i] - this.omega[i] * t;
     }
+    this.peakPhaseNow = this.peakIndex >= 0 ? this.phase[this.peakIndex] : 0;
   }
 
   /** Raw parameter-space height (no horizontal inversion). */
-  heightAtParameter(px, pz) {
+  heightAtParameter(px, pz, ratio = 1, shoal = 1) {
     let h = 0;
     const kx = this.kx;
     const kz = this.kz;
     const amp = this.amp;
     const phase = this.phase;
     for (let i = 0; i < this.count; i++) {
-      h += amp[i] * Math.sin(kx[i] * px + kz[i] * pz + phase[i]);
+      h += amp[i] * shoal * Math.sin(kx[i] * ratio * px + kz[i] * ratio * pz + phase[i]);
     }
     return h;
   }
@@ -103,7 +149,7 @@ export class WaveField {
    * sub-centimetre for the steepness range used here; the shader never needs
    * this because it starts from parameter space.
    */
-  invert(x, z, out) {
+  invert(x, z, out, ratio = 1, shoal = 1) {
     // Two fixed-point iterations of p = world - D(p). With the shader using
     // the same horizontal displacement this converges to millimetre parity
     // for the wave steepness range here, and is ~4x cheaper than Newton.
@@ -118,7 +164,11 @@ export class WaveField {
       let dx = 0;
       let dz = 0;
       for (let i = 0; i < this.count; i++) {
-        const c = Math.cos(kx[i] * px + kz[i] * pz + phase[i]) * amp[i] * q;
+        const c =
+          Math.cos(kx[i] * ratio * px + kz[i] * ratio * pz + phase[i]) *
+          amp[i] *
+          shoal *
+          q;
         dx += c * this.dirX[i];
         dz += c * this.dirZ[i];
       }
@@ -130,11 +180,9 @@ export class WaveField {
     return out;
   }
 
-  /** Surface height at world x/z. */
+  /** Surface height at world x/z, including shoaling and the breaker lip. */
   sampleHeight(x, z) {
-    const inv = _inv;
-    this.invert(x, z, inv);
-    return this.heightAtParameter(inv.px, inv.pz);
+    return this.sampleSurface(x, z, _height).height;
   }
 
   /**
@@ -142,10 +190,19 @@ export class WaveField {
    * `out` is reused to keep per-frame queries allocation-free.
    */
   sampleSurface(x, z, out = {}) {
+    const state = this.depthState(x, z, _depth);
     const inv = _inv;
-    this.invert(x, z, inv);
+    this.invert(x, z, inv, state.ratio, state.shoal);
+    // The renderer samples bathymetry at the undisplaced parameter position,
+    // so resolve the inversion once more with the depth at that position.
+    const state1 = this.depthState(inv.px, inv.pz, _depthP);
+    this.invert(x, z, inv, state1.ratio, state1.shoal);
     const px = inv.px;
     const pz = inv.pz;
+    const stateP = this.depthState(px, pz, _depthP);
+    const ratio = stateP.ratio;
+    const shoal = stateP.shoal;
+    const breakMask = stateP.breakMask;
     const kx = this.kx;
     const kz = this.kz;
     const amp = this.amp;
@@ -158,18 +215,50 @@ export class WaveField {
     let dDzdz = 0;
     let dDxdz = 0;
     for (let i = 0; i < this.count; i++) {
-      const arg = kx[i] * px + kz[i] * pz + phase[i];
+      const arg = kx[i] * ratio * px + kz[i] * ratio * pz + phase[i];
       const s = Math.sin(arg);
       const c = Math.cos(arg);
-      const a = amp[i];
+      const a = amp[i] * shoal;
       h += a * s;
-      dhdx += a * kx[i] * c;
-      dhdz += a * kz[i] * c;
+      dhdx += a * kx[i] * ratio * c;
+      dhdz += a * kz[i] * ratio * c;
       const ha = a * q;
-      dDxdx -= ha * kx[i] * kx[i] * s;
-      dDzdz -= ha * kz[i] * kz[i] * s;
-      dDxdz -= ha * kx[i] * kz[i] * s;
+      const kxL = kx[i] * ratio;
+      const kzL = kz[i] * ratio;
+      dDxdx -= ha * kxL * kxL * s;
+      dDzdz -= ha * kzL * kzL * s;
+      dDxdz -= ha * kxL * kzL * s;
     }
+
+    // Peak-crest phase drives a small forward breaker lip and the whitewater
+    // history. A heightfield cannot overhang; this is the local proxy.
+    const peakArg = this.peakKx * ratio * px + this.peakKz * ratio * pz + this.peakPhaseNow;
+    const lipPhase = peakArg - 0.55;
+    const lipSin = Math.sin(lipPhase);
+    const lipAmp = breakMask * TUNING.water.breakerLip * this.stats.height * shoal;
+    const lip = lipAmp * Math.max(0, lipSin) ** 2;
+    h += lip;
+    if (lipSin > 0) {
+      const dLip = lipAmp * 2 * lipSin * Math.cos(lipPhase);
+      dhdx += dLip * this.peakKx * ratio;
+      dhdz += dLip * this.peakKz * ratio;
+    }
+
+    const crest = 0.5 + 0.5 * Math.sin(peakArg);
+    const noise =
+      0.5 +
+      0.5 *
+        Math.sin(px * 0.63 + pz * 0.87 + this.time * 0.41) *
+        Math.sin(px * 0.29 - pz * 0.43 - this.time * 0.27);
+    const foamLag =
+      0.5 + 0.5 * Math.sin(peakArg - TUNING.water.foamPersistence * 1.6);
+    const foamCrest = Math.max(crest, foamLag * TUNING.water.foamPersistence);
+    const aeration =
+      breakMask *
+      (0.35 + 0.5 * noise) *
+      (0.4 + 0.6 * foamCrest) *
+      TUNING.water.aerationAmount;
+
     // Tangent vectors of the displaced surface, then normal = tz x tx.
     const txX = 1 + dDxdx;
     const txY = dhdx;
@@ -200,13 +289,35 @@ export class WaveField {
     out.jacobian = txX * tzZ - tzX * txZ;
     out.parameterX = px;
     out.parameterZ = pz;
+    out.depth = state.depth;
+    out.depthRatio = ratio;
+    out.shoal = shoal;
+    out.shoalRaw = state.shoalRaw;
+    out.breakMask = breakMask;
+    out.aeration = clamp(aeration, 0, 0.85);
+    out.turbulence = breakMask * (0.5 + 0.5 * noise);
+    out.phaseSpeed = this.stats.peakPhaseSpeed / ratio;
+    out.wavelength = this.stats.peakWavelength / ratio;
+    out.crest = crest;
+    out.peakArg = peakArg;
+    out.x0 = stateP.x0;
+    // Iribarren classification: spilling / plunging / surging.
+    if (breakMask > 0.02 && this.bathy) {
+      const tanBeta = this.bathy.sampleSlope(px, pz);
+      const xi = tanBeta / Math.sqrt(Math.max(0.01, this.stats.height / this.stats.peakWavelength));
+      out.xi = xi;
+      out.breakerType = xi < 0.5 ? 0 : xi < 3.3 ? 1 : 2;
+    } else {
+      out.xi = 0;
+      out.breakerType = -1;
+    }
     return out;
   }
 
   /**
-   * Full physical sample at a 3D point. Depth-dependent orbital velocity and
-   * dynamic pressure use the deep-water e^(kz) decay for M1; the finite-depth
-   * cosh/sinh form arrives with the bathymetry solver in M3.
+   * Full physical sample at a 3D point. Orbital velocity and dynamic pressure
+   * use the finite-depth cosh/sinh form with the local wavenumber from the
+   * bathymetry; a breaker jet is added near an aerated crest.
    */
   sample(x, y, z, out = {}) {
     return this._sample(x, y, z, out, true);
@@ -222,6 +333,9 @@ export class WaveField {
     const surf = this.sampleSurface(x, z, _surf);
     const h = surf.height;
     const depthBelowSurface = Math.min(0, y - h);
+    const ratio = surf.depthRatio;
+    const depth = surf.depth;
+    const shoal = surf.shoal;
     const kx = this.kx;
     const kz = this.kz;
     const k = this.k;
@@ -236,22 +350,49 @@ export class WaveField {
     let az = 0;
     let pressure = 0;
     for (let i = 0; i < this.count; i++) {
-      const arg = kx[i] * surf.parameterX + kz[i] * surf.parameterZ + phase[i];
-      const decay = Math.exp(k[i] * depthBelowSurface);
+      const kL = k[i] * ratio;
+      const arg = kx[i] * ratio * surf.parameterX + kz[i] * ratio * surf.parameterZ + phase[i];
       const s = Math.sin(arg);
       const c = Math.cos(arg);
       const w = omega[i];
-      const a = amp[i] * decay;
+      const a = amp[i] * shoal;
+      const kh = Math.max(1e-4, kL * depth);
+      const ekh = Math.max(1e-6, Math.exp(-kh));
+      const sinhKh = (1 - ekh * ekh) / (2 * ekh);
+      const coshKh = (1 + ekh * ekh) / (2 * ekh);
+      const xArg = Math.min(50, kL * (depthBelowSurface + depth));
+      const ex = Math.exp(xArg);
+      const coshX = 0.5 * (ex + 1 / ex);
+      const sinhX = 0.5 * (ex - 1 / ex);
+      const uF = coshX / sinhKh;
+      const wF = sinhX / sinhKh;
+      const pF = coshX / coshKh;
       // eta = a sin(theta): u = omega a sin(theta), w = -omega a cos(theta).
-      const horizontal = w * a * s;
+      const horizontal = w * a * uF * s;
       vx += horizontal * this.dirX[i];
       vz += horizontal * this.dirZ[i];
-      vy -= w * a * c;
-      const accel = -w * w * a * c;
+      vy -= w * a * wF * c;
+      const accel = -w * w * a * uF * c;
       ax += accel * this.dirX[i];
       az += accel * this.dirZ[i];
-      ay -= w * w * a * s;
-      pressure += RHO * G * a * s;
+      ay -= w * w * a * wF * s;
+      pressure += RHO * G * a * pF * s;
+    }
+
+    // Breaker jet: near a breaking crest, water near the surface is thrown
+    // forward at roughly the local phase speed. This is the force that can
+    // overtake and throw the dolphin.
+    if (surf.breakMask > 0.01) {
+      const jetType = surf.breakerType === 0 ? 0.7 : surf.breakerType === 1 ? 1.0 : 0.55;
+      const jet =
+        surf.phaseSpeed *
+        surf.breakMask *
+        TUNING.water.breakerJet *
+        jetType *
+        Math.exp(depthBelowSurface / 1.5);
+      vx += this.peak.dx * jet;
+      vz += this.peak.dz * jet;
+      vy += jet * 0.08 * Math.sin(surf.peakArg);
     }
 
     out.height = h;
@@ -269,23 +410,21 @@ export class WaveField {
     out.accelY = ay;
     out.accelZ = az;
     out.dynamicPressure = pressure;
-    out.aeration = 0;
-    out.turbulence = 0;
-    out.phaseSpeed = this.stats.peakPhaseSpeed;
+    out.aeration = surf.aeration;
+    out.turbulence = surf.turbulence;
+    out.breakMask = surf.breakMask;
+    out.shoal = shoal;
+    out.depth = depth;
+    out.phaseSpeed = surf.phaseSpeed;
     out.waveDirectionX = this.peak ? this.peak.dx : 1;
     out.waveDirectionZ = this.peak ? this.peak.dz : 0;
-    out.wavelength = this.stats.peakWavelength;
+    out.wavelength = surf.wavelength;
     out.wavePeriod = this.stats.peakPeriod;
     out.significantHeight = this.stats.height;
     out.depthBelowSurface = Math.max(0, h - y);
     out.underwater = y < h;
-    if (includeSeabed) {
-      out.seabedY = seabedHeight(x, z);
-      out.depthToSeabed = y - out.seabedY;
-    } else {
-      out.seabedY = 0;
-      out.depthToSeabed = 0;
-    }
+    out.seabedY = -depth;
+    out.depthToSeabed = y + depth;
     out.distanceToSurface = h - y;
     return out;
   }
@@ -342,5 +481,8 @@ export class WaveField {
 const _inv = {};
 const _surf = {};
 const _batch = {};
+const _depth = {};
+const _depthP = {};
+const _height = {};
 
 export { G as GRAVITY, RHO as WATER_DENSITY };

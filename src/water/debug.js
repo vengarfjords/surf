@@ -143,7 +143,7 @@ export class WaterDebug {
     const h = this.dolphin.hydro;
     const hydroLine = h
       ? `<br><b>HULL</b> wet ${h.wettedArea.toFixed(1)} m² · ${h.mass.toFixed(0)} kg · ` +
-        `F·fwd ${h.forwardForce.toFixed(0)} N · P·fwd ${h.pressureForwardForce.toFixed(0)} N · buoy ${h.buoyancyForce.toFixed(0)} N · ` +
+        `F·fwd ${h.forwardForce.toFixed(0)} N · P·fwd ${h.pressureForwardForce.toFixed(0)} N · buoy ${h.buoyancyForce.toFixed(0)} N · α ${h.aeration.toFixed(2)} · ` +
         `FK ${h.fkForce.toFixed(0)} N · lung ${h.lungForce.toFixed(0)} N · drag ${h.dragForce.toFixed(0)} N · ` +
         `lift ${h.liftForce.toFixed(0)} N · slam ${h.slamForce.toFixed(0)} N`
       : "";
@@ -152,7 +152,7 @@ export class WaterDebug {
       `T ${stats.peakPeriod.toFixed(1)} s · c ${phase.toFixed(1)} m/s · ${dirDeg.toFixed(0)}°` +
       `<br><b>LOCAL</b> h ${surf.height >= 0 ? "+" : ""}${surf.height.toFixed(2)} m · ` +
       `face ${slopeDeg.toFixed(1)}° · foam ${clamp((1 - surf.jacobian) * 1.5, 0, 1).toFixed(2)} · ` +
-      `GPU Δ ${gpuText}` +
+      `α ${full.aeration.toFixed(2)} · brk ${(full.breakMask || 0).toFixed(2)} · GPU Δ ${gpuText}` +
       `<br><b>SURF</b> dolphin ${speed.toFixed(1)} m/s · phase ${phase.toFixed(1)} m/s · ` +
       `${ratio.toFixed(2)}×${ratio > 0.92 && ratio < 1.15 ? " — on the face" : ""}` +
       hydroLine;

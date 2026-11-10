@@ -24,6 +24,22 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     uniform float uSimExtent;
     uniform float uSimScale;
 
+    uniform sampler2D uBathy;
+    uniform float uBathyExtent;
+    uniform float uBathyMaxDepth;
+    uniform float uDepthResponse;
+    uniform float uPeakK;
+    uniform float uShoalRef;
+    uniform float uShoalStrength;
+    uniform float uBreakRatio;
+    uniform float uBreakSoftness;
+    uniform float uHs;
+    uniform float uPeakKx;
+    uniform float uPeakKz;
+    uniform float uPeakPhase;
+    uniform float uBreakerLip;
+    uniform float uPeakWavelength;
+
     varying vec3 vWorld;
     varying vec3 vNormalW;
     varying float vWaveHeight;
@@ -31,6 +47,11 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     varying float vJacobian;
     varying float vDistance;
     varying vec2 vSlope;
+    varying float vBreak;
+    varying float vShoal;
+    varying float vDepth;
+    varying float vPeakCrest;
+    varying float vXi;
 
     vec2 simSample(vec2 world) {
       vec2 uv = (world - uSimCenter) / uSimExtent + 0.5;
@@ -40,6 +61,21 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
 
     void main() {
       vec3 base = vec3(position.x + uCenter.x, 0.0, position.z + uCenter.y);
+
+      float depth = texture2D(uBathy, base.xz / uBathyExtent + 0.5).r * uBathyMaxDepth;
+      depth = max(0.3, depth);
+      float ratio = 1.0;
+      float shoal = 1.0;
+      float breakMask = 0.0;
+      if (uDepthResponse > 0.5) {
+        float x0 = max(1e-4, uPeakK * depth);
+        ratio = clamp(1.0 / sqrt(tanh(x0)), 0.65, 4.5);
+        float shoalRaw = clamp(pow(uShoalRef / depth, uShoalStrength), 0.5, 3.2);
+        float hsLocal = uHs * shoalRaw;
+        breakMask = smoothstep(uBreakRatio - uBreakSoftness, uBreakRatio + uBreakSoftness, hsLocal / depth);
+        float cap = (uBreakRatio * depth) / max(0.3, uHs);
+        shoal = min(shoalRaw, max(0.55, cap * 1.05));
+      }
 
       float h = 0.0;
       float dhdx = 0.0;
@@ -53,25 +89,39 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       for (int i = 0; i < MAX_WAVES; i++) {
         if (i >= uWaveCount) break;
         vec4 w = uWaves[i];
-        float arg = w.x * base.x + w.y * base.z + w.w;
+        float kxL = w.x * ratio;
+        float kzL = w.y * ratio;
+        float arg = kxL * base.x + kzL * base.z + w.w;
         float s = sin(arg);
         float c = cos(arg);
-        float amp = w.z;
+        float amp = w.z * shoal;
         h += amp * s;
-        dhdx += amp * w.x * c;
-        dhdz += amp * w.y * c;
+        dhdx += amp * kxL * c;
+        dhdz += amp * kzL * c;
         float ha = amp * uChop;
         // Horizontal displacement is Q*A*unitDirection*cos(theta). w.x/w.y
         // are kx/kz, so normalise them; using them directly adds a spurious
         // factor of k and makes the rendered surface disagree with the CPU.
-        vec2 kvec = vec2(w.x, w.y);
+        vec2 kvec = vec2(kxL, kzL);
         vec2 dir = kvec * inversesqrt(max(dot(kvec, kvec), 1e-8));
         horizX += ha * dir.x * c;
         horizZ += ha * dir.y * c;
-        dxdx -= ha * w.x * w.x * s;
-        dzdz -= ha * w.y * w.y * s;
-        dxdz -= ha * w.x * w.y * s;
+        dxdx -= ha * kxL * kxL * s;
+        dzdz -= ha * kzL * kzL * s;
+        dxdz -= ha * kxL * kzL * s;
       }
+
+      float peakArg = uPeakKx * ratio * base.x + uPeakKz * ratio * base.z + uPeakPhase;
+      float lipPhase = peakArg - 0.55;
+      float lipSin = sin(lipPhase);
+      float lipAmp = breakMask * uBreakerLip * uHs * shoal;
+      float lip = lipAmp * max(0.0, lipSin) * max(0.0, lipSin);
+      if (lipSin > 0.0) {
+        float dLip = lipAmp * 2.0 * lipSin * cos(lipPhase);
+        dhdx += dLip * uPeakKx * ratio;
+        dhdz += dLip * uPeakKz * ratio;
+      }
+      h += lip;
 
       vec3 world = base + vec3(horizX, h, horizZ);
 
@@ -101,6 +151,20 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       vJacobian = (1.0 + dxdx) * (1.0 + dzdz) - dxdz * dxdz;
       vDistance = length(world.xz - uCenter);
       vSlope = vec2(dhdx, dhdz);
+      // Iribarren number for breaker type. Doing this in the vertex shader
+      // costs four bathymetry taps per vertex instead of per fragment.
+      float be = 8.0;
+      float bL = texture2D(uBathy, (base.xz + vec2(be, 0.0)) / uBathyExtent + 0.5).r * uBathyMaxDepth;
+      float bR = texture2D(uBathy, (base.xz - vec2(be, 0.0)) / uBathyExtent + 0.5).r * uBathyMaxDepth;
+      float bD = texture2D(uBathy, (base.xz + vec2(0.0, be)) / uBathyExtent + 0.5).r * uBathyMaxDepth;
+      float bU = texture2D(uBathy, (base.xz - vec2(0.0, be)) / uBathyExtent + 0.5).r * uBathyMaxDepth;
+      float tanBeta = length(vec2(bR - bL, bU - bD)) / (2.0 * be);
+      vXi = tanBeta / sqrt(max(0.01, uHs / max(1.0, uPeakWavelength)));
+
+      vBreak = breakMask;
+      vShoal = shoal;
+      vDepth = depth;
+      vPeakCrest = 0.5 + 0.5 * sin(peakArg);
     }
   `;
 }

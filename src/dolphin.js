@@ -270,6 +270,11 @@ export class Dolphin {
     this.wetness = 0;
     this.impact = 0;
     this.turnLean = 0;
+    this.tumbleRoll = 0;
+    this.tumblePitch = 0;
+    this.tumbleRollVel = 0;
+    this.tumblePitchVel = 0;
+    this.tumbleClock = 0;
     this.verticalInput = 0;
     this.pitchInputTimer = 0;
     this.speed = 0;
@@ -419,8 +424,8 @@ export class Dolphin {
   _buildTargetSpine() {
     const sp = this.spine;
     sp.qYaw.setFromAxisAngle(Y_AXIS, this.targetYaw);
-    sp.qPitch.setFromAxisAngle(X_AXIS, -this.targetPitch);
-    sp.qRoll.setFromAxisAngle(Z_AXIS, this.roll);
+    sp.qPitch.setFromAxisAngle(X_AXIS, -(this.targetPitch + this.tumblePitch));
+    sp.qRoll.setFromAxisAngle(Z_AXIS, this.roll + this.tumbleRoll);
     sp.targetQ.copy(sp.qYaw).multiply(sp.qPitch).multiply(sp.qRoll);
     sp.forwardTarget.set(0, 0, 1).applyQuaternion(sp.targetQ);
     sp.backTarget.copy(sp.forwardTarget).multiplyScalar(-1);
@@ -748,6 +753,27 @@ export class Dolphin {
     }
 
     this.speed = this.velocity.length();
+
+    // Visual tumble in whitewater. The controller/camera still owns the swim
+    // attitude; this is a short, decaying body-space roll/pitch driven by
+    // aeration and slam impact, so the animal reads as thrown rather than
+    // scripted into a "surf mode".
+    this.tumbleClock -= dt;
+    const rough =
+      (this.hydro && (this.hydro.aeration > 0.18 || this.hydro.slamForce > 450)) ||
+      this.impact > 0.35;
+    if (rough && this.tumbleClock <= 0) {
+      this.tumbleClock = 0.65;
+      const seed = Math.sin(this.position.x * 0.73 + this.position.z * 0.91 + ocean.time * 1.37);
+      this.tumbleRollVel += seed * 3.4;
+      this.tumblePitchVel += Math.cos(seed * 2.1 + this.position.y) * 2.6;
+    }
+    this.tumbleRollVel *= Math.exp(-(rough ? 1.4 : 3.2) * dt);
+    this.tumblePitchVel *= Math.exp(-(rough ? 1.4 : 3.2) * dt);
+    this.tumbleRoll = damp(this.tumbleRoll, 0, rough ? 0.6 : 2.6, dt);
+    this.tumblePitch = damp(this.tumblePitch, 0, rough ? 0.6 : 2.6, dt);
+    this.tumbleRoll = clamp(this.tumbleRoll + this.tumbleRollVel * dt, -1.1, 1.1);
+    this.tumblePitch = clamp(this.tumblePitch + this.tumblePitchVel * dt, -0.9, 0.9);
 
     if (this.position.y > surfaceHeight + 0.25) {
       this.airborne = true;

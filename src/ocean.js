@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import { clamp, glslFog, glslNoise } from "./utils.js";
 import { WaveField } from "./water/field.js";
-import { makeBathymetryTexture } from "./water/bathymetry.js";
+import { makeBathymetry } from "./water/bathymetry.js";
 import { MAX_WAVES, probeFragmentShader, waterVertexShader } from "./water/shaders.js";
 
 /**
@@ -266,7 +266,8 @@ export class Ocean {
     this.renderer = renderer;
     this.scene = scene;
     this.time = 0;
-    this.water = new WaveField(TUNING.water);
+    this.bathy = makeBathymetry(256);
+    this.water = new WaveField(TUNING.water, this.bathy);
     this.sim = new SurfaceSimulation(renderer);
     this.lastSample = {};
     this._surfaceSample = {};
@@ -284,7 +285,7 @@ export class Ocean {
     this.skyZenith = new THREE.Color(PALETTE.skyZenith);
     this.sunColor = new THREE.Color(PALETTE.sunColor);
 
-    const bathy = makeBathymetryTexture(192);
+    const bathy = this.bathy;
     this.bathyTexture = bathy.texture;
 
     this.uniforms = {
@@ -319,6 +320,20 @@ export class Ocean {
       uBathy: { value: bathy.texture },
       uBathyExtent: { value: bathy.extent },
       uBathyMaxDepth: { value: bathy.maxDepth },
+      uDepthResponse: { value: TUNING.water.depthResponse ? 1 : 0 },
+      uPeakK: { value: this.water.peakK },
+      uShoalRef: { value: TUNING.water.shoalReference },
+      uShoalStrength: { value: TUNING.water.shoalStrength },
+      uBreakRatio: { value: TUNING.water.breakRatio },
+      uBreakSoftness: { value: TUNING.water.breakSoftness },
+      uHs: { value: this.water.stats.height },
+      uPeakKx: { value: this.water.peakKx },
+      uPeakKz: { value: this.water.peakKz },
+      uPeakPhase: { value: this.water.peakPhaseNow || 0 },
+      uBreakerLip: { value: TUNING.water.breakerLip },
+      uAerationAmount: { value: TUNING.water.aerationAmount },
+      uFoamPersistence: { value: TUNING.water.foamPersistence },
+      uPeakWavelength: { value: this.water.stats.peakWavelength },
       uDebugCrest: { value: 0 },
       uDebugSlope: { value: 0 },
       uDebugFoam: { value: 0 },
@@ -443,6 +458,11 @@ export class Ocean {
         uniform sampler2D uBathy;
         uniform float uBathyExtent;
         uniform float uBathyMaxDepth;
+        uniform float uAerationAmount;
+        uniform float uFoamPersistence;
+        uniform float uBreakRatio;
+        uniform float uHs;
+        uniform float uPeakWavelength;
         uniform float uDebugCrest;
         uniform float uDebugSlope;
         uniform float uDebugFoam;
@@ -454,6 +474,11 @@ export class Ocean {
         varying float vJacobian;
         varying float vDistance;
         varying vec2 vSlope;
+        varying float vBreak;
+        varying float vShoal;
+        varying float vDepth;
+        varying float vPeakCrest;
+        varying float vXi;
 
         ${glslNoise}
         ${glslFog}
@@ -528,6 +553,31 @@ export class Ocean {
           foam *= 1.0 - smoothstep(1200.0, 4200.0, vDistance);
           float fineFoam = vnoise(p * 4.6 + vec2(uTime * 0.16, -uTime * 0.12));
           foam *= 0.55 + 0.6 * fineFoam;
+
+          // ---- breaking and aeration ------------------------------------
+          // The CPU uses the same bathymetry and breaker mask for buoyancy,
+          // thrust loss and the breaker jet.
+          float broken = smoothstep(0.15, 0.7, vBreak);
+          float aeration = clamp(
+            broken * (0.35 + 0.5 * foamNoise) * (0.35 + 0.65 * vPeakCrest) * uAerationAmount,
+            0.0,
+            0.85
+          );
+          float plunge = smoothstep(0.5, 2.8, vXi);
+          float crestFoam = smoothstep(0.52, 0.94, vPeakCrest);
+          float whitewater = broken * crestFoam * smoothstep(
+            0.35,
+            0.85,
+            foamNoise * 0.5 + lace * 0.25
+          );
+          float lipTongue =
+            broken * plunge * smoothstep(0.45, 0.92, vPeakCrest) * smoothstep(0.45, 0.9, foamNoise);
+          whitewater = clamp(whitewater * 0.58 + lipTongue * 0.22, 0.0, 1.0);
+          // Keep the aerated whitewater distinct from wind whitecaps: fade the
+          // generic whitecap field inside the break zone, then add the crest
+          // foam back in.
+          foam *= 1.0 - broken * 0.78;
+          foam = max(foam, whitewater);
           foam = clamp(foam, 0.0, 1.0);
 
           // ---- above the surface ----------------------------------------
@@ -537,9 +587,10 @@ export class Ocean {
           vec3 sky = skyReflection(refl);
 
           float shallowMix = smoothstep(0.9, 14.0, pathDepth);
-          vec3 shallow = uTopColor * 0.55 + vec3(0.0, 0.08, 0.085);
+          vec3 shallow = uTopColor * 0.42 + vec3(0.0, 0.065, 0.085);
           vec3 body = mix(shallow, uDeepColor, shallowMix);
           body *= 0.82 + 0.24 * crest;
+          body = mix(body, vec3(0.55, 0.72, 0.66), aeration * 0.42);
 
           // Wave-face legibility: faces tilted toward the sun collect more
           // direct light, faces tilted away sit in their own shadow. This is
@@ -592,6 +643,7 @@ export class Ocean {
           vec3 below = mix(tir, winCol, window * 0.92);
           below += uTopColor * rim * 0.8;
           below = mix(below, vec3(0.55, 0.7, 0.68), foam * 0.24);
+          below = mix(below, vec3(0.5, 0.66, 0.6), aeration * 0.45);
           below = applyWaterFog(below, vDistance, uFogColor, uFogDensity * 0.72);
 
           vec3 aboveFog = applyWaterFog(above, vDistance, uFogColor, uFogDensity * 0.78);
@@ -724,6 +776,20 @@ export class Ocean {
       Math.cos(TUNING.water.windSeaDirection),
       Math.sin(TUNING.water.windSeaDirection)
     );
+    this.uniforms.uDepthResponse.value = TUNING.water.depthResponse ? 1 : 0;
+    this.uniforms.uPeakK.value = this.water.peakK;
+    this.uniforms.uShoalRef.value = TUNING.water.shoalReference;
+    this.uniforms.uShoalStrength.value = TUNING.water.shoalStrength;
+    this.uniforms.uBreakRatio.value = TUNING.water.breakRatio;
+    this.uniforms.uBreakSoftness.value = TUNING.water.breakSoftness;
+    this.uniforms.uHs.value = this.water.stats.height;
+    this.uniforms.uPeakKx.value = this.water.peakKx;
+    this.uniforms.uPeakKz.value = this.water.peakKz;
+    this.uniforms.uPeakPhase.value = this.water.peakPhaseNow || 0;
+    this.uniforms.uBreakerLip.value = TUNING.water.breakerLip;
+    this.uniforms.uAerationAmount.value = TUNING.water.aerationAmount;
+    this.uniforms.uFoamPersistence.value = TUNING.water.foamPersistence;
+    this.uniforms.uPeakWavelength.value = this.water.stats.peakWavelength;
   }
 
   /** CPU-accessible surface height (same field the renderer draws). */
