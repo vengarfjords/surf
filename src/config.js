@@ -487,7 +487,7 @@ export const TUNE_CONTROLS = [
   { path: "water.swellDirectionSpread", label: "swell spread", min: 0.02, max: 0.9, step: 0.01 },
   { path: "water.swellWavelengthSpread", label: "swell bandwidth", min: 0.04, max: 0.5, step: 0.01 },
   { path: "water.windSeaHeight", label: "wind sea Hs", min: 0, max: 1.6, step: 0.02 },
-  { path: "water.windSeaWavelength", label: "wind sea λ", min: 4, max: 25, step: 0.5 },
+  { path: "water.windSeaWavelength", label: "wind sea λ", min: 4, max: 60, step: 0.5 },
   { path: "water.windSeaDirection", label: "wind direction", min: 0, max: 6.28, step: 0.01 },
   { path: "water.windSeaDirectionSpread", label: "wind spread", min: 0.05, max: 1.2, step: 0.01 },
   { path: "water.chop", label: "crest sharpness", min: 0, max: 1.4, step: 0.01 },
