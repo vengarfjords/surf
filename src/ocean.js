@@ -515,10 +515,14 @@ export class Ocean {
 
         vec3 skyReflection(vec3 d) {
           float h = clamp(d.y, 0.0, 1.0);
-          // Bias the reflected sky toward the zenith blue; the horizon peach
-          // is for the sky dome, not for painting the whole sea cream.
-          vec3 col = mix(uSkyHorizon * 0.55, uSkyZenith * 1.05, pow(h, 0.18));
-          col = mix(col, uSkyHorizon * 0.82, exp(-max(d.y, 0.0) * 16.0) * 0.14);
+          // The sea reflects a cooler, smoother sky than the dome. A literal
+          // golden horizon reflected off every wave facet turns a grazing
+          // surface into a busy cream patchwork, so the reflection uses a
+          // muted horizon and a broad smoothstep instead of a sharp gradient.
+          vec3 horizonCol = mix(uSkyZenith * 0.92, uSkyHorizon * 0.68, 0.32);
+          vec3 zenithCol = uSkyZenith * 1.04;
+          vec3 col = mix(horizonCol, zenithCol, smoothstep(0.0, 0.45, h));
+          col = mix(col, horizonCol * 1.04, exp(-h * 18.0) * 0.12);
 
           vec2 cp = d.xz / (max(d.y, 0.03) + 0.22);
           float baseCloud = fbm2(cp * 1.2 + vec2(uTime * 0.002, 0.0));
