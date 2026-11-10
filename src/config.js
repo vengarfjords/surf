@@ -120,6 +120,10 @@ export const TUNING = {
     airThrustScale: 0.16,
     airVerticalScale: 0.2,
     airTailScale: 0.35,
+    // Passive wave riding: a steep descending/along-face run fades the tail
+    // stroke out and lets the local surface slope drive the body.
+    coastSlope: 0.06,
+    coastDrive: 0.6,
 
     // A quiet, always-present current keeps world and camera alive.
     currentX: 0.2,
@@ -435,6 +439,8 @@ export const TUNE_CONTROLS = [
   { path: "movement.airSteer", label: "air control", min: 0, max: 4, step: 0.01 },
   { path: "movement.airLift", label: "air lift", min: 0, max: 0.05, step: 0.001 },
   { path: "movement.airGravity", label: "air gravity", min: 0, max: 14, step: 0.05 },
+  { path: "movement.coastSlope", label: "coast trigger slope", min: 0.02, max: 0.3, step: 0.01 },
+  { path: "movement.coastDrive", label: "wave slope drive", min: 0, max: 1.5, step: 0.01 },
   { path: "movement.breachImpulse", label: "breach kick", min: 0, max: 6, step: 0.05 },
   { path: "dolphin.tailBeatSpeed", label: "tail beat", min: 0.15, max: 2.6, step: 0.01 },
   { path: "dolphin.tailBeatAccel", label: "accel beat", min: 0, max: 1.8, step: 0.01 },

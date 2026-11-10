@@ -280,6 +280,8 @@ export class Dolphin {
     this.speed = 0;
     this.surfing = false;
     this.surfTime = 0;
+    this.strokeAmount = 1;
+    this.propulsion = "active";
     this.surfNormal = new THREE.Vector3();
     this.surfForward = new THREE.Vector3();
     this.prevCenterAbove = false;
@@ -314,6 +316,7 @@ export class Dolphin {
       heading: 0,
       waveHeight: 0,
       surfing: false,
+      propulsion: "active",
       hydro: null,
     };
   }
@@ -479,7 +482,7 @@ export class Dolphin {
     // Pitch authority tracks both steady speed and acceleration.
     const cfg = TUNING.dolphin;
     const flukePhase = this.tailPhase - (SPINE_Z.length - 1) * cfg.tailWaveTravel + Math.PI * 0.5;
-    const activity = clamp(0.45 + this.tailHeave * 6.0, 0.45, 2.2);
+    const activity = clamp(0.45 + this.tailHeave * 6.0, 0.45, 2.2) * this.strokeAmount;
     sp.qPitchLocal.setFromAxisAngle(X_AXIS, Math.sin(flukePhase) * cfg.flukePitch * activity);
     sp.quats[SPINE_Z.length - 1].multiply(sp.qPitchLocal);
 
@@ -676,6 +679,25 @@ export class Dolphin {
       this.right.copy(RIGHT).applyQuaternion(this.orientation);
     }
 
+    // Active porpoising vs passive wave coasting. Climbing the face (or the
+    // player boosting/braking/pitching) keeps the tail driving; a steep
+    // descending or across-face run fades the stroke to zero and lets the
+    // surface slope carry the body.
+    const faceSlope = Math.hypot(water.slopeX, water.slopeZ);
+    const faceAlong = water.slopeX * this.forward.x + water.slopeZ * this.forward.z;
+    const climbing = faceAlong > 0.05 || this.velocity.y > 0.25;
+    const coastDescending = faceAlong < 0.02 || this.velocity.y < -0.1;
+    const coasting =
+      faceSlope > TUNING.movement.coastSlope &&
+      coastDescending &&
+      !climbing &&
+      !input.boost &&
+      !input.brake &&
+      this.verticalInput === 0 &&
+      this.speed > 4.0;
+    this.strokeAmount = damp(this.strokeAmount, coasting ? 0 : 1, 3.5, dt);
+    this.propulsion = coasting ? "coast" : "porpoise";
+
     const forwardSpeed = this.velocity.dot(this.forward);
     const surge = input.boost && !input.brake;
     const thrusting = (input.forward || surge) && !input.brake;
@@ -693,6 +715,7 @@ export class Dolphin {
       // A slow, always-present tail scull keeps the creature alive at rest.
       thrustAccel = (movement.idleGlide - forwardSpeed) * 2.6;
     }
+    thrustAccel *= this.strokeAmount;
 
     let reverseAccel = 0;
     if (input.brake) {
@@ -733,6 +756,20 @@ export class Dolphin {
     }
     this.hydro = hydro;
     this.hullMs = hullMs;
+
+    // Passive wave drive: while the stroke is faded, the component of gravity
+    // along the face accelerates the body down/along the wave. The player's
+    // steering still chooses the line; this is what makes a zero-stroke run
+    // continuous instead of immediately stalling.
+    if (this.strokeAmount < 0.98 && faceSlope > TUNING.movement.coastSlope * 0.5) {
+      const coast = 1 - this.strokeAmount;
+      const inv = 1 / Math.sqrt(1 + faceSlope * faceSlope);
+      const gTan = 9.81 * faceSlope * inv * TUNING.movement.coastDrive * coast;
+      const downX = -water.slopeX / Math.max(faceSlope, 1e-5);
+      const downZ = -water.slopeZ / Math.max(faceSlope, 1e-5);
+      this.velocity.x += downX * gTan * dt;
+      this.velocity.z += downZ * gTan * dt;
+    }
 
     // --- Soft surf contact ------------------------------------------------
     // Only on an actual sloping face, and only as a one-sided planing force:
@@ -1166,7 +1203,7 @@ export class Dolphin {
           (surge ? tailCfg.tailSurgeHeave : 0)) *
           strokeScale,
         tailCfg.tailHeaveMax * strokeScale
-      ) * (underwater ? 1 : movement.airTailScale);
+      ) * (underwater ? 1 : movement.airTailScale) * this.strokeAmount;
 
     const beatRate =
       tailCfg.tailBeatBase +
@@ -1174,7 +1211,7 @@ export class Dolphin {
       Math.max(0, this.swimAccel) * tailCfg.tailBeatAccel +
       (thrusting ? tailCfg.tailThrustBeat : 0) +
       (surge ? tailCfg.tailSurgeBeat : 0);
-    this.tailPhase += dt * Math.min(beatRate, tailCfg.tailBeatMax);
+    this.tailPhase += dt * Math.min(beatRate, tailCfg.tailBeatMax) * this.strokeAmount;
     this.tailUniforms.causticTime.value = ocean.time;
     this.wetness = Math.max(0, this.wetness - dt * 0.13);
     this.impact *= Math.exp(-TUNING.movement.cameraShakeDecay * dt);
@@ -1197,6 +1234,7 @@ export class Dolphin {
     this.telemetry.altitude = Math.max(0, this.position.y - floorNow);
     this.telemetry.speed = this.speed;
     this.telemetry.surfing = this.surfing;
+    this.telemetry.propulsion = this.propulsion;
     this.telemetry.waveHeight = surfaceNow;
     // The compass follows the snout target so the readout leads with the view
     // instead of lagging behind the physical body.
