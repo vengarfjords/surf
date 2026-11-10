@@ -282,7 +282,6 @@ export class Dolphin {
     this.surfTime = 0;
     this.surfNormal = new THREE.Vector3();
     this.surfForward = new THREE.Vector3();
-    this.surfAhead = {};
     this.prevCenterAbove = false;
     this.airborne = false;
     this.wasAbove = false;
@@ -735,51 +734,52 @@ export class Dolphin {
     this.hydro = hydro;
     this.hullMs = hullMs;
 
-    // --- Loose surf lock -------------------------------------------------
-    // Near a breaking crest, at speed, keep the animal planing on the face
-    // instead of letting the hull sink straight through. This is a soft
-    // spring plus a small face-tangent drive, not a scripted animation.
-    const aheadX = this.position.x + this.forward.x * 4;
-    const aheadZ = this.position.z + this.forward.z * 4;
-    const ahead = ocean.water.sampleSurface(aheadX, aheadZ, this.surfAhead);
-    const aheadSlope = Math.hypot(ahead.slopeX, ahead.slopeZ);
-    const faceAhead = aheadSlope > 0.14 || ahead.breakMask > 0.15;
-    const crestNear = water.height > 1.5 || ahead.height > 1.5;
+    // --- Soft surf contact ------------------------------------------------
+    // Only on an actual sloping face, and only as a one-sided planing force:
+    // it pushes out when the body penetrates the surface, never pins it down
+    // from above. Flat crests, climbing, launching, jumping or diving release.
+    const slope = Math.hypot(water.slopeX, water.slopeZ);
+    const slopeAlong = water.slopeX * this.forward.x + water.slopeZ * this.forward.z;
     const adx = this.position.x - TUNING.water.surfZoneX;
     const adz = this.position.z - TUNING.water.surfZoneZ;
     const nearArena = adx * adx + adz * adz < 420 * 420;
-    const speedEnough = this.surfing ? this.speed > 4.0 : this.speed > 5.5;
-    const notLaunching = this.velocity.y < 2.0;
+    const speedEnough = this.surfing ? this.speed > 3.5 : this.speed > 6.0;
+    const onFace = slope > 0.08;
+    const descending = slopeAlong < 0.08;
+    const nearSurface =
+      this.position.y > surfaceHeight - 1.2 && this.position.y < surfaceHeight + 0.8;
     const surfable =
-      (nearArena || water.breakMask > 0.15 || faceAhead || crestNear) &&
+      (nearArena || water.breakMask > 0.1) &&
       water.depth > 6 &&
       this.verticalInput === 0 &&
       speedEnough &&
-      notLaunching &&
-      this.position.y > surfaceHeight - 2.2 &&
-      this.position.y < surfaceHeight + 2.5;
+      onFace &&
+      descending &&
+      nearSurface &&
+      this.velocity.y < 1.2;
     if (surfable) {
       if (!this.surfing) this.surfTime = 0;
       this.surfing = true;
       this.surfTime += dt;
-      const targetY = surfaceHeight - 0.4;
-      const err = targetY - this.position.y;
-      this.velocity.y += clamp(err * 16 - this.velocity.y * 6, -16, 16) * dt;
-      if (this.position.y < surfaceHeight - 0.7) {
-        this.position.y = surfaceHeight - 0.7;
-        if (this.velocity.y < 0) this.velocity.y *= 0.15;
-      }
-      // Face tangent drive: keep enough speed to carve, directed by the
-      // player's current heading projected onto the local surface.
       this.surfNormal.set(-water.slopeX, 1, -water.slopeZ).normalize();
-      const fdn = this.forward.dot(this.surfNormal);
-      this.surfForward.copy(this.forward).addScaledVector(this.surfNormal, -fdn);
-      const flen = this.surfForward.length();
-      if (flen > 1e-3) {
-        this.surfForward.multiplyScalar(1 / flen);
-        const targetSpeed = water.phaseSpeed * 0.65;
-        const drive = clamp(targetSpeed - this.speed, 0, 7) * 1.5;
-        this.velocity.addScaledVector(this.surfForward, drive * dt);
+      const vn = this.velocity.dot(this.surfNormal);
+      if (vn < 0) this.velocity.addScaledVector(this.surfNormal, -vn * 0.65);
+      const pen = surfaceHeight - this.position.y;
+      if (pen > 0) {
+        const lift = clamp(pen * 16 * clamp(this.speed / 14, 0.35, 1.3), 0, 24);
+        this.velocity.y += (lift - Math.max(0, this.velocity.y) * 3.0) * dt;
+      }
+      // Small drive only while descending/across, never while climbing out.
+      if (slopeAlong < 0.02) {
+        const fdn = this.forward.dot(this.surfNormal);
+        this.surfForward.copy(this.forward).addScaledVector(this.surfNormal, -fdn);
+        const flen = this.surfForward.length();
+        if (flen > 1e-3) {
+          this.surfForward.multiplyScalar(1 / flen);
+          const targetSpeed = water.phaseSpeed * 0.6;
+          const drive = clamp(targetSpeed - this.speed, 0, 6) * 1.0;
+          this.velocity.addScaledVector(this.surfForward, drive * dt);
+        }
       }
     } else {
       this.surfing = false;
