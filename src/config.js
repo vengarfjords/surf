@@ -204,9 +204,6 @@ export const TUNING = {
   camera: {
     chaseDistance: 9.5,
     chaseHeight: 5.5,
-    surfDistance: 5.5,
-    surfHeight: 3.2,
-    surfShoulder: 5.5,
     // A small shoulder offset keeps the shot alive without making the view
     // point across the dolphin instead of along its snout.
     shoulder: 0.7,
@@ -221,8 +218,6 @@ export const TUNING = {
     speedFov: 16,
     baseFov: 64,
     rollFollow: 0.27,
-    surfRollFollow: 0.42,
-    surfLookPitch: 0.62,
     handheld: 1.0,
     shake: 0.85,
     surgeBank: 0.15,

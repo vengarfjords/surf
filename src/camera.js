@@ -33,7 +33,6 @@ export class CameraRig {
     this.lastY = 0;
     this.surfaceCrossCooldown = 0;
     this.impact = 0;
-    this.surfBlend = 0;
   }
 
   update(dt, dolphin, seabed, started) {
@@ -52,25 +51,14 @@ export class CameraRig {
 
     // The snout is the look handle. Orbit and aim from the mouse target rather
     // than waiting for the physical body to finish its turn; the spine and
-    // velocity can trail behind without dragging the view with them. While
-    // surfing, the face pitch pulls the view down the wave with the body.
-    this.surfBlend = damp(this.surfBlend, dolphin.surfing ? 1 : 0, 3.5, dt);
-    // On a wave the camera should stay behind the ridden line, not the raw
-    // mouse yaw: the body is carried toward the wave direction while surfing.
-    const lookYaw =
-      dolphin.targetYaw +
-      wrapAngle(dolphin.yaw - dolphin.targetYaw) * this.surfBlend;
-    const lookPitch = clamp(
-      lerp(dolphin.targetPitch, dolphin.pitch, camCfg.surfLookPitch * this.surfBlend),
-      -1.45,
-      1.45
-    );
+    // velocity can trail behind without dragging the view with them.
+    const lookPitch = clamp(dolphin.targetPitch, -1.45, 1.45);
     if (!this.initialized) {
-      this.orbitYaw = lookYaw;
+      this.orbitYaw = dolphin.targetYaw;
       this.orbitPitch = lookPitch;
     } else {
       const lookAlpha = 1 - Math.exp(-camCfg.lookResponsiveness * dt);
-      const yawDelta = wrapAngle(lookYaw - this.orbitYaw);
+      const yawDelta = wrapAngle(dolphin.targetYaw - this.orbitYaw);
       this.orbitYaw = wrapAngle(this.orbitYaw + yawDelta * lookAlpha);
       this.orbitPitch = damp(this.orbitPitch, lookPitch, camCfg.lookResponsiveness, dt);
     }
@@ -82,10 +70,8 @@ export class CameraRig {
     );
     this.orbitRight.set(Math.cos(this.orbitYaw), 0, -Math.sin(this.orbitYaw));
 
-    const baseDistance = camCfg.chaseDistance + speedNorm * camCfg.speedPullback;
-    const baseHeight = camCfg.chaseHeight * (0.78 + 0.22 * Math.cos(dolphin.roll * 0.6));
-    const distance = lerp(baseDistance, camCfg.surfDistance, this.surfBlend);
-    const height = lerp(baseHeight, camCfg.surfHeight, this.surfBlend);
+    const distance = camCfg.chaseDistance + speedNorm * camCfg.speedPullback;
+    const height = camCfg.chaseHeight * (0.78 + 0.22 * Math.cos(dolphin.roll * 0.6));
 
     const targetPos = this.desiredPos.copy(dolphin.position);
     targetPos.addScaledVector(fwd, -distance);
@@ -93,19 +79,9 @@ export class CameraRig {
     targetPos.addScaledVector(this.orbitRight, camCfg.shoulder);
     targetPos.addScaledVector(dolphin.up, 0.2);
 
-    // On a wave, sit on the offshore shoulder rather than directly behind the
-    // animal: the face itself otherwise blocks the line of sight.
-    if (this.surfBlend > 0.01) {
-      const downhill = this.tmp.set(-water.slopeX, 0, -water.slopeZ);
-      if (downhill.lengthSq() > 1e-5) {
-        downhill.normalize();
-        targetPos.addScaledVector(downhill, camCfg.surfShoulder * this.surfBlend);
-      }
-    }
-
     const targetLook = this.desiredLook.copy(dolphin.position);
     targetLook.addScaledVector(fwd, camCfg.targetAhead + speedNorm * 1.4);
-    targetLook.addScaledVector(worldUp, lerp(camCfg.lookUp, 0.2, this.surfBlend));
+    targetLook.addScaledVector(worldUp, camCfg.lookUp);
 
     if (!started) {
       // Cinematic pre-start view: look across the big-wave ridge from the
@@ -145,11 +121,8 @@ export class CameraRig {
       } else {
         // Keep the chase camera above the local surface while the animal is on
         // or above the water. In a 20-30 m swell the camera's own wave can
-        // otherwise swallow it even when the dolphin is clear. While surfing,
-        // drop to the waterline: that low, face-level view is what sells the
-        // carve instead of a top-down shot of the back.
-        const clearance = lerp(1.0, 0.12, this.surfBlend);
-        targetPos.y = Math.max(targetPos.y, camSurf.height + clearance);
+        // otherwise swallow it even when the dolphin is clear.
+        targetPos.y = Math.max(targetPos.y, camSurf.height + 1.0);
       }
       const floorAt = seabed.getSurfaceHeight(targetPos.x, targetPos.z);
       if (targetPos.y < floorAt + 0.52) targetPos.y = floorAt + 0.52;
@@ -184,7 +157,7 @@ export class CameraRig {
         // its own local surface; the deliberate waterline band is excluded.
         this.position.y = Math.max(
           this.position.y,
-          smoothedSurf.height + lerp(1.0, 0.12, this.surfBlend)
+          smoothedSurf.height + 1.0
         );
       }
       if (this.position.y < smoothedFloor + 0.48) {
@@ -205,10 +178,7 @@ export class CameraRig {
     this.camera.lookAt(this.look);
 
     const rollAmount =
-      dolphin.roll * camCfg.rollFollow * 0.38 +
-      (dolphin.surfFaceBank * camCfg.surfRollFollow + dolphin.roll * 0.22) * this.surfBlend +
-      rollNoise +
-      shake * 0.012;
+      dolphin.roll * camCfg.rollFollow * 0.38 + rollNoise + shake * 0.012;
     this.camera.rotateZ(rollAmount);
 
     // FOV and subtle underwater breathing.
