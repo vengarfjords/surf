@@ -385,12 +385,6 @@ export const TUNING = {
     surfaceMist: 0.26,
   },
 
-  fish: {
-    schools: 12,
-    perSchool: 64,
-    startleRadius: 13.5,
-  },
-
   audio: {
     master: 0.24,
     ocean: 0.4,

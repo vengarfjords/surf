@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import { Ocean } from "./ocean.js";
 import { Seabed } from "./sand.js";
-import { Reefs, Seagrass, FishSchools, SunShafts, HiddenThings, Jellyfish, sharedShader } from "./habitat.js";
+import { Reefs, Seagrass, SunShafts, HiddenThings, sharedShader } from "./habitat.js";
 import { Dolphin } from "./dolphin.js";
 import { CameraRig } from "./camera.js";
 import { ParticleFX, MarineSnow, NearMotes } from "./particles.js";
@@ -62,8 +62,6 @@ async function boot() {
   loadingText.textContent = "growing the meadows";
   await frame();
 
-  const fish = new FishSchools(scene);
-  const jellyfish = new Jellyfish(scene);
   const effects = new ParticleFX(scene);
   effects.ocean = ocean;
   seabed.sim.onSediment = (event) => {
@@ -95,7 +93,6 @@ async function boot() {
   let lastBreaches = 0;
   let lastImpactSound = 0;
   let wasSurge = false;
-  let fishAccumulator = 0;
   let ventClock = 0;
   let cullClock = 0;
   let surfSprayAccumulator = 0;
@@ -445,12 +442,6 @@ async function boot() {
     waterDebug.setStarted(started);
     waterDebug.update(dt);
 
-    fishAccumulator += dt;
-    if (fishAccumulator > 1 / 24) {
-      fish.update(fishAccumulator, dolphin.position, total);
-      fishAccumulator = 0;
-    }
-    jellyfish.update(dt, total);
     hidden.update(dt, dolphin, effects);
 
     const currentStrength = 1 + Math.sin(total * 0.13) * 0.22;
@@ -672,8 +663,6 @@ async function boot() {
     dolphin,
     cameraRig,
     perf,
-    fish,
-    jellyfish,
     reefs,
     referenceCorals: reefs.referenceCorals,
     seagrass,
