@@ -255,7 +255,7 @@ async function boot() {
     const field = ocean.foamField;
     const dx = camera.position.x - field.centerX;
     const dz = camera.position.z - field.centerZ;
-    if (dx * dx + dz * dz > 240 * 240) {
+    if (dx * dx + dz * dz > 160 * 160) {
       surfSprayAccumulator = 0;
       return;
     }
@@ -311,7 +311,7 @@ async function boot() {
     const field = ocean.foamField;
     const dx = camera.position.x - field.centerX;
     const dz = camera.position.z - field.centerZ;
-    if (dx * dx + dz * dz > 240 * 240) {
+    if (dx * dx + dz * dz > 160 * 160) {
       surfBubbleAccumulator = 0;
       return;
     }
@@ -653,8 +653,8 @@ async function boot() {
         O.setFreeView([112, h + 18.5, 32], [120, h + 15.2, 40], 56);
       } else if (shotMode === "solver") {
         O.freeze(false);
-        O.water.setPreset("surf");
-        O.setFreeView([300, 22, 200], [405, 8, 270], 62);
+        O.water.setPreset("moderate");
+        O.setFreeView([260, 16, 140], [260 - 0.46 * 140, 2, 140 + 0.55 * 140], 62);
       }
     }, 2800);
   }

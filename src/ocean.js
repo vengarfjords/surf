@@ -268,10 +268,10 @@ export class Ocean {
     this.renderer = renderer;
     this.scene = scene;
     this.time = 0;
-    this.bathy = makeBathymetry(512);
+    this.bathy = makeBathymetry(256);
     this.water = new WaveField(TUNING.water, this.bathy);
     this.solver = new SurfSolver(this.water, this.bathy);
-    this.foamField = new FoamField(this.water);
+    this.foamField = new FoamField(this.water, this.bathy);
     this.sim = new SurfaceSimulation(renderer);
     this.lastSample = {};
     this._surfaceSample = {};
@@ -280,7 +280,6 @@ export class Ocean {
     this._solverSurface = {};
     this._solver3D = {};
     this._foamSample = {};
-    this._probeSample = {};
     this._underwater = 1;
     this._wetness = 0;
     this._tempColor = new THREE.Color();
@@ -336,30 +335,11 @@ export class Ocean {
       uShoalStrength: { value: TUNING.water.shoalStrength },
       uBreakRatio: { value: TUNING.water.breakRatio },
       uBreakSoftness: { value: TUNING.water.breakSoftness },
-      uReefCenter: { value: new THREE.Vector2(TUNING.water.surfZoneX, TUNING.water.surfZoneZ) },
-      uReefFocus: { value: TUNING.water.surfFocus },
-      uReefFocusWidth2: {
-        value: TUNING.water.surfFocusWidth * TUNING.water.surfFocusWidth,
-      },
-      uReefFocusAlong2: {
-        value: TUNING.water.surfFocusRadius * TUNING.water.surfFocusRadius,
-      },
-      uReefRidgeCross: { value: TUNING.water.surfRidgeCross },
-      uReefWaveDir: {
-        value: new THREE.Vector2(
-          Math.cos(TUNING.water.swellDirection),
-          Math.sin(TUNING.water.swellDirection)
-        ),
-      },
-      uSurfWindFocus: { value: TUNING.water.surfWindFocus },
-      uSwellFraction: { value: this.water.swellFraction },
-      uWaveFocus: { value: new Float32Array(MAX_WAVES) },
       uHs: { value: this.water.stats.height },
       uPeakKx: { value: this.water.peakKx },
       uPeakKz: { value: this.water.peakKz },
       uPeakPhase: { value: this.water.peakPhaseNow || 0 },
       uBreakerLip: { value: TUNING.water.breakerLip },
-      uVisualFold: { value: TUNING.water.barrelFold },
       uAerationAmount: { value: TUNING.water.aerationAmount },
       uFoamPersistence: { value: TUNING.water.foamPersistence },
       uPeakWavelength: { value: this.water.stats.peakWavelength },
@@ -614,13 +594,11 @@ export class Ocean {
           // The CPU uses the same bathymetry and breaker mask for buoyancy,
           // thrust loss and the breaker jet.
           float broken = smoothstep(0.15, 0.7, vBreak);
-          float crestGate = smoothstep(0.35, 0.85, crest);
           float aeration = clamp(
             broken * (0.35 + 0.5 * foamNoise) * (0.35 + 0.65 * vPeakCrest) * uAerationAmount,
             0.0,
             0.85
           );
-          aeration *= crestGate;
           aeration = max(aeration, vSolverFoam * 0.85);
           aeration = max(aeration, vFoamField * 0.5);
           float plunge = smoothstep(0.5, 2.8, vXi);
@@ -633,12 +611,11 @@ export class Ocean {
           float lipTongue =
             broken * plunge * smoothstep(0.45, 0.92, vPeakCrest) * smoothstep(0.45, 0.9, foamNoise);
           whitewater = clamp(whitewater * 0.58 + lipTongue * 0.22, 0.0, 1.0);
-          whitewater *= crestGate;
           // Keep the aerated whitewater distinct from wind whitecaps: fade the
           // generic whitecap field inside the break zone, then add the crest
           // foam back in.
           foam *= 1.0 - broken * 0.78;
-          foam = max(foam, whitewater * (0.45 + 0.75 * fineFoam));
+          foam = max(foam, whitewater);
           foam = max(foam, vSolverFoam * 1.15);
           // Break the advected field into lacy patches at render resolution;
           // the 2 m state grid is too smooth to read as foam on its own.
@@ -646,19 +623,12 @@ export class Ocean {
           // blue gaps instead of laying down a uniform cream sheet.
           float fieldLace = 0.55 * foamNoise + 0.45 * lace;
           float fieldMask = smoothstep(0.28, 0.72, fieldLace);
-          foam = max(
-            foam,
-            vFoamField * fieldMask * 1.15 * smoothstep(0.3, 0.8, crest) * (0.45 + 0.75 * fineFoam)
-          );
+          foam = max(foam, vFoamField * fieldMask * 1.15);
           // Meniscus/foam collar hugging the dolphin at the waterline.
           float bodyDist = length(vWorld.xz - uBodyPos.xz);
           float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));
           float bodyFoam = bodyRing * uBodyActive * clamp(uBodySpeed / 7.0, 0.2, 1.1);
           foam = max(foam, bodyFoam * 0.9);
-          // Stretch the foam along the wave direction so it reads as
-          // whitewater streaks instead of a row of round cells.
-          float streak = vnoise(vec2(perpA * 0.09 + uTime * 0.02, perpB * 2.2 - uTime * 0.03) + 9.3);
-          foam *= 0.55 + 0.45 * streak;
           foam = clamp(foam, 0.0, 1.0);
 
           // ---- above the surface ----------------------------------------
@@ -690,16 +660,6 @@ export class Ocean {
 
           vec3 above = mix(body, sky, clamp(0.04 + fres * 0.82, 0.0, 0.94));
 
-          // Barrel shadow: the heightfield cannot overhang, so a dark band
-          // under the plunging lip reads as the tube opening. The foam pass
-          // below is attenuated inside it so the cavity stays dark.
-          float tubeMask =
-            broken *
-            smoothstep(0.5, 0.92, vPeakCrest) *
-            smoothstep(0.55, 0.85, crest) *
-            (1.0 - smoothstep(0.92, 1.0, crest));
-          above = mix(above, vec3(0.003, 0.015, 0.03), tubeMask * 0.62);
-
           float sunAlign = max(dot(refl, uSunDir), 0.0);
           float specPower = mix(1200.0, 70.0, smoothstep(80.0, 1800.0, vDistance));
           float glint = pow(sunAlign, specPower) * mix(2.6, 0.3, smoothstep(100.0, 2200.0, vDistance));
@@ -710,7 +670,7 @@ export class Ocean {
           above += uSunColor * glint;
 
           vec3 foamColor = mix(vec3(0.6, 0.72, 0.7), vec3(0.96, 0.99, 0.96), smoothstep(0.1, 0.8, foamNoise + lace * 0.25));
-          above = mix(above, foamColor, foam * 0.88 * (1.0 - tubeMask * 0.85));
+          above = mix(above, foamColor, foam * 0.88);
 
           // ---- below the surface ----------------------------------------
           // Snell's window: refracted sky within the critical angle
@@ -894,29 +854,11 @@ export class Ocean {
     this.uniforms.uShoalStrength.value = TUNING.water.shoalStrength;
     this.uniforms.uBreakRatio.value = TUNING.water.breakRatio;
     this.uniforms.uBreakSoftness.value = TUNING.water.breakSoftness;
-    this.uniforms.uReefCenter.value.set(TUNING.water.surfZoneX, TUNING.water.surfZoneZ);
-    this.uniforms.uReefFocus.value = TUNING.water.surfFocus;
-    this.uniforms.uReefFocusWidth2.value =
-      TUNING.water.surfFocusWidth * TUNING.water.surfFocusWidth;
-    this.uniforms.uReefFocusAlong2.value =
-      TUNING.water.surfFocusRadius * TUNING.water.surfFocusRadius;
-    this.uniforms.uReefRidgeCross.value = TUNING.water.surfRidgeCross;
-    this.uniforms.uReefWaveDir.value.set(
-      Math.cos(TUNING.water.swellDirection),
-      Math.sin(TUNING.water.swellDirection)
-    );
-    this.uniforms.uSurfWindFocus.value = TUNING.water.surfWindFocus;
-    this.uniforms.uSwellFraction.value = this.water.swellFraction;
-    const focusArr = this.uniforms.uWaveFocus.value;
-    for (let i = 0; i < MAX_WAVES; i++) {
-      focusArr[i] = i < n ? this.water.focusWeight[i] : 0;
-    }
     this.uniforms.uHs.value = this.water.stats.height;
     this.uniforms.uPeakKx.value = this.water.peakKx;
     this.uniforms.uPeakKz.value = this.water.peakKz;
     this.uniforms.uPeakPhase.value = this.water.peakPhaseNow || 0;
     this.uniforms.uBreakerLip.value = TUNING.water.breakerLip;
-    this.uniforms.uVisualFold.value = TUNING.water.barrelFold;
     this.uniforms.uAerationAmount.value = TUNING.water.aerationAmount;
     this.uniforms.uFoamPersistence.value = TUNING.water.foamPersistence;
     this.uniforms.uPeakWavelength.value = this.water.stats.peakWavelength;
@@ -1120,11 +1062,8 @@ export class Ocean {
     const oldCenterX = u.uCenter.value.x;
     const oldCenterZ = u.uCenter.value.y;
     const oldSim = u.uSimScale.value;
-    const oldFold = u.uVisualFold.value;
-    const sample = this.water.sampleSurface(x, z, this._probeSample);
-    u.uCenter.value.set(sample.parameterX, sample.parameterZ);
+    u.uCenter.value.set(x, z);
     u.uSimScale.value = 0;
-    u.uVisualFold.value = 0;
 
     this.probeCamera.position.set(x, 60, z);
     this.probeCamera.up.set(0, 0, -1);
@@ -1144,10 +1083,9 @@ export class Ocean {
 
     u.uCenter.value.set(oldCenterX, oldCenterZ);
     u.uSimScale.value = oldSim;
-    u.uVisualFold.value = oldFold;
 
     const q = this._probePixels[0] * 256 + this._probePixels[1];
-    return (q / 65535) * 96 - 48;
+    return (q / 65535) * 16 - 8;
   }
 
   shouldDrawSurface() {
