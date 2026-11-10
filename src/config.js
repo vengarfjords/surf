@@ -322,6 +322,10 @@ export const TUNING = {
     underwaterDensity: 0.0235,
     aboveDensity: 0.0012,
     renderScale: 0.6,
+    // Optional governor: reduce composer resolution after sustained slow
+    // frames, never below this scale. It only steps down, so it cannot hunt.
+    dynamicQuality: true,
+    dynamicQualityMinScale: 0.45,
     // Absolute post/scene render budget. Keeping the composer near half a
     // megapixel makes frame cost predictable on larger displays as well.
     maxPostPixels: 600000,
@@ -471,6 +475,8 @@ export const TUNE_CONTROLS = [
   { path: "visuals.volumetricCaustics", label: "caustic light", min: 0, max: 1.8, step: 0.01 },
   { path: "visuals.surfaceHaze", label: "surface haze", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.surfaceMist", label: "sea mist", min: 0, max: 1.5, step: 0.01 },
+  { path: "visuals.dynamicQuality", label: "dynamic quality", type: "toggle" },
+  { path: "visuals.dynamicQualityMinScale", label: "min render scale", min: 0.4, max: 0.8, step: 0.01 },
   { path: "camera.chaseDistance", label: "camera distance", min: 2.5, max: 12, step: 0.1 },
   { path: "camera.shoulder", label: "camera shoulder", min: 0, max: 2.2, step: 0.01 },
   { path: "camera.lookResponsiveness", label: "look response", min: 2, max: 28, step: 0.1 },

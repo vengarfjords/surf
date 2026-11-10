@@ -214,6 +214,8 @@ async function boot() {
   let perfAccum = 0;
   let perfFrames = 0;
   let frameMsAvg = 16.7;
+  let slowQualityTime = 0;
+  let qualityCooldown = 0;
   const perf = {
     frameMs: 16.7,
     gpuMs: 0,
@@ -428,14 +430,43 @@ async function boot() {
       perfFrames = 0;
     }
 
+    // Conservative quality governor. It only steps the composer scale down
+    // after sustained >18.5 ms frames, with a cooldown, so it cannot oscillate
+    // or fight the player's tuning panel.
+    qualityCooldown -= dt;
+    if (TUNING.visuals.dynamicQuality && qualityCooldown <= 0) {
+      if (rawDt > 0.0185) slowQualityTime += dt;
+      else slowQualityTime = Math.max(0, slowQualityTime - dt * 0.5);
+      if (slowQualityTime > 1.1) {
+        const next = Math.max(
+          TUNING.visuals.dynamicQualityMinScale,
+          TUNING.visuals.renderScale - 0.05
+        );
+        if (next < TUNING.visuals.renderScale - 1e-4) {
+          TUNING.visuals.renderScale = next;
+          post.setSize(window.innerWidth, window.innerHeight);
+          slowQualityTime = 0;
+          qualityCooldown = 2.5;
+        }
+      }
+    } else {
+      slowQualityTime = 0;
+    }
+
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
 
   // Headless capture mode: ?shot=underwater|waterline|breach. This only poses
   // the camera/animal; it is used for documentation screenshots.
-  const shotMode = new URLSearchParams(location.search).get("shot");
+  const captureParams = new URLSearchParams(location.search);
+  const shotMode = captureParams.get("shot");
   if (shotMode) {
+    if (captureParams.get("foam") === "0") {
+      TUNING.water.foamAmount = 0;
+      TUNING.water.foamThreshold = 2;
+    }
+    if (captureParams.get("detail") === "0") TUNING.water.detailStrength = 0;
     setTimeout(() => {
       const O = window.OCEAN;
       if (!O) return;

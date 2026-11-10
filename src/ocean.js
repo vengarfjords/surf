@@ -495,17 +495,19 @@ export class Ocean {
 
         vec3 skyReflection(vec3 d) {
           float h = clamp(d.y, 0.0, 1.0);
-          vec3 col = mix(uSkyHorizon * 0.9, uSkyZenith, pow(h, 0.35));
-          col = mix(col, uSkyHorizon * 1.02, exp(-max(d.y, 0.0) * 10.0) * 0.45);
+          // Bias the reflected sky toward the zenith blue; the horizon peach
+          // is for the sky dome, not for painting the whole sea cream.
+          vec3 col = mix(uSkyHorizon * 0.55, uSkyZenith * 1.05, pow(h, 0.18));
+          col = mix(col, uSkyHorizon * 0.82, exp(-max(d.y, 0.0) * 16.0) * 0.14);
 
           vec2 cp = d.xz / (max(d.y, 0.03) + 0.22);
           float baseCloud = fbm2(cp * 1.2 + vec2(uTime * 0.002, 0.0));
           float clouds = fbm2(cp * 2.7 + vec2(baseCloud * 2.4 + uTime * 0.0012, baseCloud));
-          float band = smoothstep(0.46, 0.7, clouds + 0.1 * smoothstep(0.0, 0.3, d.y));
-          col = mix(col, vec3(0.74, 0.76, 0.72), band * (0.16 - 0.08 * h));
+          float band = smoothstep(0.5, 0.76, clouds + 0.1 * smoothstep(0.0, 0.3, d.y));
+          col = mix(col, vec3(0.56, 0.66, 0.72), band * (0.1 - 0.05 * h));
 
           float sd = max(dot(d, uSunDir), 0.0);
-          col += uSunColor * (pow(sd, 700.0) * 2.1 + pow(sd, 30.0) * 0.18 + pow(sd, 5.0) * 0.05);
+          col += uSunColor * (pow(sd, 700.0) * 2.1 + pow(sd, 30.0) * 0.16 + pow(sd, 5.0) * 0.035);
           return col;
         }
 
@@ -629,7 +631,7 @@ export class Ocean {
           float glint = pow(sunAlign, specPower) * mix(2.6, 0.3, smoothstep(100.0, 2200.0, vDistance));
           glint += pow(sunAlign, 55.0) * 0.075;
           float sparkle = smoothstep(0.52, 0.92, vnoise(p * 3.4 + vec2(uTime * 0.22, -uTime * 0.19)));
-          glint += pow(sunAlign, 22.0) * (0.025 + 0.045 * sparkle);
+          glint += pow(sunAlign, 22.0) * (0.012 + 0.025 * sparkle);
           glint *= 0.55 + sparkle * 0.9;
           above += uSunColor * glint;
 
