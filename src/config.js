@@ -56,10 +56,10 @@ export const TUNING = {
   movement: {
     // Forward propulsion and terminal velocity. These are deliberately lively:
     // the animal should leap off the line and carry deep momentum into a breach.
-    cruiseSpeed: 9.5,
-    boostSpeed: 21.0,
-    acceleration: 8.5,
-    boostAcceleration: 15.0,
+    cruiseSpeed: 10.5,
+    boostSpeed: 25.0,
+    acceleration: 10.5,
+    boostAcceleration: 18.0,
     braking: 6.0,
     reverseSpeed: 1.7,
     reverseAcceleration: 1.1,
@@ -104,21 +104,21 @@ export const TUNING = {
     gravity: 9.81,
     floorClearance: 0.52,
     floorBounce: 0.3,
-    breachImpulse: 1.6,
+    breachImpulse: 1.5,
     boundaryPush: 1.8,
 
     // Airborne translation. The animal is ballistic, but the body still
     // glides: low drag, reduced gravity, a little speed-dependent lift and
     // real velocity steering from the snout.
-    airGravity: 9.81,
-    airLift: 0.0065,
-    airSteer: 0.72,
-    airForwardDrag: 0.01,
-    airForwardQuadraticDrag: 0.0025,
-    airLateralDrag: 0.08,
-    airVerticalDrag: 0.02,
-    airThrustScale: 0.1,
-    airVerticalScale: 0.15,
+    airGravity: 12.5,
+    airLift: 0.002,
+    airSteer: 1.0,
+    airForwardDrag: 0.008,
+    airForwardQuadraticDrag: 0.002,
+    airLateralDrag: 0.12,
+    airVerticalDrag: 0.05,
+    airThrustScale: 0.16,
+    airVerticalScale: 0.2,
     airTailScale: 0.35,
 
     // A quiet, always-present current keeps world and camera alive.
@@ -180,20 +180,20 @@ export const TUNING = {
   },
 
   camera: {
-    chaseDistance: 11.0,
-    chaseHeight: 7.5,
+    chaseDistance: 9.5,
+    chaseHeight: 5.5,
     // A small shoulder offset keeps the shot alive without making the view
     // point across the dolphin instead of along its snout.
     shoulder: 0.7,
-    targetAhead: 6.0,
-    lookUp: 0.6,
+    targetAhead: 5.5,
+    lookUp: 0.5,
     // The camera orbits the snout target, not the lagging physical heading.
     lookResponsiveness: 14.0,
-    positionLag: 10.0,
-    rotationLag: 16.0,
+    positionLag: 12.0,
+    rotationLag: 18.0,
     waterlineLag: 6.0,
-    speedPullback: 2.0,
-    speedFov: 13,
+    speedPullback: 1.5,
+    speedFov: 16,
     baseFov: 64,
     rollFollow: 0.27,
     handheld: 1.0,
@@ -220,21 +220,21 @@ export const TUNING = {
     preset: "surf",
     surfZoneX: 450,
     surfZoneZ: 300,
-    swellHeight: 20,
-    swellWavelength: 280,
-    swellWavelengthSpread: 0.06,
+    swellHeight: 18,
+    swellWavelength: 300,
+    swellWavelengthSpread: 0.08,
     swellDirection: 0.61,
-    swellDirectionSpread: 0.04,
+    swellDirectionSpread: 0.08,
     swellComponents: 96,
-    windSeaHeight: 0.35,
-    windSeaWavelength: 22,
+    windSeaHeight: 0.25,
+    windSeaWavelength: 24,
     windSeaWavelengthSpread: 0.35,
     windSeaDirection: 1.02,
     windSeaDirectionSpread: 0.62,
     windSeaComponents: 32,
     // Gerstner horizontal displacement scale. The generator computes a safe
     // base value from the total steepness; this is an artistic multiplier.
-    chop: 0.65,
+    chop: 0.45,
     timeScale: 1.0,
     startTime: 4.5,
     // Rendering / foam.
@@ -250,7 +250,7 @@ export const TUNING = {
     breakRatio: 0.85,
     breakSoftness: 0.08,
     breakerJet: 0.35,
-    breakerLip: 0.25,
+    breakerLip: 0.22,
     aerationAmount: 0.85,
     foamPersistence: 0.6,
     // Local nonlinear shallow-water solver over the surf bank. The domain is
@@ -422,7 +422,7 @@ export const SUN_DIRECTION = { x: -0.46, y: 0.7, z: 0.55 };
  */
 export const TUNE_CONTROLS = [
   { path: "movement.cruiseSpeed", label: "cruise speed", min: 2, max: 14, step: 0.1 },
-  { path: "movement.boostSpeed", label: "surge speed", min: 8, max: 24, step: 0.1 },
+  { path: "movement.boostSpeed", label: "surge speed", min: 8, max: 30, step: 0.1 },
   { path: "movement.acceleration", label: "acceleration", min: 1, max: 12, step: 0.1 },
   { path: "movement.turnResponsiveness", label: "turn response", min: 0.6, max: 14, step: 0.1 },
   { path: "movement.mouseSensitivity", label: "mouse look", min: 0.0008, max: 0.006, step: 0.00005 },

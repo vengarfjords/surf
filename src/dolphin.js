@@ -745,24 +745,29 @@ export class Dolphin {
     const aheadSlope = Math.hypot(ahead.slopeX, ahead.slopeZ);
     const faceAhead = aheadSlope > 0.14 || ahead.breakMask > 0.15;
     const crestNear = water.height > 1.5 || ahead.height > 1.5;
+    const adx = this.position.x - TUNING.water.surfZoneX;
+    const adz = this.position.z - TUNING.water.surfZoneZ;
+    const nearArena = adx * adx + adz * adz < 420 * 420;
     const speedEnough = this.surfing ? this.speed > 4.0 : this.speed > 5.5;
+    const notLaunching = this.velocity.y < 2.0;
     const surfable =
-      (water.breakMask > 0.15 || faceAhead || crestNear) &&
+      (nearArena || water.breakMask > 0.15 || faceAhead || crestNear) &&
       water.depth > 6 &&
       this.verticalInput === 0 &&
       speedEnough &&
+      notLaunching &&
       this.position.y > surfaceHeight - 2.2 &&
       this.position.y < surfaceHeight + 2.5;
     if (surfable) {
       if (!this.surfing) this.surfTime = 0;
       this.surfing = true;
       this.surfTime += dt;
-      const targetY = surfaceHeight - 0.2;
+      const targetY = surfaceHeight - 0.4;
       const err = targetY - this.position.y;
-      this.velocity.y += clamp(err * 12 - this.velocity.y * 4.5, -12, 12) * dt;
-      if (this.position.y < surfaceHeight - 0.5) {
-        this.position.y = surfaceHeight - 0.5;
-        if (this.velocity.y < 0) this.velocity.y *= 0.2;
+      this.velocity.y += clamp(err * 16 - this.velocity.y * 6, -16, 16) * dt;
+      if (this.position.y < surfaceHeight - 0.7) {
+        this.position.y = surfaceHeight - 0.7;
+        if (this.velocity.y < 0) this.velocity.y *= 0.15;
       }
       // Face tangent drive: keep enough speed to carve, directed by the
       // player's current heading projected onto the local surface.
@@ -772,8 +777,8 @@ export class Dolphin {
       const flen = this.surfForward.length();
       if (flen > 1e-3) {
         this.surfForward.multiplyScalar(1 / flen);
-        const targetSpeed = water.phaseSpeed * 0.72;
-        const drive = clamp(targetSpeed - this.speed, 0, 7) * 1.8;
+        const targetSpeed = water.phaseSpeed * 0.65;
+        const drive = clamp(targetSpeed - this.speed, 0, 7) * 1.5;
         this.velocity.addScaledVector(this.surfForward, drive * dt);
       }
     } else {

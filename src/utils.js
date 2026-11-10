@@ -113,7 +113,11 @@ export function seabedHeight(x, z) {
   const ridgeAlong = 1 - smoothstep(240, 360, Math.abs(sAlong));
   const basinDepth = smoothstep(-40, -220, sCross) * 20;
   const leeDepth = smoothstep(20, 120, sCross) * 10;
-  const arenaDepth = 18 + basinDepth + leeDepth;
+  // A broad central peak and gentle shoulders break the wall into a peeling
+  // point break; the long-wavelength ripple avoids a perfectly uniform crest.
+  const crestPeak = Math.exp(-(sAlong * sAlong) / (2 * 150 * 150)) * 2.8;
+  const crestRipple = Math.sin(sAlong / 95) * 1.5 + Math.sin(sAlong / 41 + 1.2) * 0.55;
+  const arenaDepth = 18 + basinDepth + leeDepth - crestPeak + crestRipple;
 
   // Patchy reef shelf outcrops, slight raised humps.
   const shelf = Math.max(0, fbm(x * 0.0072 + 51.1, z * 0.0072 + 4.4, 2) - 0.5) * 2.7;

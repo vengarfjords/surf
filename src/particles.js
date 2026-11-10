@@ -38,6 +38,7 @@ const POINT_FRAG = /* glsl */ `
   uniform float uSoftness;
   uniform float uRing;
   uniform float uOpacity;
+  uniform float uNearFade;
   ${glslNoise}
   ${glslFog}
   void main() {
@@ -53,7 +54,8 @@ const POINT_FRAG = /* glsl */ `
       float spec = smoothstep(0.16, 0.0, length(uv + vec2(0.12, -0.13)));
       soft = ring * 0.7 + spec * 0.5;
     }
-    float alpha = soft * vAlpha * uOpacity;
+    float nearFade = uNearFade > 0.01 ? smoothstep(1.5, uNearFade, vFogDepth) : 1.0;
+    float alpha = soft * vAlpha * uOpacity * nearFade;
     if (alpha < 0.004) discard;
     vec3 col = applyWaterFog(vColor, vFogDepth, uFogColor, uFogDensity);
     gl_FragColor = vec4(col, alpha);
@@ -114,6 +116,7 @@ export class CPUParticles {
         uSoftness: { value: options.softness ?? 0.38 },
         uRing: { value: options.ring ? 1 : 0 },
         uOpacity: { value: options.opacity ?? 1 },
+        uNearFade: { value: options.nearFade ?? 0 },
       },
       vertexShader: POINT_VERT,
       fragmentShader: POINT_FRAG,
@@ -246,28 +249,33 @@ export class ParticleFX {
       softness: 0.32,
       additive: false,
       opacity: 0.8,
+      nearFade: 8,
     });
     this.bubbles = new CPUParticles(scene, 380, {
       softness: 0.42,
       ring: true,
       additive: true,
       opacity: 0.7,
+      nearFade: 12,
     });
     this.foam = new CPUParticles(scene, 1000, {
       softness: 0.55,
       additive: false,
       opacity: 0.55,
+      nearFade: 24,
     });
     this.surf = new CPUParticles(scene, 320, {
       softness: 0.5,
       additive: false,
       opacity: 0.55,
+      nearFade: 40,
     });
     this.surfBubbles = new CPUParticles(scene, 360, {
       softness: 0.42,
       ring: true,
       additive: true,
       opacity: 0.65,
+      nearFade: 10,
     });
     this.tmp = new THREE.Color();
     this.ocean = null;
