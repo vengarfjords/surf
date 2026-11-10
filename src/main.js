@@ -467,6 +467,7 @@ async function boot() {
       TUNING.water.foamThreshold = 2;
     }
     if (captureParams.get("detail") === "0") TUNING.water.detailStrength = 0;
+    if (captureParams.get("foamfield") === "0") TUNING.water.foamFieldEnabled = false;
     setTimeout(() => {
       const O = window.OCEAN;
       if (!O) return;

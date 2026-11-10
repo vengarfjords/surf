@@ -45,6 +45,10 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     uniform vec2 uSolverTexel;
     uniform float uSolverCell;
     uniform float uSolverEnabled;
+    uniform sampler2D uFoamTexture;
+    uniform vec2 uFoamCenter;
+    uniform float uFoamExtent;
+    uniform float uFoamEnabled;
 
     varying vec3 vWorld;
     varying vec3 vNormalW;
@@ -59,6 +63,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     varying float vPeakCrest;
     varying float vXi;
     varying float vSolverFoam;
+    varying float vFoamField;
 
     vec2 simSample(vec2 world) {
       vec2 uv = (world - uSimCenter) / uSimExtent + 0.5;
@@ -158,6 +163,12 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         vSolverFoam = foam * solverMask;
         breakMask = max(breakMask, foam * solverMask);
       }
+
+      // Persistent advected foam/aeration state over the surf bank.
+      vec2 foamUv = (world.xz - uFoamCenter) / uFoamExtent + 0.5;
+      float foamEdge = min(min(foamUv.x, 1.0 - foamUv.x), min(foamUv.y, 1.0 - foamUv.y));
+      float foamMask = smoothstep(0.0, 0.04, foamEdge) * uFoamEnabled;
+      vFoamField = texture2D(uFoamTexture, foamUv).r * foamMask;
 
       // Local GPU contact heightfield (dolphin parting / wakes). It is
       // deliberately visual: the physics query does not include this field,

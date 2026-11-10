@@ -3,6 +3,7 @@ import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import { clamp, glslCaustics, glslFog, glslNoise } from "./utils.js";
 import { WaveField } from "./water/field.js";
 import { SurfSolver } from "./water/solver.js";
+import { FoamField } from "./water/foam.js";
 import { makeBathymetry } from "./water/bathymetry.js";
 import { MAX_WAVES, probeFragmentShader, waterVertexShader } from "./water/shaders.js";
 
@@ -270,6 +271,7 @@ export class Ocean {
     this.bathy = makeBathymetry(256);
     this.water = new WaveField(TUNING.water, this.bathy);
     this.solver = new SurfSolver(this.water, this.bathy);
+    this.foamField = new FoamField(this.water, this.bathy);
     this.sim = new SurfaceSimulation(renderer);
     this.lastSample = {};
     this._surfaceSample = {};
@@ -277,6 +279,7 @@ export class Ocean {
     this._solverSample = {};
     this._solverSurface = {};
     this._solver3D = {};
+    this._foamSample = {};
     this._underwater = 1;
     this._wetness = 0;
     this._tempColor = new THREE.Color();
@@ -350,6 +353,10 @@ export class Ocean {
       uSolverTexel: { value: new THREE.Vector2(1 / this.solver.n, 1 / this.solver.n) },
       uSolverCell: { value: this.solver.dx },
       uSolverEnabled: { value: this.solver.enabled ? 1 : 0 },
+      uFoamTexture: { value: this.foamField.texture },
+      uFoamCenter: { value: new THREE.Vector2(this.foamField.centerX, this.foamField.centerZ) },
+      uFoamExtent: { value: this.foamField.extent },
+      uFoamEnabled: { value: this.foamField.enabled ? 1 : 0 },
       uDebugCrest: { value: 0 },
       uDebugSlope: { value: 0 },
       uDebugFoam: { value: 0 },
@@ -500,6 +507,7 @@ export class Ocean {
         varying float vPeakCrest;
         varying float vXi;
         varying float vSolverFoam;
+        varying float vFoamField;
 
         ${glslNoise}
         ${glslFog}
@@ -588,6 +596,7 @@ export class Ocean {
             0.85
           );
           aeration = max(aeration, vSolverFoam * 0.85);
+          aeration = max(aeration, vFoamField * 0.5);
           float plunge = smoothstep(0.5, 2.8, vXi);
           float crestFoam = smoothstep(0.52, 0.94, vPeakCrest);
           float whitewater = broken * crestFoam * smoothstep(
@@ -604,6 +613,11 @@ export class Ocean {
           foam *= 1.0 - broken * 0.78;
           foam = max(foam, whitewater);
           foam = max(foam, vSolverFoam * 1.15);
+          // Break the advected field into lacy patches at render resolution;
+          // the 2 m state grid is too smooth to read as foam on its own.
+          // Reuse the foam noise and lace already evaluated above.
+          float fieldLace = 0.55 * foamNoise + 0.45 * lace;
+          foam = max(foam, vFoamField * (0.45 + 0.8 * fieldLace));
           // Meniscus/foam collar hugging the dolphin at the waterline.
           float bodyDist = length(vWorld.xz - uBodyPos.xz);
           float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));
@@ -855,7 +869,14 @@ export class Ocean {
   /** Surface-only sample, blended with the surf-zone solver. */
   getWaterSample(x, z) {
     const out = this.water.sampleSurface(x, z, this.lastSample);
-    if (!this.solver.enabled) return out;
+    if (!this.solver.enabled) {
+      if (this.foamField.enabled) {
+        const f = this.foamField.sample(x, z, this._foamSample);
+        out.aeration = Math.max(out.aeration, f.foam * 0.5);
+        out.foamField = f.foam;
+      }
+      return out;
+    }
     const s = this.solver.surfaceSample(x, z, this._solverSurface);
     if (!s) return out;
     const m = s.solverMask;
@@ -879,13 +900,25 @@ export class Ocean {
     out.solverMask = m;
     out.solverU = s.solverU;
     out.solverV = s.solverV;
+    if (this.foamField.enabled) {
+      const f = this.foamField.sample(x, z, this._foamSample);
+      out.aeration = Math.max(out.aeration, f.foam * 0.5);
+      out.foamField = f.foam;
+    }
     return out;
   }
 
   /** Full 3D sample, blended with the surf-zone solver. */
   sampleWater(x, y, z, out = {}) {
     const a = this.water.sample(x, y, z, out);
-    if (!this.solver.enabled) return a;
+    if (!this.solver.enabled) {
+      if (this.foamField.enabled) {
+        const f = this.foamField.sample(x, z, this._foamSample);
+        out.aeration = Math.max(out.aeration, f.foam * 0.5);
+        out.foamField = f.foam;
+      }
+      return a;
+    }
     const s = this.solver.sample3D(x, y, z, this._solver3D);
     if (!s) return a;
     const m = s.solverMask;
@@ -914,13 +947,27 @@ export class Ocean {
     out.depthToSeabed = y + out.depth;
     out.solverMask = m;
     out.solverActive = s.solverMask > 0.5;
+    if (this.foamField.enabled) {
+      const f = this.foamField.sample(x, z, this._foamSample);
+      out.aeration = Math.max(out.aeration, f.foam * 0.5);
+      out.foamField = f.foam;
+    }
     return out;
   }
 
   sampleWaterBatch(positions, out, stride = 3, forForces = false) {
     const count = positions.length / stride;
     this.water.sampleBatch(positions, out, stride, count, forForces);
-    if (!this.solver.enabled) return out;
+    if (!this.solver.enabled) {
+      if (this.foamField.enabled) {
+        for (let i = 0; i < count; i++) {
+          const p = i * stride;
+          const f = this.foamField.sample(positions[p], positions[p + 2], this._foamSample);
+          if (f.mask > 0.001) out.aeration[i] = Math.max(out.aeration[i], f.foam * 0.5);
+        }
+      }
+      return out;
+    }
     for (let i = 0; i < count; i++) {
       const p = i * stride;
       const s = this.solver.sample(positions[p], positions[p + 2], this._solverSample);
@@ -941,6 +988,13 @@ export class Ocean {
       out.slope[i] += (s.slope - out.slope[i]) * m;
       out.phaseSpeed[i] += (s.phaseSpeed - out.phaseSpeed[i]) * m;
     }
+    if (this.foamField.enabled) {
+      for (let i = 0; i < count; i++) {
+        const p = i * stride;
+        const f = this.foamField.sample(positions[p], positions[p + 2], this._foamSample);
+        if (f.mask > 0.001) out.aeration[i] = Math.max(out.aeration[i], f.foam * 0.5);
+      }
+    }
     return out;
   }
 
@@ -952,8 +1006,11 @@ export class Ocean {
     this.time += dt * TUNING.water.timeScale;
     this.solver.enabled = TUNING.water.solverEnabled;
     this.solver.update(dt, this.time);
+    this.foamField.enabled = TUNING.water.foamFieldEnabled;
+    this.foamField.update(dt, this.time);
     const u = this.uniforms;
     u.uSolverEnabled.value = this.solver.enabled ? 1 : 0;
+    u.uFoamEnabled.value = this.foamField.enabled ? 1 : 0;
     u.uTime.value = this.time;
     u.uCenter.value.set(camera.position.x, camera.position.z);
     u.uCameraPos.value.copy(camera.position);

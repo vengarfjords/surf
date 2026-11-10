@@ -263,6 +263,14 @@ export const TUNING = {
     solverBreakSlope: 0.5,
     solverFoamDecay: 0.22,
     solverFoamSource: 0.55,
+    // Advected foam/aeration state for the analytic surf bank. This is shared
+    // by the surface shader and the hull physics.
+    foamFieldEnabled: true,
+    foamFieldExtent: 192,
+    foamFieldCells: 96,
+    foamFieldRate: 15,
+    foamFieldDecay: 0.18,
+    foamFieldSource: 0.7,
     // Radial clipmap dimensions (camera-following, exponential in radius).
     surfaceRadius: 7000,
     surfaceRings: 220,
@@ -461,6 +469,9 @@ export const TUNE_CONTROLS = [
   { path: "water.solverEnabled", label: "surf-zone solver", type: "toggle" },
   { path: "water.solverBreakSlope", label: "solver break slope", min: 0.3, max: 1.5, step: 0.01 },
   { path: "water.solverFoamSource", label: "solver foam source", min: 0, max: 1, step: 0.01 },
+  { path: "water.foamFieldEnabled", label: "advected foam", type: "toggle" },
+  { path: "water.foamFieldSource", label: "foam source", min: 0, max: 1.5, step: 0.01 },
+  { path: "water.foamFieldDecay", label: "foam decay", min: 0.02, max: 1, step: 0.01 },
   { path: "hydro.buoyancyRatio", label: "buoyancy ratio", min: 0.9, max: 1.05, step: 0.001 },
   { path: "hydro.lungFraction", label: "lung buoyancy", min: 0, max: 0.4, step: 0.005 },
   { path: "hydro.lungDepthScale", label: "lung depth scale", min: 0.3, max: 4, step: 0.05 },
