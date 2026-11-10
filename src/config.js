@@ -275,6 +275,10 @@ export const TUNING = {
     // the rate is spawns per second near the bank.
     surfSpray: true,
     surfSprayRate: 30,
+    // Subsurface bubble plume under the break line, emitted only while the
+    // camera is underwater.
+    surfBubbles: true,
+    surfBubblesRate: 20,
     // Radial clipmap dimensions (camera-following, exponential in radius).
     surfaceRadius: 7000,
     surfaceRings: 220,
@@ -478,6 +482,8 @@ export const TUNE_CONTROLS = [
   { path: "water.foamFieldDecay", label: "foam decay", min: 0.02, max: 1, step: 0.01 },
   { path: "water.surfSpray", label: "surf spray", type: "toggle" },
   { path: "water.surfSprayRate", label: "surf spray rate", min: 0, max: 60, step: 1 },
+  { path: "water.surfBubbles", label: "surf plume", type: "toggle" },
+  { path: "water.surfBubblesRate", label: "surf plume rate", min: 0, max: 60, step: 1 },
   { path: "hydro.buoyancyRatio", label: "buoyancy ratio", min: 0.9, max: 1.05, step: 0.001 },
   { path: "hydro.lungFraction", label: "lung buoyancy", min: 0, max: 0.4, step: 0.005 },
   { path: "hydro.lungDepthScale", label: "lung depth scale", min: 0.3, max: 4, step: 0.05 },

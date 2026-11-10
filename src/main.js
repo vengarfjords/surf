@@ -95,6 +95,7 @@ async function boot() {
   let ventClock = 0;
   let cullClock = 0;
   let surfSprayAccumulator = 0;
+  let surfBubbleAccumulator = 0;
   let frozen = false;
   let freeView = null;
   let postEnabled = TUNING.debug.postProcessing;
@@ -237,8 +238,8 @@ async function boot() {
   let total = 0;
 
   const surfSpraySample = {};
-  function emitSurfSpray(dt) {
-    if (!TUNING.water.surfSpray) return;
+  function emitSurfSpray(dt, underwater) {
+    if (!TUNING.water.surfSpray || underwater > 0.9) return;
     const rate = TUNING.water.surfSprayRate;
     if (rate <= 0) return;
     const field = ocean.foamField;
@@ -286,6 +287,64 @@ async function boot() {
         peak ? peak.dx : 1,
         peak ? peak.dz : 0
       );
+      emitted++;
+    }
+  }
+
+  const surfBubbleSample = {};
+  const surfBubbleFieldSample = {};
+  const surfBubbleForward = new THREE.Vector3();
+  function emitSurfBubbles(dt, underwater) {
+    if (!TUNING.water.surfBubbles || underwater < 0.05) return;
+    const rate = TUNING.water.surfBubblesRate;
+    if (rate <= 0) return;
+    const field = ocean.foamField;
+    const dx = camera.position.x - field.centerX;
+    const dz = camera.position.z - field.centerZ;
+    if (dx * dx + dz * dz > 160 * 160) {
+      surfBubbleAccumulator = 0;
+      return;
+    }
+    camera.getWorldDirection(surfBubbleForward);
+    const fxz = Math.hypot(surfBubbleForward.x, surfBubbleForward.z) || 1;
+    const fx = surfBubbleForward.x / fxz;
+    const fz = surfBubbleForward.z / fxz;
+    const rx = -fz;
+    const rz = fx;
+    surfBubbleAccumulator = Math.min(surfBubbleAccumulator + dt, 0.2);
+    const period = 1 / rate;
+    let emitted = 0;
+    while (surfBubbleAccumulator >= period && emitted < 4) {
+      surfBubbleAccumulator -= period;
+      let x = 0;
+      let z = 0;
+      let strength = 0;
+      let found = false;
+      // Sample a cone in front of the camera. This concentrates the plume on
+      // the break section actually in view instead of the whole ring.
+      for (let attempt = 0; attempt < 8 && !found; attempt++) {
+        const dist = 12 + Math.random() * 36;
+        const lateral = (Math.random() - 0.5) * 22;
+        x = camera.position.x + fx * dist + rx * lateral;
+        z = camera.position.z + fz * dist + rz * lateral;
+        if (field.enabled) {
+          const f = field.sample(x, z, surfBubbleFieldSample);
+          if (f.foam > 0.2 && f.mask > 0.05) {
+            strength = f.foam;
+            found = true;
+          }
+        } else {
+          const s = ocean.water.sampleSurface(x, z, surfBubbleSample);
+          if (s.breakMask > 0.3 && s.crest > 0.4) {
+            strength = s.breakMask;
+            found = true;
+          }
+        }
+      }
+      if (!found) break;
+      const s = ocean.water.sampleSurface(x, z, surfBubbleSample);
+      const maxDepth = Math.max(0.5, Math.min(2.2, s.depth - 0.35));
+      effects.surfBubbleBurst(x, s.height, z, maxDepth, strength);
       emitted++;
     }
   }
@@ -403,7 +462,8 @@ async function boot() {
       }
     }
     const effectsStart = performance.now();
-    emitSurfSpray(dt);
+    emitSurfSpray(dt, camState.underwater);
+    emitSurfBubbles(dt, camState.underwater);
     effects.update(dt, camera, fogColor, fogDensity, current);
     snow.update(dt, camera, fogColor, fogDensity, camState.underwater);
     motes.update(dt, camera, fogColor, fogDensity, camState.underwater);
@@ -525,6 +585,7 @@ async function boot() {
     if (captureParams.get("detail") === "0") TUNING.water.detailStrength = 0;
     if (captureParams.get("foamfield") === "0") TUNING.water.foamFieldEnabled = false;
     if (captureParams.get("surfspray") === "0") TUNING.water.surfSpray = false;
+    if (captureParams.get("surfbubbles") === "0") TUNING.water.surfBubbles = false;
     setTimeout(() => {
       const O = window.OCEAN;
       if (!O) return;

@@ -263,9 +263,15 @@ export class ParticleFX {
       additive: false,
       opacity: 0.55,
     });
+    this.surfBubbles = new CPUParticles(scene, 360, {
+      softness: 0.42,
+      ring: true,
+      additive: true,
+      opacity: 0.65,
+    });
     this.tmp = new THREE.Color();
     this.ocean = null;
-    this.stats = { spray: 0, foam: 0, bubbles: 0, crowns: 0, tails: 0, surfSpray: 0 };
+    this.stats = { spray: 0, foam: 0, bubbles: 0, crowns: 0, tails: 0, surfSpray: 0, surfBubbles: 0, surfAeration: 0 };
   }
 
   resetStats() {
@@ -275,6 +281,8 @@ export class ParticleFX {
     this.stats.crowns = 0;
     this.stats.tails = 0;
     this.stats.surfSpray = 0;
+    this.stats.surfBubbles = 0;
+    this.stats.surfAeration = 0;
   }
 
   /** Local water velocity at a spawn point, used to advect droplets/foam. */
@@ -346,6 +354,52 @@ export class ParticleFX {
       });
     }
     this.stats.surfSpray += n;
+  }
+
+  /** Subsurface bubble plume under a breaking crest. */
+  surfBubbleBurst(x, surfaceY, z, depth, strength) {
+    const n = strength > 0.55 ? 2 : 1;
+    const c = colorTint(0xb6f1e2, 0.05);
+    for (let i = 0; i < n; i++) {
+      this.surfBubbles.spawn({
+        x: x + (Math.random() - 0.5) * 0.9,
+        y: surfaceY - 0.3 - Math.random() * depth,
+        z: z + (Math.random() - 0.5) * 0.9,
+        vx: (Math.random() - 0.5) * 0.16,
+        vy: 0.18 + Math.random() * 0.35,
+        vz: (Math.random() - 0.5) * 0.16,
+        life: 2.4 + Math.random() * 3.0,
+        size: 0.28 + Math.random() * 0.3,
+        drag: 0.2,
+        gravity: -0.02,
+        wobble: 0.12,
+        alpha: 0.8 + strength * 0.2,
+        r: c.r,
+        g: c.g,
+        b: c.b,
+      });
+    }
+    this.stats.surfBubbles += n;
+    // A soft aeration puff makes the plume read as turbid water rather than
+    // a handful of isolated rings.
+    this.surf.spawn({
+      x: x + (Math.random() - 0.5) * 2.4,
+      y: surfaceY - 0.6 - Math.random() * 1.6,
+      z: z + (Math.random() - 0.5) * 2.4,
+      vx: (Math.random() - 0.5) * 0.18,
+      vy: 0.08 + Math.random() * 0.16,
+      vz: (Math.random() - 0.5) * 0.18,
+      life: 2.4 + Math.random() * 1.8,
+      size: 1.2 + Math.random() * 1.6,
+      drag: 0.5,
+      gravity: -0.01,
+      wobble: 0.04,
+      alpha: 0.07 + strength * 0.08,
+      r: 0.62,
+      g: 0.88,
+      b: 0.92,
+    });
+    this.stats.surfAeration++;
   }
 
   wakeTrail(x, z, surfaceY, strength, dirX, dirZ, width = 1.0) {
@@ -681,6 +735,7 @@ export class ParticleFX {
     this.bubbles.update(dt, camera, fogColor, fogDensity, current);
     this.foam.update(dt, camera, fogColor, fogDensity, current);
     this.surf.update(dt, camera, fogColor, fogDensity, current);
+    this.surfBubbles.update(dt, camera, fogColor, fogDensity, current);
   }
 }
 
