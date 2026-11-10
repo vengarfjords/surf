@@ -364,7 +364,10 @@ export class Hull {
     const speedFade = 1 - cfg.lungSpeedFade * clamp(dolphin.speed / 8, 0, 1);
     const lungFraction =
       cfg.lungFraction * speedFade * Math.exp(-centerDepth / cfg.lungDepthScale);
-    const lungForce = RHO * movement.gravity * this.volume * lungFraction;
+    // No displaced water, no buoyancy: fade the lung term out as the hull
+    // leaves the surface instead of letting it launch the animal clear.
+    const lungSubmersion = clamp(wetFraction / 0.55, 0, 1);
+    const lungForce = RHO * movement.gravity * this.volume * lungFraction * lungSubmersion;
     this.force.y += lungForce;
     this.result.lungForce = lungForce;
 
