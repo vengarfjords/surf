@@ -253,7 +253,240 @@ export class ParticleFX {
       additive: true,
       opacity: 0.7,
     });
+    this.foam = new CPUParticles(scene, 1000, {
+      softness: 0.55,
+      additive: false,
+      opacity: 0.55,
+    });
     this.tmp = new THREE.Color();
+    this.ocean = null;
+    this.stats = { spray: 0, foam: 0, bubbles: 0, crowns: 0, tails: 0 };
+  }
+
+  resetStats() {
+    this.stats.spray = 0;
+    this.stats.foam = 0;
+    this.stats.bubbles = 0;
+    this.stats.crowns = 0;
+    this.stats.tails = 0;
+  }
+
+  /** Local water velocity at a spawn point, used to advect droplets/foam. */
+  waterVel(x, y, z, scale = 0.55) {
+    if (!this.ocean) return null;
+    const s = this.ocean.water.sampleForForces(x, y, z, this._waterSample || (this._waterSample = {}));
+    return {
+      x: s.velocityX * scale,
+      y: s.velocityY * scale,
+      z: s.velocityZ * scale,
+      height: s.height,
+      depth: s.depth,
+    };
+  }
+
+  _foamParticle(x, y, z, vx, vy, vz, size, life, alpha) {
+    const water = this.waterVel(x, y, z, 0.5);
+    this.foam.spawn({
+      x,
+      y,
+      z,
+      vx: vx + (water ? water.x : 0),
+      vy: vy + (water ? water.y : 0),
+      vz: vz + (water ? water.z : 0),
+      life,
+      size,
+      drag: 0.55,
+      gravity: -0.03,
+      wobble: 0.03,
+      alpha,
+      r: 0.86,
+      g: 0.94,
+      b: 0.91,
+    });
+    this.stats.foam++;
+  }
+
+  wakeTrail(x, z, surfaceY, strength, dirX, dirZ, width = 1.0) {
+    if (strength <= 0.01) return;
+    const count = clamp(Math.round(1 + strength * 1.4), 1, 2);
+    for (let i = 0; i < count; i++) {
+      const side = (Math.random() - 0.5) * width;
+      const px = x + Math.cos(Math.atan2(dirZ, dirX) + Math.PI * 0.5) * side;
+      const pz = z + Math.sin(Math.atan2(dirZ, dirX) + Math.PI * 0.5) * side;
+      this._foamParticle(
+        px,
+        surfaceY + 0.03 + Math.random() * 0.08,
+        pz,
+        -dirX * 0.35 + side * 0.4,
+        0.06 + Math.random() * 0.18,
+        -dirZ * 0.35 + side * 0.4,
+        0.18 + Math.random() * 0.5,
+        1.8 + Math.random() * 2.2,
+        0.12 + strength * 0.18
+      );
+    }
+  }
+
+  bowWave(x, z, surfaceY, strength, rightX, rightZ, dirX, dirZ) {
+    if (strength <= 0.02) return;
+    const count = clamp(Math.round(1 + strength * 3), 1, 4);
+    for (let i = 0; i < count; i++) {
+      const side = i % 2 === 0 ? 1 : -1;
+      const px = x + rightX * side * (0.35 + Math.random() * 0.45);
+      const pz = z + rightZ * side * (0.35 + Math.random() * 0.45);
+      this._foamParticle(
+        px,
+        surfaceY + 0.04,
+        pz,
+        rightX * side * (0.4 + strength * 0.7) + dirX * 0.3,
+        0.2 + strength * 0.35,
+        rightZ * side * (0.4 + strength * 0.7) + dirZ * 0.3,
+        0.16 + Math.random() * 0.38,
+        1.2 + Math.random() * 1.5,
+        0.16 + strength * 0.22
+      );
+    }
+  }
+
+  tailBoil(x, z, surfaceY, strength, dirX, dirZ, stroke) {
+    if (strength <= 0.02) return;
+    const count = clamp(Math.round(1 + strength * 2.5), 1, 4);
+    const side = Math.sin(stroke) > 0 ? 1 : -1;
+    for (let i = 0; i < count; i++) {
+      this._foamParticle(
+        x + (Math.random() - 0.5) * 0.8,
+        surfaceY + 0.02,
+        z + (Math.random() - 0.5) * 0.8,
+        -dirX * 0.5 + (Math.random() - 0.5) * 0.9,
+        0.25 + Math.random() * 0.55,
+        -dirZ * 0.5 + (Math.random() - 0.5) * 0.9,
+        0.2 + Math.random() * 0.55,
+        1.6 + Math.random() * 2.4,
+        (0.1 + strength * 0.2) * (side > 0 ? 1 : 0.75)
+      );
+    }
+  }
+
+  spraySheet(points, intensity, vx, vy, vz) {
+    const n = clamp(Math.round(10 + intensity * 30), 8, 70);
+    for (let i = 0; i < n; i++) {
+      const p = points[i % points.length];
+      const a = Math.random() * Math.PI * 2;
+      const out = 0.8 + Math.random() * 2.6 * intensity;
+      const water = this.waterVel(p.x, p.y, p.z, 0.4);
+      this.splash.spawn({
+        x: p.x + (Math.random() - 0.5) * 0.7,
+        y: p.y + (Math.random() - 0.5) * 0.7,
+        z: p.z + (Math.random() - 0.5) * 0.7,
+        vx: Math.cos(a) * out + vx * 0.35 + (water ? water.x : 0),
+        vy: (1.2 + Math.random() * 3.8) * intensity + vy * 0.22 + (water ? water.y : 0),
+        vz: Math.sin(a) * out + vz * 0.35 + (water ? water.z : 0),
+        life: 0.55 + Math.random() * 1.2,
+        size: 0.05 + Math.random() * 0.25,
+        drag: 0.35,
+        gravity: 7.5,
+        alpha: 0.55 + Math.random() * 0.45,
+        r: 0.82,
+        g: 0.94,
+        b: 0.9,
+      });
+      this.stats.spray++;
+    }
+    for (let i = 0; i < n * 0.32; i++) {
+      const p = points[i % points.length];
+      this._foamParticle(
+        p.x + (Math.random() - 0.5) * 1.2,
+        p.y + (Math.random() - 0.5) * 0.6,
+        p.z + (Math.random() - 0.5) * 1.2,
+        (Math.random() - 0.5) * 1.4,
+        (0.2 + Math.random() * 1.0) * intensity,
+        (Math.random() - 0.5) * 1.4,
+        0.2 + Math.random() * 0.55,
+        1.8 + Math.random() * 2.8,
+        0.12 + intensity * 0.16
+      );
+    }
+  }
+
+  splashCrown(x, y, z, intensity, dirX, dirZ) {
+    const n = clamp(Math.round(14 + intensity * 38), 12, 80);
+    const water = this.waterVel(x, y, z, 0.5);
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + Math.random() * 0.12;
+      const out = (1.0 + Math.random() * 2.8) * intensity;
+      this.splash.spawn({
+        x: x + Math.cos(a) * 0.45,
+        y: y + 0.08 + Math.random() * 0.2,
+        z: z + Math.sin(a) * 0.45,
+        vx: Math.cos(a) * out + dirX * 0.35 + (water ? water.x : 0),
+        vy: (1.6 + Math.random() * 4.0) * intensity + (water ? water.y : 0),
+        vz: Math.sin(a) * out + dirZ * 0.35 + (water ? water.z : 0),
+        life: 0.65 + Math.random() * 1.4,
+        size: 0.06 + Math.random() * 0.3,
+        drag: 0.3,
+        gravity: 7.5,
+        alpha: 0.55 + Math.random() * 0.45,
+        r: 0.82,
+        g: 0.94,
+        b: 0.9,
+      });
+      this.stats.spray++;
+    }
+    // Crown foam ring, slightly larger and longer-lived.
+    for (let i = 0; i < n * 0.38; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = 0.5 + Math.random() * 1.6 * intensity;
+      this._foamParticle(
+        x + Math.cos(a) * r,
+        y + 0.03,
+        z + Math.sin(a) * r,
+        Math.cos(a) * (0.2 + Math.random() * 0.6),
+        0.12 + Math.random() * 0.4,
+        Math.sin(a) * (0.2 + Math.random() * 0.6),
+        0.22 + Math.random() * 0.6,
+        2.4 + Math.random() * 3.5,
+        0.16 + intensity * 0.12
+      );
+    }
+    this.stats.crowns++;
+  }
+
+  tailSlap(x, y, z, power, dirX, dirZ) {
+    const n = clamp(Math.round(12 + power * 35), 8, 70);
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      this.splash.spawn({
+        x: x + (Math.random() - 0.5) * 1.4,
+        y: y + 0.05,
+        z: z + (Math.random() - 0.5) * 1.4,
+        vx: Math.cos(a) * (0.8 + Math.random() * 2.2) * power + dirX * 0.25,
+        vy: (1.2 + Math.random() * 3.4) * power,
+        vz: Math.sin(a) * (0.8 + Math.random() * 2.2) * power + dirZ * 0.25,
+        life: 0.5 + Math.random() * 1.1,
+        size: 0.05 + Math.random() * 0.26,
+        drag: 0.4,
+        gravity: 7.5,
+        alpha: 0.5 + Math.random() * 0.45,
+        r: 0.82,
+        g: 0.94,
+        b: 0.9,
+      });
+      this.stats.spray++;
+    }
+    for (let i = 0; i < n * 0.6; i++) {
+      this._foamParticle(
+        x + (Math.random() - 0.5) * 2.2,
+        y + 0.02,
+        z + (Math.random() - 0.5) * 2.2,
+        (Math.random() - 0.5) * 1.4,
+        0.1 + Math.random() * 0.4,
+        (Math.random() - 0.5) * 1.4,
+        0.25 + Math.random() * 0.7,
+        2.5 + Math.random() * 3.0,
+        0.14 + power * 0.12
+      );
+    }
+    this.stats.tails++;
   }
 
   sandPlume(x, z, amount, radius, surfaceY) {
@@ -331,6 +564,7 @@ export class ParticleFX {
   }
 
   bubbleBurst(x, y, z, count = 6, spread = 0.4, rise = 0.7) {
+    this.stats.bubbles += count;
     for (let i = 0; i < count; i++) {
       const c = colorTint(0xb6f1e2, 0.05);
       this.bubbles.spawn({
@@ -403,6 +637,7 @@ export class ParticleFX {
     this.sediment.update(dt, camera, fogColor, fogDensity, current);
     this.splash.update(dt, camera, fogColor, fogDensity, current);
     this.bubbles.update(dt, camera, fogColor, fogDensity, current);
+    this.foam.update(dt, camera, fogColor, fogDensity, current);
   }
 }
 

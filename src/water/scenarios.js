@@ -8,7 +8,7 @@ import { TUNING } from "../config.js";
  * All scenarios use the deterministic spectrum (TUNING.water.seed), so a reload
  * reproduces the same set/face positions for a given sim time.
  */
-export function createScenarios({ ocean, dolphin, input, water }) {
+export function createScenarios({ ocean, dolphin, input, water, effects }) {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const dx = () => water.peak.dx;
   const dz = () => water.peak.dz;
@@ -342,6 +342,67 @@ export function createScenarios({ ocean, dolphin, input, water }) {
         netAccelMax: Math.max(...rows.map((r) => r.netA)),
         samples: rows,
       };
+    },
+
+    /** Scenario 5: breach/re-entry on a face vs a trough. */
+    async breachCompare(name = "moderate") {
+      const saved = saveState();
+      const savedPreset = TUNING.water.preset;
+      await preset(name);
+      const dirX = water.peak.dx;
+      const dirZ = water.peak.dz;
+      const dirYaw = Math.atan2(dirX, dirZ);
+      const find = (wantFace) => {
+        let best = null;
+        for (let gx = -80; gx <= 80; gx += 4) {
+          for (let gz = -80; gz <= 80; gz += 4) {
+            const x = 120 + gx;
+            const z = 40 + gz;
+            const s = water.sampleSurface(x, z, {});
+            const score = wantFace ? s.height - s.slopeX * dirX * 4 : -s.height;
+            if (!best || score > best.score) best = { x, z, s, score };
+          }
+        }
+        return best;
+      };
+      const run = async (spot) => {
+        effects.resetStats();
+        dolphin.position.set(spot.x, spot.s.height - 2.2, spot.z);
+        dolphin.yaw = dolphin.targetYaw = dirYaw;
+        dolphin.pitch = dolphin.targetPitch = 0.9;
+        dolphin.velocity.set(dirX * 12, 2.0, dirZ * 12);
+        input.keys.add("KeyW");
+        input.keys.add("ShiftLeft");
+        let maxRel = -99;
+        for (let i = 0; i < 34; i++) {
+          await sleep(120);
+          const surf = ocean.getWaterHeight(dolphin.position.x, dolphin.position.z);
+          maxRel = Math.max(maxRel, dolphin.position.y - surf);
+        }
+        input.keys.delete("KeyW");
+        input.keys.delete("ShiftLeft");
+        // Let the re-entry/ring-wave effects finish.
+        await sleep(1400);
+        return {
+          maxRel,
+          breaches: dolphin.breachCount,
+          spray: effects.stats.spray,
+          foam: effects.stats.foam,
+          bubbles: effects.stats.bubbles,
+          crowns: effects.stats.crowns,
+          tails: effects.stats.tails,
+        };
+      };
+      const face = find(true);
+      const trough = find(false);
+      try {
+        const faceRun = await run(face);
+        const troughRun = await run(trough);
+        return { face: faceRun, trough: troughRun };
+      } finally {
+        restoreState(saved);
+        await preset(savedPreset, 300);
+      }
     },
 
     restore: () => {

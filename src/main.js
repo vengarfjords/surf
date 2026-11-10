@@ -61,6 +61,7 @@ async function boot() {
   const fish = new FishSchools(scene);
   const jellyfish = new Jellyfish(scene);
   const effects = new ParticleFX(scene);
+  effects.ocean = ocean;
   seabed.sim.onSediment = (event) => {
     const surface = seabed.getSurfaceHeight(event.x, event.z);
     effects.sandPlume(event.x, event.z, event.amount, event.radius, surface);
@@ -82,7 +83,7 @@ async function boot() {
   const cameraRig = new CameraRig(camera, ocean);
   const post = new Post(renderer, scene, camera);
   const waterDebug = new WaterDebug(scene, ocean, dolphin);
-  const scenarios = createScenarios({ ocean, dolphin, input, water: ocean.water });
+  const scenarios = createScenarios({ ocean, dolphin, input, water: ocean.water, effects });
   const hidden = new HiddenThings(scene, seabed.sim, (main, sub) => hud.toast(main, sub));
 
   let started = false;

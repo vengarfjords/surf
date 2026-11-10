@@ -282,9 +282,18 @@ export class Dolphin {
     this.airborne = false;
     this.wasAbove = false;
     this.surfaceCooldown = 0;
+    this.surfaceFxCooldown = 0;
     this.bubbleClock = 0;
     this.plowClock = 0;
     this.glideClock = 0;
+    this.wakeClock = 0;
+    this.bowClock = 0;
+    this.tailBoilClock = 0;
+    this.tailSlapClock = 0;
+    this.lastFlukeAbove = null;
+    this.wakeA = new THREE.Vector3();
+    this.wakeB = new THREE.Vector3();
+    this.wakeC = new THREE.Vector3();
     this.breachCount = 0;
     this.loaded = false;
     this.model = null;
@@ -883,6 +892,7 @@ export class Dolphin {
     const noseAbove = noseWorld.y > noseWater.height - 0.05;
     this.contact.surface = !centerAbove || !noseAbove;
     this.surfaceCooldown -= dt;
+    this.surfaceFxCooldown -= dt;
     const surfaceSpeed = Math.abs(this.velocity.y) + this.speed * 0.25;
 
     if (!this.wasAbove && centerAbove) {
@@ -896,7 +906,22 @@ export class Dolphin {
       const breachPower = clamp(Math.abs(this.velocity.y) * 0.38 + exitSpeed * 0.08, 0.2, 2.1);
       this.surfaceImpulseAll(ocean, centerWater, breachPower);
       effects.splashBurst(this.position.x, centerHeight + 0.12, this.position.z, breachPower, this.velocity.x, this.velocity.z);
-      effects.bubbleBurst(this.position.x, this.position.y, this.position.z, 12, 0.8, 0.4);
+      // Body-shaped sheeting: the whole animal leaves the water, not a point.
+      this.wakeA.copy(this.bodyParts[0].offset).applyQuaternion(this.orientation).add(this.position);
+      this.wakeB.copy(this.bodyParts[1].offset).applyQuaternion(this.orientation).add(this.position);
+      this.wakeC.copy(this.bodyParts[2].offset).applyQuaternion(this.orientation).add(this.position);
+      if (breachPower > 0.55 && this.surfaceFxCooldown <= 0) {
+        effects.spraySheet(
+          [this.wakeA, this.wakeB, this.wakeC],
+          clamp(breachPower * 0.7, 0.2, 1.2),
+          this.velocity.x,
+          this.velocity.y,
+          this.velocity.z
+        );
+        effects.wakeTrail(this.position.x, this.position.z, centerHeight, 0.5, this.forward.x, this.forward.z, 1.6);
+        this.surfaceFxCooldown = 0.35;
+      }
+      effects.bubbleBurst(this.position.x, this.position.y, this.position.z, 12, 0.9, 0.45);
       this.impact = Math.max(this.impact, 0.32 + breachPower * 0.2);
       this.wetness = 1;
       this.breachCount++;
@@ -906,7 +931,22 @@ export class Dolphin {
       const entry = clamp(Math.abs(this.velocity.y) * 0.33 + this.speed * 0.03, 0.2, 1.5);
       this.surfaceImpulseAll(ocean, centerWater, entry);
       effects.splashBurst(this.position.x, centerHeight + 0.08, this.position.z, entry, this.velocity.x, this.velocity.z);
-      effects.bubbleBurst(this.position.x, this.position.y - 0.2, this.position.z, 18, 1.2, 0.6);
+      if (entry > 0.5 && this.surfaceFxCooldown <= 0) {
+        effects.splashCrown(this.position.x, centerHeight + 0.04, this.position.z, entry, this.velocity.x, this.velocity.z);
+        for (let i = 0; i < 2; i++) {
+          effects.wakeTrail(
+            this.position.x + (Math.random() - 0.5) * 2.2,
+            this.position.z + (Math.random() - 0.5) * 2.2,
+            centerHeight,
+            entry * 0.7,
+            this.forward.x,
+            this.forward.z,
+            1.8
+          );
+        }
+        this.surfaceFxCooldown = 0.45;
+      }
+      effects.bubbleBurst(this.position.x, this.position.y - 0.2, this.position.z, 22, 1.4, 0.7);
       // Water entry takes energy, but keep most of the horizontal momentum so
       // a long leap can skip or carry through instead of stopping dead.
       this.velocity.x *= 0.92;
@@ -937,6 +977,62 @@ export class Dolphin {
         this.wetness = Math.max(this.wetness, 0.22);
       }
     }
+
+    // --- Near-surface wake, bow wave and tail boil ----------------------
+    // Strong at 0.3 m, nearly gone by 2 m.
+    const depthToSurface = Math.max(0, centerHeight - this.position.y);
+    const surfaceFade = 1 - smoothstep(0.25, 2.0, depthToSurface);
+    if (!centerAbove && surfaceFade > 0.01 && this.speed > 0.8) {
+      const strength = surfaceFade * clamp(this.speed / 9.5, 0, 1.4);
+      const bow = this.wakeA.copy(this.bodyParts[0].offset).applyQuaternion(this.orientation).add(this.position);
+      const tail = this.wakeB.copy(this.bodyParts[2].offset).applyQuaternion(this.orientation).add(this.position);
+      this.bowClock -= dt;
+      if (this.bowClock <= 0) {
+        ocean.addSurfaceContact(bow.x, bow.z, 0.055 * strength, 0.7);
+        effects.bowWave(bow.x, bow.z, centerHeight, strength, this.right.x, this.right.z, this.forward.x, this.forward.z);
+        this.bowClock = 0.075;
+      }
+      this.wakeClock -= dt;
+      if (this.wakeClock <= 0) {
+        ocean.addSurfaceContact(tail.x, tail.z, -0.05 * strength, 1.15);
+        effects.wakeTrail(tail.x, tail.z, centerHeight, strength, this.forward.x, this.forward.z, 1.1);
+        this.wakeClock = 0.075;
+      }
+      this.tailBoilClock -= dt;
+      if (this.tailBoilClock <= 0) {
+        effects.tailBoil(
+          tail.x,
+          tail.z,
+          centerHeight,
+          strength * 1.1,
+          this.forward.x,
+          this.forward.z,
+          this.tailPhase
+        );
+        this.tailBoilClock = 0.16;
+      }
+    }
+
+    // Tail slap: trigger on the fluke actually crossing the surface downward.
+    // This is more reliable than sampling a particular tail phase.
+    this.tailSlapClock -= dt;
+    const fluke = this.wakeC.copy(this.spine.joints[SPINE_Z.length - 1]);
+    const flukeAbove = fluke.y > centerHeight;
+    if (
+      this.lastFlukeAbove === true &&
+      !flukeAbove &&
+      this.tailSlapClock <= 0 &&
+      this.speed > 1.0
+    ) {
+      const power = clamp(0.3 + this.speed / 12 + this.tailHeave * 1.4, 0.2, 1.2);
+      if (power > 0.45) {
+        effects.tailSlap(fluke.x, centerHeight + 0.02, fluke.z, power, this.forward.x, this.forward.z);
+        ocean.surfaceImpulse(fluke.x, fluke.z, 0.18 * power, 1.1);
+        this.impact = Math.max(this.impact, 0.22);
+      }
+      this.tailSlapClock = 0.7;
+    }
+    this.lastFlukeAbove = flukeAbove;
 
     // Remove the residual forward acceleration that can push the body back
     // through the surface while hovering.
