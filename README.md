@@ -81,6 +81,16 @@ The full debug surface is available as `window.OCEAN` (ocean, seabed, dolphin, c
 - **Performance budget** — the reef and seagrass are split into spatial chunks, frustum-culled and faded out at 120 m / 100 m (both beyond readable fog), the composer is capped at roughly 0.6 megapixels, bloom runs at quarter resolution, the shaft march shortens to ten steps and skips when the sun is behind the camera, branch and grass geometry use near-field LODs, and the audio graph is built during the loading card. The perf readout reports **0.75 s rolling averages** per layer; draw calls and triangles accumulate the scene and every composer pass. The recenter worker removes the previous 200-300 ms sand stalls. M5 headless measurements (Metal ANGLE, 1600×900) are **60 fps (16.67 ms, vsync)** with **GPU ~6.7–13.2 ms**, hull/dolphin CPU ~1.7–6.7 ms, ocean ~0.1–0.2 ms, seabed ~0.2–0.4 ms and effects ~0.1 ms. The underwater Snell view is ~8.6 ms, the waterline view ~9.5 ms and the above-water breach ~7.1 ms. M4’s surface-swim measurement with ~240 live foam and ~250 live splash particles was ~7.4 ms GPU and 0.1–0.4 ms effects CPU. A conservative **dynamic quality governor** (toggle in T) steps the composer scale down by 0.05 after sustained >18.5 ms frames, never below `dynamicQualityMinScale` (0.45), with a 2.5 s cooldown so it cannot hunt. CPU/GPU surface parity over 24 random points including the surf bank is **mean 0.97–1.31 cm, p95 2.1–5.4 cm, max 7.2–8.7 cm**; in deep water the residual is sub-centimetre, and at zero chop it is 0.1 mm. The water mesh is 56,320 vertices / 112,128 triangles.
 - **Film look** — a custom 2000s camcorder pass with lens softness, chromatic aberration, highlight halation, grain, chroma smear, quantised channels, macroblock noise, vignette, scanline smear, slow iris hunting, white-balance drift and optional water droplets. The shelf water is vivid blue in open water and green-teal in the shallows, with suspended particulate, moving surface sheen and uneven sunlight.
 
+### Post-M6 measurements
+
+Metal ANGLE, 1600×900, render scale 0.6, 0.75 s rolling averages. The host was on battery and the display link capped rAF at **30 Hz** during this pass; the GPU/CPU figures are the workload, not the cap. Earlier runs at the same settings on a 60 Hz link measured **60.2 fps / p95 16.7 ms / 0 frames >20 ms**.
+
+| viewpoint | frame | GPU | ocean | seabed | dolphin | effects | draws | triangles |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| above-water surf | 33.3 ms | 6.8 ms | 0.60 ms | 0.47 ms | 2.21 ms | 0.07 ms | 24 | 788,624 |
+| waterline surf | 33.3 ms | 9.6 ms | 0.60 ms | 0.43 ms | — (frozen) | 0.09 ms | 24 | 788,624 |
+| underwater surf | 33.3 ms | 8.6 ms | 0.60 ms | 0.47 ms | 2.33 ms | 0.11 ms | 201 | 858,048 |
+
 ## Project layout
 
 ```text
