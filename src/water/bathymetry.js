@@ -10,9 +10,9 @@ import { seabedHeight } from "../utils.js";
  */
 export function makeBathymetry(size = 256) {
   const extent = TUNING.world.size;
-  const maxDepth = 60;
+  const maxDepth = 30;
   const data = new Float32Array(size * size);
-  const pixels = new Uint16Array(size * size * 4);
+  const pixels = new Uint8Array(size * size * 4);
   let p = 0;
   for (let j = 0; j < size; j++) {
     const z = ((j + 0.5) / size - 0.5) * extent;
@@ -20,21 +20,15 @@ export function makeBathymetry(size = 256) {
       const x = ((i + 0.5) / size - 0.5) * extent;
       const depth = Math.max(0, -seabedHeight(x, z));
       data[j * size + i] = depth;
-      const norm = Math.min(1, depth / maxDepth);
-      pixels[p++] = THREE.DataUtils.toHalfFloat(norm);
-      pixels[p++] = 0;
-      pixels[p++] = 0;
-      pixels[p++] = THREE.DataUtils.toHalfFloat(1);
+      const v = Math.round(Math.min(1, depth / maxDepth) * 255);
+      pixels[p++] = v;
+      pixels[p++] = v;
+      pixels[p++] = 255;
+      pixels[p++] = 255;
     }
   }
 
-  const texture = new THREE.DataTexture(
-    pixels,
-    size,
-    size,
-    THREE.RGBAFormat,
-    THREE.HalfFloatType
-  );
+  const texture = new THREE.DataTexture(pixels, size, size, THREE.RGBAFormat);
   texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;

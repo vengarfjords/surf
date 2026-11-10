@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { PALETTE, TUNING } from "./config.js";
+import { PALETTE } from "./config.js";
 
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
@@ -82,32 +82,6 @@ export function fbm(x, y, octaves = 4, lacunarity = 2.02, gain = 0.5) {
 }
 
 /**
- * Reef focus multiplier for the big-wave bank. The swell grows from the open
- * shelf value to `surfFocus` at the bank centre with a Gaussian footprint.
- * Shared by the CPU field, foam field and shader uniforms.
- */
-export function surfFocusAt(x, z, cfg) {
-  const dx = x - cfg.surfZoneX;
-  const dz = z - cfg.surfZoneZ;
-  const wx = Math.cos(cfg.swellDirection);
-  const wz = Math.sin(cfg.swellDirection);
-  const cross = dx * wx + dz * wz;
-  const along = -dx * wz + dz * wx;
-  const crossOff = cross - cfg.surfRidgeCross;
-  const width = Math.max(1, cfg.surfFocusWidth);
-  const length = Math.max(1, cfg.surfFocusRadius);
-  // Keep the amplified break on the seaward face of the ridge; the lee side
-  // only gets a quarter of the focus so the wave does not break twice.
-  const gate = 1 - 0.9 * smoothstep(0, 40, crossOff);
-  return (
-    1 +
-    (cfg.surfFocus - 1) *
-      Math.exp(-(crossOff * crossOff) / (width * width) - (along * along) / (length * length)) *
-      gate
-  );
-}
-
-/**
  * Deterministic neritic bathymetry. Shallow eelgrass flats, sand bars, and
  * deeper tidal channels. Shared by the renderer, collision, sand sim and reef
  * placement, so the world stays coherent everywhere.
@@ -126,24 +100,11 @@ export function seabedHeight(x, z) {
     Math.exp(-((x - 2) * (x - 2) + (z - 26) * (z - 26)) / 4800) * 2.4 +
     Math.exp(-((x + 34) * (x + 34) + (z - 78) * (z - 78)) / 9500) * 1.35;
 
-  // A directional deep-water big-wave ridge, aligned across the dominant
-  // swell. The seaward face rises out of a ~45 m basin; the lee side stays
-  // deep so the swell breaks once, along one long wall, instead of ringing a
-  // circular shoal. The ridge follows the surf-arena config.
-  const swx = Math.cos(TUNING.water.swellDirection);
-  const swz = Math.sin(TUNING.water.swellDirection);
-  const dsx = x - TUNING.water.surfZoneX;
-  const dsz = z - TUNING.water.surfZoneZ;
-  const sCross = dsx * swx + dsz * swz;
-  const sAlong = -dsx * swz + dsz * swx;
-  const sCrossOff = sCross - TUNING.water.surfRidgeCross;
-  const ridgeWidth = sCrossOff < 0 ? 30 : 20;
-  const surfRidge =
-    Math.exp(-(sCrossOff * sCrossOff) / (2 * ridgeWidth * ridgeWidth)) *
-    Math.exp(-(sAlong * sAlong) / (2 * 150 * 150)) *
-    48;
-  const surfBasin =
-    Math.exp(-((sCross + 120) * (sCross + 120) + sAlong * sAlong) / (2 * 120 * 120)) * 38;
+  // A broad surf bank east of the opening reef. It rises from ~10 m to ~3 m
+  // over roughly 400 m, which is where the M3 swell shoals, steepens and
+  // breaks. Shared by the sand mesh, reef placement, wave field and physics.
+  const surfBank =
+    Math.exp(-((x - 260) * (x - 260) + (z - 140) * (z - 140)) / 28800) * 8.2;
 
   // Patchy reef shelf outcrops, slight raised humps.
   const shelf = Math.max(0, fbm(x * 0.0072 + 51.1, z * 0.0072 + 4.4, 2) - 0.5) * 2.7;
@@ -152,16 +113,7 @@ export function seabedHeight(x, z) {
   const openWater = smoothstep(1120, 1510, radius) * 14;
 
   const depth =
-    7.15 +
-    broad * 6.4 +
-    mid * 2.1 +
-    fine * 0.6 +
-    channel +
-    surfBasin -
-    bar -
-    shelf -
-    surfRidge +
-    openWater;
+    7.15 + broad * 6.4 + mid * 2.1 + fine * 0.6 + channel - bar - shelf - surfBank + openWater;
   return -Math.max(2.55, depth);
 }
 

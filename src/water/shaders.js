@@ -33,15 +33,6 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     uniform float uShoalStrength;
     uniform float uBreakRatio;
     uniform float uBreakSoftness;
-    uniform vec2 uReefCenter;
-    uniform float uReefFocus;
-    uniform float uReefFocusWidth2;
-    uniform float uReefFocusAlong2;
-    uniform float uReefRidgeCross;
-    uniform vec2 uReefWaveDir;
-    uniform float uSurfWindFocus;
-    uniform float uSwellFraction;
-    uniform float uWaveFocus[MAX_WAVES];
     uniform float uHs;
     uniform float uPeakKx;
     uniform float uPeakKz;
@@ -80,17 +71,6 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       return texture2D(uSimState, uv).rg;
     }
 
-    float reefFocus(vec2 p) {
-      vec2 d = p - uReefCenter;
-      float cross = dot(d, uReefWaveDir);
-      float along = dot(d, vec2(-uReefWaveDir.y, uReefWaveDir.x));
-      float crossOff = cross - uReefRidgeCross;
-      float gate = 1.0 - 0.9 * smoothstep(0.0, 40.0, crossOff);
-      return 1.0 + (uReefFocus - 1.0) * exp(
-        -(crossOff * crossOff) / uReefFocusWidth2 - (along * along) / uReefFocusAlong2
-      ) * gate;
-    }
-
     void main() {
       vec3 base = vec3(position.x + uCenter.x, 0.0, position.z + uCenter.y);
 
@@ -99,19 +79,14 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       float ratio = 1.0;
       float shoal = 1.0;
       float breakMask = 0.0;
-      float focus = reefFocus(base.xz);
-      float windFocus = 1.0 + (focus - 1.0) * uSurfWindFocus;
-      float focusHs = sqrt(
-        uSwellFraction * focus * focus + (1.0 - uSwellFraction) * windFocus * windFocus
-      );
       if (uDepthResponse > 0.5) {
         float x0 = max(1e-4, uPeakK * depth);
         ratio = clamp(1.0 / sqrt(tanh(x0)), 0.65, 4.5);
         float shoalRaw = clamp(pow(uShoalRef / depth, uShoalStrength), 0.5, 3.2);
-        float hsLocal = uHs * shoalRaw * focusHs;
+        float hsLocal = uHs * shoalRaw;
         breakMask = smoothstep(uBreakRatio - uBreakSoftness, uBreakRatio + uBreakSoftness, hsLocal / depth);
-        float cap = (uBreakRatio * depth) / max(0.3, uHs * focusHs);
-        shoal = min(shoalRaw, max(0.02, cap * 1.05));
+        float cap = (uBreakRatio * depth) / max(0.3, uHs);
+        shoal = min(shoalRaw, max(0.55, cap * 1.05));
       }
 
       float h = 0.0;
@@ -131,12 +106,11 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         float arg = kxL * base.x + kzL * base.z + w.w;
         float s = sin(arg);
         float c = cos(arg);
-        float wf = 1.0 + (focus - 1.0) * uWaveFocus[i];
-        float amp = w.z * shoal * wf;
+        float amp = w.z * shoal;
         h += amp * s;
         dhdx += amp * kxL * c;
         dhdz += amp * kzL * c;
-        float ha = w.z * shoal * uChop;
+        float ha = amp * uChop;
         // Horizontal displacement is Q*A*unitDirection*cos(theta). w.x/w.y
         // are kx/kz, so normalise them; using them directly adds a spurious
         // factor of k and makes the rendered surface disagree with the CPU.
@@ -152,7 +126,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       float peakArg = uPeakKx * ratio * base.x + uPeakKz * ratio * base.z + uPeakPhase;
       float lipPhase = peakArg - 0.55;
       float lipSin = sin(lipPhase);
-      float lipAmp = breakMask * uBreakerLip * uHs * shoal * focusHs;
+      float lipAmp = breakMask * uBreakerLip * uHs * shoal;
       float lip = lipAmp * max(0.0, lipSin) * max(0.0, lipSin);
       if (lipSin > 0.0) {
         float dLip = lipAmp * 2.0 * lipSin * cos(lipPhase);
@@ -219,7 +193,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       vWorld = world;
       vNormalW = n;
       vWaveHeight = h;
-      vCrest = clamp(h / max(0.25, uMaxCrest * focusHs * shoal), -1.0, 1.0);
+      vCrest = clamp(h / max(0.25, uMaxCrest), -1.0, 1.0);
       vJacobian = (1.0 + dxdx) * (1.0 + dzdz) - dxdz * dxdz;
       vDistance = length(world.xz - uCenter);
       vSlope = vec2(dhdx, dhdz);
@@ -231,7 +205,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       float bD = texture2D(uBathy, (base.xz + vec2(0.0, be)) / uBathyExtent + 0.5).r * uBathyMaxDepth;
       float bU = texture2D(uBathy, (base.xz - vec2(0.0, be)) / uBathyExtent + 0.5).r * uBathyMaxDepth;
       float tanBeta = length(vec2(bR - bL, bU - bD)) / (2.0 * be);
-      vXi = tanBeta / sqrt(max(0.01, (uHs * shoal * focusHs) / max(1.0, uPeakWavelength)));
+      vXi = tanBeta / sqrt(max(0.01, uHs / max(1.0, uPeakWavelength)));
 
       vBreak = breakMask;
       vShoal = shoal;
@@ -251,7 +225,7 @@ export const probeFragmentShader = /* glsl */ `
   precision highp float;
   varying float vWaveHeight;
   void main() {
-    float v = clamp((vWaveHeight + 48.0) / 96.0, 0.0, 1.0);
+    float v = clamp((vWaveHeight + 8.0) / 16.0, 0.0, 1.0);
     float q = floor(v * 65535.0 + 0.5);
     float hi = floor(q / 256.0);
     float lo = q - hi * 256.0;

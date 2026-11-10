@@ -1,5 +1,5 @@
 import { TUNING } from "../config.js";
-import { clamp, seabedHeight, smoothstep, surfFocusAt } from "../utils.js";
+import { clamp, seabedHeight, smoothstep } from "../utils.js";
 import { applyPreset, buildSpectrum } from "./spectrum.js";
 
 const G = 9.81;
@@ -49,7 +49,6 @@ export class WaveField {
     this.dirZ = new Float64Array(n);
     this.k = new Float64Array(n);
     this.phase = new Float64Array(n);
-    this.focusWeight = new Float64Array(n);
 
     for (let i = 0; i < n; i++) {
       const c = components[i];
@@ -61,10 +60,7 @@ export class WaveField {
       this.dirX[i] = c.dx;
       this.dirZ[i] = c.dz;
       this.k[i] = c.k;
-      this.focusWeight[i] = c.layer === 0 ? 1 : cfg.surfWindFocus;
     }
-    this.swellFraction =
-      stats.swellVariance / Math.max(1e-9, stats.swellVariance + stats.windVariance);
 
     // Dominant swell component: used for phase-speed and direction readouts.
     let peak = null;
@@ -86,19 +82,12 @@ export class WaveField {
   depthState(x, z, out = this._depthScratch) {
     const cfg = TUNING.water;
     const depth = this.bathy ? Math.max(0.3, this.bathy.sampleDepth(x, z)) : 18;
-    const focus = surfFocusAt(x, z, cfg);
-    const windFocus = 1 + (focus - 1) * cfg.surfWindFocus;
-    const focusHs = Math.sqrt(
-      this.swellFraction * focus * focus + (1 - this.swellFraction) * windFocus * windFocus
-    );
     if (!cfg.depthResponse) {
       out.depth = depth;
       out.ratio = 1;
       out.shoal = 1;
       out.shoalRaw = 1;
       out.breakMask = 0;
-      out.focus = 1;
-      out.focusHs = 1;
       out.x0 = this.peakK * depth;
       return out;
     }
@@ -108,24 +97,20 @@ export class WaveField {
     // in the shoaling band used here.
     const ratio = clamp(1 / Math.sqrt(Math.tanh(x0)), 0.65, 4.5);
     const shoalRaw = clamp(Math.pow(cfg.shoalReference / depth, cfg.shoalStrength), 0.5, 3.2);
-    const hsLocal = this.stats.height * shoalRaw * focusHs;
+    const hsLocal = this.stats.height * shoalRaw;
     const breakMask = smoothstep(
       cfg.breakRatio - cfg.breakSoftness,
       cfg.breakRatio + cfg.breakSoftness,
       hsLocal / depth
     );
-    // Once breaking, the height cannot keep growing; saturate near H/h. The
-    // focused (local) significant height is used, so the cap is meaningful
-    // for the big-wave bank; the low floor lets the wave decay on the reef.
-    const cap = (cfg.breakRatio * depth) / Math.max(0.3, this.stats.height * focusHs);
-    const shoal = Math.min(shoalRaw, Math.max(0.02, cap * 1.05));
+    // Once breaking, the height cannot keep growing; saturate near H/h.
+    const cap = (cfg.breakRatio * depth) / Math.max(0.3, this.stats.height);
+    const shoal = Math.min(shoalRaw, Math.max(0.55, cap * 1.05));
     out.depth = depth;
     out.ratio = ratio;
     out.shoal = shoal;
     out.shoalRaw = shoalRaw;
     out.breakMask = breakMask;
-    out.focus = focus;
-    out.focusHs = focusHs;
     out.x0 = x0;
     return out;
   }
@@ -218,8 +203,6 @@ export class WaveField {
     const ratio = stateP.ratio;
     const shoal = stateP.shoal;
     const breakMask = stateP.breakMask;
-    const focus = stateP.focus;
-    const focusHs = stateP.focusHs;
     const kx = this.kx;
     const kz = this.kz;
     const amp = this.amp;
@@ -235,12 +218,11 @@ export class WaveField {
       const arg = kx[i] * ratio * px + kz[i] * ratio * pz + phase[i];
       const s = Math.sin(arg);
       const c = Math.cos(arg);
-      const f = 1 + (focus - 1) * this.focusWeight[i];
-      const a = amp[i] * shoal * f;
+      const a = amp[i] * shoal;
       h += a * s;
       dhdx += a * kx[i] * ratio * c;
       dhdz += a * kz[i] * ratio * c;
-      const ha = amp[i] * shoal * q;
+      const ha = a * q;
       const kxL = kx[i] * ratio;
       const kzL = kz[i] * ratio;
       dDxdx -= ha * kxL * kxL * s;
@@ -253,8 +235,7 @@ export class WaveField {
     const peakArg = this.peakKx * ratio * px + this.peakKz * ratio * pz + this.peakPhaseNow;
     const lipPhase = peakArg - 0.55;
     const lipSin = Math.sin(lipPhase);
-    const lipAmp =
-      breakMask * TUNING.water.breakerLip * this.stats.height * shoal * focusHs;
+    const lipAmp = breakMask * TUNING.water.breakerLip * this.stats.height * shoal;
     const lip = lipAmp * Math.max(0, lipSin) ** 2;
     h += lip;
     if (lipSin > 0) {
@@ -320,18 +301,10 @@ export class WaveField {
     out.crest = crest;
     out.peakArg = peakArg;
     out.x0 = stateP.x0;
-    out.focus = focus;
-    out.focusHs = focusHs;
-    out.focusedHeight = this.stats.height * shoal * focusHs;
-    // Iribarren classification: spilling / plunging / surging. The focused
-    // local height makes the reef break more plunging than the open swell.
+    // Iribarren classification: spilling / plunging / surging.
     if (breakMask > 0.02 && this.bathy) {
       const tanBeta = this.bathy.sampleSlope(px, pz);
-      const xi =
-        tanBeta /
-        Math.sqrt(
-          Math.max(0.01, (this.stats.height * shoal * focusHs) / this.stats.peakWavelength)
-        );
+      const xi = tanBeta / Math.sqrt(Math.max(0.01, this.stats.height / this.stats.peakWavelength));
       out.xi = xi;
       out.breakerType = xi < 0.5 ? 0 : xi < 3.3 ? 1 : 2;
     } else {
@@ -363,8 +336,6 @@ export class WaveField {
     const ratio = surf.depthRatio;
     const depth = surf.depth;
     const shoal = surf.shoal;
-    const focus = surf.focus;
-    const focusHs = surf.focusHs;
     const kx = this.kx;
     const kz = this.kz;
     const k = this.k;
@@ -384,19 +355,18 @@ export class WaveField {
       const s = Math.sin(arg);
       const c = Math.cos(arg);
       const w = omega[i];
-      const f = 1 + (focus - 1) * this.focusWeight[i];
-      const a = amp[i] * shoal * f;
+      const a = amp[i] * shoal;
       const kh = Math.max(1e-4, kL * depth);
-      // Stable finite-depth factors. The naive cosh/sinh form with a clamped
-      // exp(-kh) blows up for the long-period big-wave field; this form stays
-      // bounded at the surface and decays with depth.
-      const e2 = Math.exp(-2 * kh);
-      const up = Math.exp(kL * depthBelowSurface);
-      const deep = Math.exp(-kL * (depthBelowSurface + 2 * depth));
-      const denom = Math.max(1e-6, 1 - e2);
-      const uF = (up + deep) / denom;
-      const wF = (up - deep) / denom;
-      const pF = (up + deep) / (1 + e2);
+      const ekh = Math.max(1e-6, Math.exp(-kh));
+      const sinhKh = (1 - ekh * ekh) / (2 * ekh);
+      const coshKh = (1 + ekh * ekh) / (2 * ekh);
+      const xArg = Math.min(50, kL * (depthBelowSurface + depth));
+      const ex = Math.exp(xArg);
+      const coshX = 0.5 * (ex + 1 / ex);
+      const sinhX = 0.5 * (ex - 1 / ex);
+      const uF = coshX / sinhKh;
+      const wF = sinhX / sinhKh;
+      const pF = coshX / coshKh;
       // eta = a sin(theta): u = omega a sin(theta), w = -omega a cos(theta).
       const horizontal = w * a * uF * s;
       vx += horizontal * this.dirX[i];
@@ -419,7 +389,6 @@ export class WaveField {
         surf.breakMask *
         TUNING.water.breakerJet *
         jetType *
-        smoothstep(0.35, 0.85, surf.crest) *
         Math.exp(depthBelowSurface / 1.5);
       vx += this.peak.dx * jet;
       vz += this.peak.dz * jet;
@@ -445,9 +414,6 @@ export class WaveField {
     out.turbulence = surf.turbulence;
     out.breakMask = surf.breakMask;
     out.shoal = shoal;
-    out.focus = focus;
-    out.focusHs = focusHs;
-    out.focusedHeight = this.stats.height * shoal * focusHs;
     out.depth = depth;
     out.phaseSpeed = surf.phaseSpeed;
     out.waveDirectionX = this.peak ? this.peak.dx : 1;
