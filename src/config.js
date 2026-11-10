@@ -240,7 +240,7 @@ export const TUNING = {
     // Rendering / foam.
     foamThreshold: 0.56,
     foamAmount: 0.9,
-    detailStrength: 0.4,
+    detailStrength: 0.3,
     // M3 depth response. The wave spectrum is evaluated with finite-depth
     // dispersion and Green's-law shoaling using the baked bathymetry; the
     // breaker is a saturated, aerated crest (a heightfield cannot overhang).

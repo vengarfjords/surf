@@ -564,6 +564,10 @@ export class Ocean {
           vec3 view = normalize(uCameraPos - vWorld);
           vec2 detail = detailSlope(vWorld.xz, vDistance);
           float microHeight = detailHeight(vWorld.xz, vDistance);
+          // Fade the horizontal ripple detail on steep big-wave faces; a 2D
+          // normal cascade stretched across a near-vertical face reads as
+          // vertical curtains, especially from underwater.
+          detail *= smoothstep(0.12, 0.55, abs(n.y));
           vec3 microN = normalize(vec3(n.x + detail.x * 0.28, n.y, n.z + detail.y * 0.28));
           if (microN.y < 0.0) microN = -microN;
 

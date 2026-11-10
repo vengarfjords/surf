@@ -151,6 +151,11 @@ export class CameraRig {
         const hi = smoothedSurf.height + 0.12;
         if (this.position.y < lo) this.position.y = lerp(this.position.y, lo, 0.3);
         if (this.position.y > hi) this.position.y = lerp(this.position.y, hi, 0.3);
+      } else if (!deep && !nearSurface) {
+        // The target was lifted above the surface, but the damped camera can
+        // still sit under a different crest behind the dolphin. Keep it above
+        // its own local surface; the deliberate waterline band is excluded.
+        this.position.y = Math.max(this.position.y, smoothedSurf.height + 1.0);
       }
       if (this.position.y < smoothedFloor + 0.48) {
         this.position.y = lerp(this.position.y, smoothedFloor + 0.48, 0.4);

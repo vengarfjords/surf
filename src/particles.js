@@ -327,7 +327,7 @@ export class ParticleFX {
    */
   surfMist(x, y, z, strength, dirX, dirZ) {
     const water = this.waterVel(x, y, z, 0.25);
-    const n = strength > 0.55 ? 2 : 1;
+    const n = 1;
     for (let i = 0; i < n; i++) {
       this.surf.spawn({
         x: x + (Math.random() - 0.5) * 1.2,
@@ -342,12 +342,12 @@ export class ParticleFX {
           dirZ * (0.5 + Math.random() * 1.1) +
           (water ? water.z : 0) +
           (Math.random() - 0.5) * 0.5,
-        life: 1.5 + Math.random() * 1.4,
-        size: 0.5 + Math.random() * 0.8,
+        life: 1.0 + Math.random() * 1.0,
+        size: 0.15 + Math.random() * 0.25,
         drag: 0.5,
         gravity: 1.6,
         wobble: 0.06,
-        alpha: 0.12 + strength * 0.2,
+        alpha: 0.05 + strength * 0.07,
         r: 0.88,
         g: 0.95,
         b: 0.93,
