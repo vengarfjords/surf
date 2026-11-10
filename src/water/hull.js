@@ -224,7 +224,7 @@ export class Hull {
     // kinematic query runs once per frame and the second 120 Hz substep reuses
     // it for force integration. Positions still update every substep.
     if (refreshWater) {
-      ocean.water.sampleBatch(positions, this.batch, 3, this.panels.length, true);
+      ocean.sampleWaterBatch(positions, this.batch, 3, true);
     }
     const batch = this.batch;
 

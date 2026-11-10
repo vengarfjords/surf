@@ -89,7 +89,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects }) {
       for (let gz = -80; gz <= 80; gz += 2) {
         const x = TUNING.water.surfZoneX + gx;
         const z = TUNING.water.surfZoneZ + gz;
-        const s = water.sampleSurface(x, z, {});
+        const s = { ...ocean.getWaterSample(x, z) };
         if (!allowBreaking && s.breakMask > 0.2) continue;
         const along = s.slopeX * dirX + s.slopeZ * dirZ;
         if (s.height < -0.7 || s.height > 0.7) continue;
@@ -158,7 +158,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects }) {
       for (let i = 0; i < count; i++) {
         const x = (rnd() - 0.5) * 800;
         const z = (rnd() - 0.5) * 800;
-        const cpu = water.sampleHeight(x, z);
+        const cpu = ocean.getWaterHeight(x, z);
         const gpu = ocean.gpuProbeHeight(x, z);
         errors.push(Math.abs(cpu - gpu));
       }
@@ -234,7 +234,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects }) {
         for (let gz = -70; gz <= 70; gz += 2) {
           const x = TUNING.water.surfZoneX + gx;
           const z = TUNING.water.surfZoneZ + gz;
-          const s = water.sampleSurface(x, z, {});
+          const s = { ...ocean.getWaterSample(x, z) };
           const along = s.slopeX * dirX + s.slopeZ * dirZ;
           if (s.breakMask > 0.25 && s.depth > 2.5 && s.depth < 6 && along < -0.1) {
             const score = s.breakMask * 1.4 - along;
@@ -313,7 +313,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects }) {
         for (let i = 0; i < n; i++) {
           await sleep(150);
           const surf = ocean.getWaterHeight(dolphin.position.x, dolphin.position.z);
-          const s = water.sampleSurface(dolphin.position.x, dolphin.position.z, {});
+          const s = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
           rows.push({
             rel: dolphin.position.y - surf,
             speed: dolphin.speed,
@@ -358,7 +358,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects }) {
           for (let gz = -80; gz <= 80; gz += 4) {
             const x = 120 + gx;
             const z = 40 + gz;
-            const s = water.sampleSurface(x, z, {});
+            const s = { ...ocean.getWaterSample(x, z) };
             const score = wantFace ? s.height - s.slopeX * dirX * 4 : -s.height;
             if (!best || score > best.score) best = { x, z, s, score };
           }

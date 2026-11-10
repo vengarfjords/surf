@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import { clamp, glslCaustics, glslFog, glslNoise } from "./utils.js";
 import { WaveField } from "./water/field.js";
+import { SurfSolver } from "./water/solver.js";
 import { makeBathymetry } from "./water/bathymetry.js";
 import { MAX_WAVES, probeFragmentShader, waterVertexShader } from "./water/shaders.js";
 
@@ -268,10 +269,14 @@ export class Ocean {
     this.time = 0;
     this.bathy = makeBathymetry(256);
     this.water = new WaveField(TUNING.water, this.bathy);
+    this.solver = new SurfSolver(this.water, this.bathy);
     this.sim = new SurfaceSimulation(renderer);
     this.lastSample = {};
     this._surfaceSample = {};
     this._bodySample = {};
+    this._solverSample = {};
+    this._solverSurface = {};
+    this._solver3D = {};
     this._underwater = 1;
     this._wetness = 0;
     this._tempColor = new THREE.Color();
@@ -339,6 +344,12 @@ export class Ocean {
       uBodyRadius: { value: 0.62 },
       uBodyActive: { value: 0 },
       uBodySpeed: { value: 0 },
+      uSolverTexture: { value: this.solver.texture },
+      uSolverCenter: { value: new THREE.Vector2(this.solver.centerX, this.solver.centerZ) },
+      uSolverExtent: { value: this.solver.extent },
+      uSolverTexel: { value: new THREE.Vector2(1 / this.solver.n, 1 / this.solver.n) },
+      uSolverCell: { value: this.solver.dx },
+      uSolverEnabled: { value: this.solver.enabled ? 1 : 0 },
       uDebugCrest: { value: 0 },
       uDebugSlope: { value: 0 },
       uDebugFoam: { value: 0 },
@@ -488,6 +499,7 @@ export class Ocean {
         varying float vDepth;
         varying float vPeakCrest;
         varying float vXi;
+        varying float vSolverFoam;
 
         ${glslNoise}
         ${glslFog}
@@ -575,6 +587,7 @@ export class Ocean {
             0.0,
             0.85
           );
+          aeration = max(aeration, vSolverFoam * 0.85);
           float plunge = smoothstep(0.5, 2.8, vXi);
           float crestFoam = smoothstep(0.52, 0.94, vPeakCrest);
           float whitewater = broken * crestFoam * smoothstep(
@@ -590,6 +603,7 @@ export class Ocean {
           // foam back in.
           foam *= 1.0 - broken * 0.78;
           foam = max(foam, whitewater);
+          foam = max(foam, vSolverFoam * 1.15);
           // Meniscus/foam collar hugging the dolphin at the waterline.
           float bodyDist = length(vWorld.xz - uBodyPos.xz);
           float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));
@@ -830,23 +844,104 @@ export class Ocean {
     this.uniforms.uPeakWavelength.value = this.water.stats.peakWavelength;
   }
 
-  /** CPU-accessible surface height (same field the renderer draws). */
+  /** CPU-accessible surface height (spectral outside the surf solver). */
   getWaterHeight(x, z) {
-    return this.water.sampleHeight(x, z);
+    const analytic = this.water.sampleHeight(x, z);
+    if (!this.solver.enabled) return analytic;
+    const s = this.solver.sample(x, z, this._solverSample);
+    return s.mask > 0 ? analytic + (s.eta - analytic) * s.mask : analytic;
   }
 
-  /** Surface-only sample kept for existing callers (camera, dolphin). */
+  /** Surface-only sample, blended with the surf-zone solver. */
   getWaterSample(x, z) {
-    return this.water.sampleSurface(x, z, this.lastSample);
+    const out = this.water.sampleSurface(x, z, this.lastSample);
+    if (!this.solver.enabled) return out;
+    const s = this.solver.surfaceSample(x, z, this._solverSurface);
+    if (!s) return out;
+    const m = s.solverMask;
+    out.height += (s.height - out.height) * m;
+    out.nx += (s.nx - out.nx) * m;
+    out.ny += (s.ny - out.ny) * m;
+    out.nz += (s.nz - out.nz) * m;
+    const nl = Math.hypot(out.nx, out.ny, out.nz) || 1;
+    out.nx /= nl;
+    out.ny /= nl;
+    out.nz /= nl;
+    out.slope += (s.slope - out.slope) * m;
+    out.slopeX += (s.slopeX - out.slopeX) * m;
+    out.slopeZ += (s.slopeZ - out.slopeZ) * m;
+    out.depth += (s.depth - out.depth) * m;
+    out.aeration = Math.max(out.aeration, s.aeration * m);
+    out.turbulence = Math.max(out.turbulence, s.turbulence * m);
+    out.breakMask = Math.max(out.breakMask || 0, s.breakMask * m);
+    out.phaseSpeed += (s.phaseSpeed - out.phaseSpeed) * m;
+    out.solverActive = s.solverActive;
+    out.solverMask = m;
+    out.solverU = s.solverU;
+    out.solverV = s.solverV;
+    return out;
   }
 
-  /** Full 3D sample for physics. */
+  /** Full 3D sample, blended with the surf-zone solver. */
   sampleWater(x, y, z, out = {}) {
-    return this.water.sample(x, y, z, out);
+    const a = this.water.sample(x, y, z, out);
+    if (!this.solver.enabled) return a;
+    const s = this.solver.sample3D(x, y, z, this._solver3D);
+    if (!s) return a;
+    const m = s.solverMask;
+    out.height += (s.height - out.height) * m;
+    out.nx += (s.nx - out.nx) * m;
+    out.ny += (s.ny - out.ny) * m;
+    out.nz += (s.nz - out.nz) * m;
+    const nl = Math.hypot(out.nx, out.ny, out.nz) || 1;
+    out.nx /= nl;
+    out.ny /= nl;
+    out.nz /= nl;
+    out.velocityX += (s.velocityX - out.velocityX) * m;
+    out.velocityY += (s.velocityY - out.velocityY) * m;
+    out.velocityZ += (s.velocityZ - out.velocityZ) * m;
+    out.accelX += (s.accelX - out.accelX) * m;
+    out.accelY += (s.accelY - out.accelY) * m;
+    out.accelZ += (s.accelZ - out.accelZ) * m;
+    out.dynamicPressure += (s.dynamicPressure - out.dynamicPressure) * m;
+    out.aeration = Math.max(out.aeration, s.aeration * m);
+    out.turbulence = Math.max(out.turbulence, s.turbulence * m);
+    out.breakMask = Math.max(out.breakMask || 0, s.breakMask * m);
+    out.phaseSpeed += (s.phaseSpeed - out.phaseSpeed) * m;
+    out.wavelength += (s.wavelength - out.wavelength) * m;
+    out.depth += (s.depth - out.depth) * m;
+    out.seabedY = -out.depth;
+    out.depthToSeabed = y + out.depth;
+    out.solverMask = m;
+    out.solverActive = s.solverMask > 0.5;
+    return out;
   }
 
   sampleWaterBatch(positions, out, stride = 3, forForces = false) {
-    return this.water.sampleBatch(positions, out, stride, positions.length / stride, forForces);
+    const count = positions.length / stride;
+    this.water.sampleBatch(positions, out, stride, count, forForces);
+    if (!this.solver.enabled) return out;
+    for (let i = 0; i < count; i++) {
+      const p = i * stride;
+      const s = this.solver.sample(positions[p], positions[p + 2], this._solverSample);
+      if (s.mask <= 0.001) continue;
+      const m = s.mask;
+      out.height[i] += (s.eta - out.height[i]) * m;
+      const nx = -s.slopeX;
+      const nz = -s.slopeZ;
+      const nl = Math.hypot(nx, 1, nz) || 1;
+      out.nx[i] += (nx / nl - out.nx[i]) * m;
+      out.ny[i] += (1 / nl - out.ny[i]) * m;
+      out.nz[i] += (nz / nl - out.nz[i]) * m;
+      out.velocityX[i] += (s.u - out.velocityX[i]) * m;
+      out.velocityZ[i] += (s.v - out.velocityZ[i]) * m;
+      out.velocityY[i] += (-(s.u * s.slopeX + s.v * s.slopeZ) - out.velocityY[i]) * m;
+      out.dynamicPressure[i] += (1025 * 9.81 * s.eta - out.dynamicPressure[i]) * m;
+      out.aeration[i] = Math.max(out.aeration[i], s.foam * 0.85 * m);
+      out.slope[i] += (s.slope - out.slope[i]) * m;
+      out.phaseSpeed[i] += (s.phaseSpeed - out.phaseSpeed[i]) * m;
+    }
+    return out;
   }
 
   addSurfaceContact(x, z, force, radius = 0.85) {
@@ -855,7 +950,10 @@ export class Ocean {
 
   update(dt, playerPos, camera, underwater, wetness, context = {}) {
     this.time += dt * TUNING.water.timeScale;
+    this.solver.enabled = TUNING.water.solverEnabled;
+    this.solver.update(dt, this.time);
     const u = this.uniforms;
+    u.uSolverEnabled.value = this.solver.enabled ? 1 : 0;
     u.uTime.value = this.time;
     u.uCenter.value.set(camera.position.x, camera.position.z);
     u.uCameraPos.value.copy(camera.position);

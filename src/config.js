@@ -252,6 +252,17 @@ export const TUNING = {
     breakerLip: 0.12,
     aerationAmount: 0.85,
     foamPersistence: 0.6,
+    // Local nonlinear shallow-water solver over the surf bank. The domain is
+    // fixed around the bank; the analytic spectral field forces the open
+    // boundaries. 160² cells at 30 Hz is ~25k updates per step.
+    solverEnabled: false,
+    solverExtent: 192,
+    solverCells: 128,
+    solverRate: 20,
+    solverSpongeCells: 10,
+    solverBreakSlope: 0.5,
+    solverFoamDecay: 0.22,
+    solverFoamSource: 0.55,
     // Radial clipmap dimensions (camera-following, exponential in radius).
     surfaceRadius: 7000,
     surfaceRings: 220,
@@ -447,6 +458,9 @@ export const TUNE_CONTROLS = [
   { path: "water.breakerJet", label: "breaker jet", min: 0, max: 2, step: 0.05 },
   { path: "water.aerationAmount", label: "aeration", min: 0, max: 1, step: 0.01 },
   { path: "water.foamPersistence", label: "foam persistence", min: 0, max: 1, step: 0.01 },
+  { path: "water.solverEnabled", label: "surf-zone solver", type: "toggle" },
+  { path: "water.solverBreakSlope", label: "solver break slope", min: 0.3, max: 1.5, step: 0.01 },
+  { path: "water.solverFoamSource", label: "solver foam source", min: 0, max: 1, step: 0.01 },
   { path: "hydro.buoyancyRatio", label: "buoyancy ratio", min: 0.9, max: 1.05, step: 0.001 },
   { path: "hydro.lungFraction", label: "lung buoyancy", min: 0, max: 0.4, step: 0.005 },
   { path: "hydro.lungDepthScale", label: "lung depth scale", min: 0.3, max: 4, step: 0.05 },

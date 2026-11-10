@@ -106,9 +106,9 @@ export class WaterDebug {
     const d = this.dolphin;
     this.probeX = d.position.x + d.forward.x * 3.2;
     this.probeZ = d.position.z + d.forward.z * 3.2;
-    const surf = this.ocean.water.sampleSurface(this.probeX, this.probeZ, this.surface);
+    const surf = this.ocean.getWaterSample(this.probeX, this.probeZ);
     const sampleY = Math.min(d.position.y, surf.height - 0.1);
-    const full = this.ocean.water.sample(this.probeX, sampleY, this.probeZ, this.fullSample || (this.fullSample = {}));
+    const full = this.ocean.sampleWater(this.probeX, sampleY, this.probeZ, this.fullSample || (this.fullSample = {}));
 
     this.ring.position.set(this.probeX, surf.height + 0.05, this.probeZ);
     this.line.position.set(this.probeX, surf.height + 0.05, this.probeZ);

@@ -490,6 +490,10 @@ async function boot() {
         O.freeze(true);
         O.pose(120, h + 14, 40, Math.atan2(O.water.peak.dx, O.water.peak.dz), -0.9);
         O.setFreeView([112, h + 18.5, 32], [120, h + 15.2, 40], 56);
+      } else if (shotMode === "solver") {
+        O.freeze(false);
+        O.water.setPreset("moderate");
+        O.setFreeView([260, 16, 140], [260 - 0.46 * 140, 2, 140 + 0.55 * 140], 62);
       }
     }, 2800);
   }

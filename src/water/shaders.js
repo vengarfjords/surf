@@ -39,6 +39,12 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     uniform float uPeakPhase;
     uniform float uBreakerLip;
     uniform float uPeakWavelength;
+    uniform sampler2D uSolverTexture;
+    uniform vec2 uSolverCenter;
+    uniform float uSolverExtent;
+    uniform vec2 uSolverTexel;
+    uniform float uSolverCell;
+    uniform float uSolverEnabled;
 
     varying vec3 vWorld;
     varying vec3 vNormalW;
@@ -52,6 +58,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     varying float vDepth;
     varying float vPeakCrest;
     varying float vXi;
+    varying float vSolverFoam;
 
     vec2 simSample(vec2 world) {
       vec2 uv = (world - uSimCenter) / uSimExtent + 0.5;
@@ -125,6 +132,33 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
 
       vec3 world = base + vec3(horizX, h, horizZ);
 
+      // Local nonlinear surf-zone solver. Its height/foam replace the
+      // spectral field inside the fixed bank window; the mask fades at the
+      // window edge where the analytical boundary is imposed.
+      vSolverFoam = 0.0;
+      vec3 solverNormal = vec3(0.0, 1.0, 0.0);
+      vec2 solverUv = (world.xz - uSolverCenter) / uSolverExtent + 0.5;
+      float solverEdge = min(min(solverUv.x, 1.0 - solverUv.x), min(solverUv.y, 1.0 - solverUv.y));
+      float solverMask = smoothstep(0.0, 0.035, solverEdge) * uSolverEnabled;
+      if (solverMask > 0.001) {
+        vec4 sc = texture2D(uSolverTexture, solverUv);
+        float solverEta = sc.r * 6.0 - 3.0;
+        float foam = sc.g;
+        float eL = texture2D(uSolverTexture, solverUv - vec2(uSolverTexel.x, 0.0)).r * 6.0 - 3.0;
+        float eR = texture2D(uSolverTexture, solverUv + vec2(uSolverTexel.x, 0.0)).r * 6.0 - 3.0;
+        float eD = texture2D(uSolverTexture, solverUv - vec2(0.0, uSolverTexel.y)).r * 6.0 - 3.0;
+        float eU = texture2D(uSolverTexture, solverUv + vec2(0.0, uSolverTexel.y)).r * 6.0 - 3.0;
+        solverNormal = normalize(vec3(
+          -(eR - eL) / (2.0 * uSolverCell),
+          1.0,
+          -(eU - eD) / (2.0 * uSolverCell)
+        ));
+        h = mix(h, solverEta, solverMask);
+        world.y = h;
+        vSolverFoam = foam * solverMask;
+        breakMask = max(breakMask, foam * solverMask);
+      }
+
       // Local GPU contact heightfield (dolphin parting / wakes). It is
       // deliberately visual: the physics query does not include this field,
       // and the parity probe disables it with uSimScale = 0.
@@ -140,6 +174,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       vec3 tz = vec3(dxdz, dhdz, 1.0 + dzdz);
       vec3 n = normalize(cross(tz, tx));
       if (n.y < 0.0) n = -n;
+      n = normalize(mix(n, solverNormal, solverMask * 0.86));
 
       vec4 mv = viewMatrix * vec4(world, 1.0);
       gl_Position = projectionMatrix * mv;
