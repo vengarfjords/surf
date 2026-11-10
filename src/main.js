@@ -313,7 +313,7 @@ async function boot() {
       camera,
       camState.underwater,
       Math.max(camState.wetness, dolphin.wetness * 0.65),
-      { fogColor, fogDensity }
+      { fogColor, fogDensity, dolphinSpeed: dolphin.speed }
     );
     const oceanMs = performance.now() - oceanStart;
     waterDebug.setStarted(started);
@@ -431,6 +431,37 @@ async function boot() {
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
+
+  // Headless capture mode: ?shot=underwater|waterline|breach. This only poses
+  // the camera/animal; it is used for documentation screenshots.
+  const shotMode = new URLSearchParams(location.search).get("shot");
+  if (shotMode) {
+    setTimeout(() => {
+      const O = window.OCEAN;
+      if (!O) return;
+      O.start();
+      O.tuning.debug.postProcessing = shotMode !== "breach";
+      O.tuning.debug.probe = false;
+      O.tuning.debug.readout = false;
+      O.hud.el.startPrompt.classList.add("is-hidden");
+      O.hud.el.title.classList.add("is-away");
+      O.hud.el.toast.classList.remove("is-visible");
+      if (shotMode === "underwater") {
+        const h = O.ocean.getWaterHeight(120, 40);
+        O.setFreeView([120, h - 3.5, 40], [120, h + 20, 40.2], 64);
+      } else if (shotMode === "waterline") {
+        const h = O.ocean.getWaterHeight(120, 40);
+        O.freeze(true);
+        O.pose(120, h + 0.12, 40, Math.atan2(O.water.peak.dx, O.water.peak.dz), 0.03);
+        O.setFreeView([116, h + 0.04, 32], [121, h + 0.15, 42], 62);
+      } else if (shotMode === "breach") {
+        const h = O.ocean.getWaterHeight(120, 40);
+        O.freeze(true);
+        O.pose(120, h + 14, 40, Math.atan2(O.water.peak.dx, O.water.peak.dz), -0.9);
+        O.setFreeView([112, h + 18.5, 32], [120, h + 15.2, 40], 56);
+      }
+    }, 2800);
+  }
 
   window.OCEAN = {
     tuning: TUNING,

@@ -45,6 +45,9 @@ export class CameraRig {
     const worldUp = WORLD_UP;
     const water = this.ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
     const submerged = dolphin.position.y < water.height - 0.16;
+    // Near the surface, let the camera sit in the waterline band so a true
+    // half-in/half-out frame is possible instead of forcing it 18 cm down.
+    const nearSurface = Math.abs(dolphin.position.y - water.height) < 0.55;
 
     // The snout is the look handle. Orbit and aim from the mouse target rather
     // than waiting for the physical body to finish its turn; the spine and
@@ -105,7 +108,7 @@ export class CameraRig {
     // breach; when it does, the camera is allowed to break through with it.
     const camSurf = this.ocean.getWaterSample(targetPos.x, targetPos.z);
     if (submerged) {
-      const ceiling = camSurf.height - 0.32;
+      const ceiling = camSurf.height + (nearSurface ? 0.12 : -0.32);
       if (targetPos.y > ceiling) targetPos.y = ceiling;
     } else {
       // When the dolphin is on or above the surface, let the camera break
@@ -134,8 +137,14 @@ export class CameraRig {
     // through a steep bank or a crest.
     const smoothedSurf = this.ocean.getWaterSample(this.position.x, this.position.z);
     const smoothedFloor = seabed.getSurfaceHeight(this.position.x, this.position.z);
-    if (submerged && this.position.y > smoothedSurf.height - 0.18) {
+    if (submerged && !nearSurface && this.position.y > smoothedSurf.height - 0.18) {
       this.position.y = lerp(this.position.y, smoothedSurf.height - 0.18, 0.3);
+    } else if (submerged && nearSurface) {
+      // Keep the camera inside a narrow band around the local surface.
+      const lo = smoothedSurf.height - 0.22;
+      const hi = smoothedSurf.height + 0.12;
+      if (this.position.y < lo) this.position.y = lerp(this.position.y, lo, 0.3);
+      if (this.position.y > hi) this.position.y = lerp(this.position.y, hi, 0.3);
     }
     if (this.position.y < smoothedFloor + 0.48) {
       this.position.y = lerp(this.position.y, smoothedFloor + 0.48, 0.4);

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
-import { clamp, glslFog, glslNoise } from "./utils.js";
+import { clamp, glslCaustics, glslFog, glslNoise } from "./utils.js";
 import { WaveField } from "./water/field.js";
 import { makeBathymetry } from "./water/bathymetry.js";
 import { MAX_WAVES, probeFragmentShader, waterVertexShader } from "./water/shaders.js";
@@ -271,6 +271,7 @@ export class Ocean {
     this.sim = new SurfaceSimulation(renderer);
     this.lastSample = {};
     this._surfaceSample = {};
+    this._bodySample = {};
     this._underwater = 1;
     this._wetness = 0;
     this._tempColor = new THREE.Color();
@@ -334,6 +335,10 @@ export class Ocean {
       uAerationAmount: { value: TUNING.water.aerationAmount },
       uFoamPersistence: { value: TUNING.water.foamPersistence },
       uPeakWavelength: { value: this.water.stats.peakWavelength },
+      uBodyPos: { value: new THREE.Vector3() },
+      uBodyRadius: { value: 0.62 },
+      uBodyActive: { value: 0 },
+      uBodySpeed: { value: 0 },
       uDebugCrest: { value: 0 },
       uDebugSlope: { value: 0 },
       uDebugFoam: { value: 0 },
@@ -463,6 +468,10 @@ export class Ocean {
         uniform float uBreakRatio;
         uniform float uHs;
         uniform float uPeakWavelength;
+        uniform vec3 uBodyPos;
+        uniform float uBodyRadius;
+        uniform float uBodyActive;
+        uniform float uBodySpeed;
         uniform float uDebugCrest;
         uniform float uDebugSlope;
         uniform float uDebugFoam;
@@ -482,6 +491,7 @@ export class Ocean {
 
         ${glslNoise}
         ${glslFog}
+        ${glslCaustics}
 
         vec3 skyReflection(vec3 d) {
           float h = clamp(d.y, 0.0, 1.0);
@@ -578,6 +588,11 @@ export class Ocean {
           // foam back in.
           foam *= 1.0 - broken * 0.78;
           foam = max(foam, whitewater);
+          // Meniscus/foam collar hugging the dolphin at the waterline.
+          float bodyDist = length(vWorld.xz - uBodyPos.xz);
+          float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));
+          float bodyFoam = bodyRing * uBodyActive * clamp(uBodySpeed / 7.0, 0.2, 1.1);
+          foam = max(foam, bodyFoam * 0.9);
           foam = clamp(foam, 0.0, 1.0);
 
           // ---- above the surface ----------------------------------------
@@ -622,33 +637,54 @@ export class Ocean {
           above = mix(above, foamColor, foam * 0.88);
 
           // ---- below the surface ----------------------------------------
-          vec3 up = -view;
-          float cosUp = clamp(dot(up, microN), 0.0, 1.0);
-          float window = smoothstep(0.652, 0.697, cosUp);
-          float rim = exp(-pow((cosUp - 0.661) / 0.016, 2.0));
+          // Snell's window: refracted sky within the critical angle
+          // (48.6°, cos 0.6614), total internal reflection outside it.
+          vec3 I = -view; // camera -> surface
+          float cosI = clamp(dot(I, microN), 0.0, 1.0);
+          float window = smoothstep(0.654, 0.69, cosI);
+          float rim = exp(-pow((cosI - 0.6614) / 0.014, 2.0));
+          vec3 refr = refract(I, -microN, 1.0 / 1.333);
+          vec3 winDir = length(refr) > 0.5 ? normalize(refr) : normalize(I);
 
-          vec3 tir = uDeepColor * 0.52 + uTopColor * 0.055;
-          tir *= 0.9 + 0.18 * crest;
-          tir += uTopColor * (0.045 + 0.075 * crest) * (0.35 + 0.65 * microHeight);
-          tir += uTopColor * pow(max(0.0, 1.0 - cosUp), 1.4) * 0.07;
-          float undersideSheen = pow(max(dot(reflect(-view, microN), uSunDir), 0.0), 26.0);
-          tir += uSunColor * undersideSheen * 0.08;
-          tir += vec3(0.02, 0.075, 0.12) * (0.5 + 0.5 * microHeight) * 0.25;
+          float wav = clamp(vCrest * 0.5 + 0.5, 0.0, 1.0);
+          vec3 tir = uDeepColor * 0.42 + uTopColor * 0.08;
+          tir *= 0.88 + 0.28 * wav;
+          tir += uTopColor * (0.075 + 0.16 * wav) * (0.4 + 0.6 * microHeight);
+          tir += uTopColor * pow(max(0.0, 1.0 - cosI), 1.25) * 0.1;
+          float undersideSheen = pow(max(dot(reflect(-view, microN), uSunDir), 0.0), 24.0);
+          tir += uSunColor * undersideSheen * 0.12;
+          // Caustic veins on the underside, modulated by the real wave slope
+          // and crest height rather than a flat screen-space pattern.
+          float veins = causticNetwork(vWorld.xz * 0.34 + vec2(uTime * 0.02, -uTime * 0.015), uTime * 0.55);
+          tir += uTopColor * veins * 0.032 * (0.45 + 0.55 * wav);
+          tir += vec3(0.02, 0.075, 0.12) * (0.5 + 0.5 * microHeight) * 0.22;
 
-          vec3 winCol = skyReflection(normalize(up));
-          winCol = mix(winCol, uTopColor * 0.75, 0.28);
-          winCol += uSunColor * pow(max(dot(normalize(up), uSunDir), 0.0), 90.0) * 0.7;
-          winCol *= 0.82 + 0.3 * microHeight;
+          vec3 winCol = skyReflection(winDir);
+          winCol = mix(winCol, uTopColor * 0.8, 0.29);
+          winCol += uSunColor * pow(max(dot(winDir, uSunDir), 0.0), 90.0) * 0.8;
+          winCol *= (0.84 + 0.28 * microHeight) * 0.72;
 
-          vec3 below = mix(tir, winCol, window * 0.92);
-          below += uTopColor * rim * 0.8;
+          vec3 below = mix(tir, winCol, window * 0.94);
+          below += uTopColor * rim * 0.95;
           below = mix(below, vec3(0.55, 0.7, 0.68), foam * 0.24);
           below = mix(below, vec3(0.5, 0.66, 0.6), aeration * 0.45);
           below = applyWaterFog(below, vDistance, uFogColor, uFogDensity * 0.72);
 
           vec3 aboveFog = applyWaterFog(above, vDistance, uFogColor, uFogDensity * 0.78);
 
-          vec3 color = mix(aboveFog, below, clamp(uUnderwater, 0.0, 1.0));
+          // Camera side. A global switch is correct when the camera is clearly
+          // above or below water; near the waterline, use the local vertical
+          // side so a half-in frame shows both sides. Do not use the tangent
+          // plane: at grazing distance a wave normal can put the camera below
+          // its own plane and produce a spurious cellular underside.
+          float nearSurface = clamp(1.0 - abs(uUnderwater - 0.5) * 2.0, 0.0, 1.0);
+          float localAbove = smoothstep(-0.08, 0.08, uCameraPos.y - vWorld.y);
+          float aboveWeight = mix(clamp(1.0 - uUnderwater, 0.0, 1.0), localAbove, nearSurface);
+          float camGap = uCameraPos.y - vWorld.y;
+          float meniscus = exp(-pow(camGap / 0.05, 2.0)) * nearSurface;
+          vec3 color = mix(below, aboveFog, aboveWeight);
+          color = mix(color, vec3(0.92, 0.99, 0.97), meniscus * 0.22);
+          color = mix(color, vec3(0.9, 0.99, 0.95), bodyRing * uBodyActive * 0.22);
 
           // ---- debug overlays ------------------------------------------
           if (uDebugCrest > 0.5) {
@@ -824,6 +860,11 @@ export class Ocean {
     u.uUnderwater.value = underwater;
 
     const camSurf = this.water.sampleSurface(camera.position.x, camera.position.z, this._surfaceSample);
+    const bodySurf = this.water.sampleSurface(playerPos.x, playerPos.z, this._bodySample);
+    const bodyNear = Math.abs(playerPos.y - bodySurf.height) < 1.3;
+    u.uBodyPos.value.set(playerPos.x, bodySurf.height, playerPos.z);
+    u.uBodyActive.value = bodyNear ? 1 : 0;
+    u.uBodySpeed.value = context.dolphinSpeed || 0;
     u.uFogColor.value.copy(context.fogColor || this.fogColor);
     u.uFogDensity.value = context.fogDensity ?? TUNING.visuals.underwaterDensity;
 

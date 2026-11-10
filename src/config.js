@@ -347,9 +347,9 @@ export const TUNING = {
     // are the screen-space god rays, caustics tie surfaces into one light
     // field, and haze/mist warm the air above the surface.
     volumetricScatter: 0.85,
-    shaftStrength: 0.9,
+    shaftStrength: 1.25,
     shaftSteps: 10,
-    volumetricCaustics: 0.5,
+    volumetricCaustics: 0.72,
     surfaceHaze: 0.42,
     surfaceMist: 0.26,
   },
