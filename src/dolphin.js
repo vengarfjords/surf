@@ -950,11 +950,18 @@ export class Dolphin {
       // Soft ceiling. Crest pressure can throw a light, half-wet hull several
       // metres into the air; unless the player is boosting or asking to rise,
       // settle the back onto the waterline instead of letting it hover.
-      const capDist = targetDist + 0.55;
+      const capDist = targetDist + 0.4;
       if (!input.boost && dist > capDist) {
-        const pull = 1 - Math.exp(-18 * dt);
+        const pull = 1 - Math.exp(-30 * dt);
         this.position.y -= (dist - capDist) * pull;
-        if (this.velocity.y > 0) this.velocity.y *= 1 - 0.8 * pull;
+        if (this.velocity.y > 0) this.velocity.y *= 1 - 0.9 * pull;
+      }
+      // Hard ceiling for an unpowered ride: wave lift can still outrun the
+      // spring, but it should not turn a normal glide into a hover. Space/C or
+      // boost releases the contact before this matters.
+      if (!input.boost && this.position.y > surfWater.height + capDist + 0.25) {
+        this.position.y = surfWater.height + capDist + 0.25;
+        if (this.velocity.y > 0) this.velocity.y *= 0.25;
       }
 
       // Damped surface follow. The spring alone leaves a static offset when

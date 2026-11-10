@@ -111,13 +111,19 @@ export function seabedHeight(x, z) {
   const sCross = dsx * swellX + dsz * swellZ;
   const sAlong = -dsx * swellZ + dsz * swellX;
   const ridgeAlong = 1 - smoothstep(240, 360, Math.abs(sAlong));
-  const basinDepth = smoothstep(-40, -220, sCross) * 20;
-  const leeDepth = smoothstep(20, 120, sCross) * 10;
-  // A broad central peak and gentle shoulders break the wall into a peeling
-  // point break; the long-wavelength ripple avoids a perfectly uniform crest.
-  const crestPeak = Math.exp(-(sAlong * sAlong) / (2 * 150 * 150)) * 2.8;
-  const crestRipple = Math.sin(sAlong / 95) * 1.5 + Math.sin(sAlong / 41 + 1.2) * 0.55;
-  const arenaDepth = 18 + basinDepth + leeDepth - crestPeak + crestRipple;
+  // Bow the break line into a point break instead of a straight wall.
+  const sCrossCurve = sCross + Math.sin((sAlong + 35) / 190) * 14;
+  const basinDepth = smoothstep(-40, -220, sCrossCurve) * 20;
+  const leeDepth = smoothstep(20, 120, sCrossCurve) * 10;
+  // A defined peak with a long, deeper shoulder to one side makes the wave
+  // peel and gives a rideable face instead of a uniform crest.
+  const peakAlong = -35;
+  const crestPeak =
+    Math.exp(-((sAlong - peakAlong) * (sAlong - peakAlong)) / (2 * 105 * 105)) * 3.8;
+  const crestShoulder = smoothstep(0, 330, sAlong - peakAlong) * 2.2;
+  const crestRipple = Math.sin(sAlong / 82) * 1.1 + Math.sin(sAlong / 37 + 1.2) * 0.4;
+  const arenaDepth =
+    18 + basinDepth + leeDepth - crestPeak + crestShoulder + crestRipple;
 
   // Patchy reef shelf outcrops, slight raised humps.
   const shelf = Math.max(0, fbm(x * 0.0072 + 51.1, z * 0.0072 + 4.4, 2) - 0.5) * 2.7;

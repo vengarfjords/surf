@@ -123,19 +123,19 @@ export const TUNING = {
     // Passive wave riding: a steep descending/along-face run fades the tail
     // stroke out and lets the local surface slope drive the body.
     coastSlope: 0.06,
-    // Surf contact: a soft attachment to a steep face. The body is held a
-    // little below the local surface, aligned to the face, and the tangential
-    // velocity is carved toward the heading instead of skating straight on.
+    // Surf contact: a soft attachment to a steep face. The body is held at the
+    // planing waterline, aligned to the face, and the tangential velocity is
+    // carved toward the heading instead of skating straight on.
     surfGrip: 10.0,
-    surfDepth: 0.35,
+    surfDepth: -0.15,
     surfMinSlope: 0.075,
     surfMinSpeed: 5.0,
     surfSpring: 70,
     surfDamp: 12,
     surfDrive: 0.9,
-    surfPump: 2.8,
+    surfPump: 2.0,
     surfCarry: 0.55,
-    surfGlide: 1.3,
+    surfGlide: 1.0,
     surfAttitude: 5.5,
     surfFaceRoll: 0.65,
     surfBank: 1.7,
@@ -242,21 +242,21 @@ export const TUNING = {
     preset: "surf",
     surfZoneX: 450,
     surfZoneZ: 300,
-    swellHeight: 18,
-    swellWavelength: 300,
-    swellWavelengthSpread: 0.08,
+    swellHeight: 13.5,
+    swellWavelength: 320,
+    swellWavelengthSpread: 0.14,
     swellDirection: 0.61,
-    swellDirectionSpread: 0.08,
+    swellDirectionSpread: 0.17,
     swellComponents: 96,
-    windSeaHeight: 0.25,
-    windSeaWavelength: 24,
+    windSeaHeight: 1.1,
+    windSeaWavelength: 46,
     windSeaWavelengthSpread: 0.35,
-    windSeaDirection: 1.02,
-    windSeaDirectionSpread: 0.62,
+    windSeaDirection: 1.55,
+    windSeaDirectionSpread: 0.7,
     windSeaComponents: 32,
     // Gerstner horizontal displacement scale. The generator computes a safe
     // base value from the total steepness; this is an artistic multiplier.
-    chop: 0.45,
+    chop: 0.36,
     timeScale: 1.0,
     startTime: 4.5,
     // Rendering / foam.
@@ -267,12 +267,12 @@ export const TUNING = {
     // dispersion and Green's-law shoaling using the baked bathymetry; the
     // breaker is a saturated, aerated crest (a heightfield cannot overhang).
     depthResponse: true,
-    shoalReference: 12,
-    shoalStrength: 0.25,
-    breakRatio: 0.85,
-    breakSoftness: 0.08,
+    shoalReference: 14,
+    shoalStrength: 0.18,
+    breakRatio: 0.9,
+    breakSoftness: 0.1,
     breakerJet: 0.35,
-    breakerLip: 0.22,
+    breakerLip: 0.12,
     aerationAmount: 0.85,
     foamPersistence: 0.6,
     // Local nonlinear shallow-water solver over the surf bank. The domain is
