@@ -9,6 +9,7 @@ import {
   smoothstep,
   wrapAngle,
 } from "./utils.js";
+import { Hull } from "./water/hull.js";
 
 const UP = new THREE.Vector3(0, 1, 0);
 const RIGHT = new THREE.Vector3(1, 0, 0);
@@ -218,6 +219,13 @@ export class Dolphin {
     ];
     this.floorPoints = this.bodyParts.map((p) => ({ name: p.name, pos: new THREE.Vector3(), alt: 0, radius: p.radius, load: p.load }));
 
+    // M2 physics hull. Mass is derived from displaced volume; the controller
+    // still steers the nose directly, but translation is now force-driven.
+    this.hull = new Hull();
+    this.mass = this.hull.mass;
+    this.hydroControl = { thrustAccel: 0, reverseAccel: 0, verticalAccel: 0 };
+    this.hydro = this.hull.result;
+
     this.tailUniforms = {
       causticTime: { value: 0 },
     };
@@ -287,6 +295,7 @@ export class Dolphin {
       speed: 0,
       heading: 0,
       waveHeight: 0,
+      hydro: null,
     };
   }
 
@@ -624,98 +633,109 @@ export class Dolphin {
     const water = ocean.getWaterSample(this.position.x, this.position.z);
     const surfaceHeight = water.height;
     const underwater = this.position.y < surfaceHeight;
+
+    // Passive surface trim: when the player is not actively pitching, the
+    // body settles parallel to the local face. This is buoyancy stability, not
+    // a surf mode; it is disabled as soon as the player pitches or changes
+    // depth, and above a few metres it does nothing.
+    const depthNow = surfaceHeight - this.position.y;
+    if (
+      !pitchInput &&
+      this.verticalInput === 0 &&
+      depthNow > -0.1 &&
+      depthNow < TUNING.hydro.surfaceTrimDepth &&
+      this.speed < TUNING.hydro.surfaceTrimSpeed
+    ) {
+      const slopeAlong = water.slopeX * this.forward.x + water.slopeZ * this.forward.z;
+      this.pitch = damp(this.pitch, Math.atan(slopeAlong), TUNING.hydro.surfaceTrimRate, dt);
+      this.qYaw.setFromAxisAngle(Y_AXIS, this.yaw);
+      this.qPitch.setFromAxisAngle(X_AXIS, -this.pitch);
+      this.qRoll.setFromAxisAngle(Z_AXIS, this.roll);
+      this.orientation.copy(this.qYaw).multiply(this.qPitch).multiply(this.qRoll);
+      this.forward.copy(FORWARD).applyQuaternion(this.orientation);
+      this.up.copy(UP).applyQuaternion(this.orientation);
+      this.right.copy(RIGHT).applyQuaternion(this.orientation);
+    }
+
     const forwardSpeed = this.velocity.dot(this.forward);
     const surge = input.boost && !input.brake;
     const thrusting = (input.forward || surge) && !input.brake;
 
     // --- Propulsion ------------------------------------------------------
+    // Thrust stays an acceleration (the same hand feel as before), while all
+    // water forces below are true forces divided by effective mass.
+    let thrustAccel = 0;
     if (thrusting) {
       const targetSpeed = surge ? movement.boostSpeed : movement.cruiseSpeed;
       const accel = surge ? movement.boostAcceleration : movement.acceleration;
       const headroom = 1 - clamp(forwardSpeed / targetSpeed, 0, 1);
-      const thrustScale = underwater ? 1 : movement.airThrustScale;
-      this.velocity.addScaledVector(
-        this.forward,
-        accel * (0.38 + headroom * 0.62) * dt * thrustScale
-      );
+      thrustAccel = accel * (0.38 + headroom * 0.62);
     } else if (!input.brake && forwardSpeed < movement.idleGlide) {
       // A slow, always-present tail scull keeps the creature alive at rest.
-      this.velocity.addScaledVector(this.forward, (movement.idleGlide - forwardSpeed) * 2.6 * dt);
+      thrustAccel = (movement.idleGlide - forwardSpeed) * 2.6;
     }
 
+    let reverseAccel = 0;
     if (input.brake) {
-      if (forwardSpeed > 0.1) {
-        const decel = Math.min(movement.braking * dt, forwardSpeed);
-        this.velocity.addScaledVector(this.forward, -decel);
-      } else if (forwardSpeed > -movement.reverseSpeed) {
-        this.velocity.addScaledVector(this.forward, -movement.reverseAcceleration * dt);
-      }
+      if (forwardSpeed > 0.1) reverseAccel = -movement.braking;
+      else if (forwardSpeed > -movement.reverseSpeed) reverseAccel = -movement.reverseAcceleration;
     }
 
-    // Vertical input is world-up, but the body is already pitching into it.
-    if (this.verticalInput !== 0) {
-      this.velocity.y +=
-        this.verticalInput *
-        movement.verticalThrust *
-        dt *
-        (underwater ? 1 : movement.airVerticalScale);
-    }
-
-    // --- Anisotropic drag / momentum ------------------------------------
-    // Water and air have very different resistance. In air the animal keeps
-    // its momentum instead of being braked back to a swimming speed.
-    const forwardDrag = underwater ? movement.forwardDrag : movement.airForwardDrag;
-    const forwardQuadraticDrag = underwater
-      ? movement.forwardQuadraticDrag
-      : movement.airForwardQuadraticDrag;
-    const lateralDrag = underwater ? movement.lateralDrag : movement.airLateralDrag;
-    const verticalDrag = underwater ? movement.verticalDrag : movement.airVerticalDrag;
-    let vf = this.velocity.dot(this.forward);
-    let vr = this.velocity.dot(this.right);
-    let vu = this.velocity.dot(this.up);
-    vf -= vf * (forwardDrag + Math.abs(vf) * forwardQuadraticDrag) * dt;
-    vr -= vr * lateralDrag * dt;
-    vu -= vu * verticalDrag * dt;
-    this.velocity
-      .copy(this.forward)
-      .multiplyScalar(vf)
-      .addScaledVector(this.right, vr)
-      .addScaledVector(this.up, vu);
+    const verticalAccel = this.verticalInput * movement.verticalThrust;
 
     // Ambient current: a gentle shelf eddy, always moving, never a treadmill.
+    // It is now a water velocity for panel drag rather than an acceleration.
     const t = ocean.time;
     this.tmpCurrent.set(
       movement.currentX + Math.sin(t * 0.071 + this.position.z * 0.002) * movement.currentVariance,
       movement.currentY + Math.sin(t * 0.043) * 0.015,
       movement.currentZ + Math.cos(t * 0.059 + this.position.x * 0.0017) * movement.currentVariance
     );
-    if (underwater) {
-      this.velocity.addScaledVector(this.tmpCurrent, movement.currentCoupling * dt);
-    }
-    this.speed = this.velocity.length();
 
-    // Wave lift and surfing. The lowest part of the body feels the swell.
-    if (underwater) {
-      const depthToSurface = surfaceHeight - this.position.y;
-      if (depthToSurface < 1.9) {
-        const near = 1 - smoothstep(0.15, 1.9, depthToSurface);
-        this.velocity.x += water.nx * movement.waveSurf * (0.35 + this.speed * 0.09) * near * dt * 3.0;
-        this.velocity.z += water.nz * movement.waveSurf * (0.35 + this.speed * 0.09) * near * dt * 3.0;
-        this.velocity.y += movement.surfaceRide * 0.13 * near * dt;
-      }
-    } else {
-      // Ballistic glide with a little body lift and snout steering. Gravity is
-      // gentler in air, and the body's speed-dependent lift lets a fast breach
-      // turn into a long soaring arc instead of a short hop.
+    // --- Force integration ----------------------------------------------
+    // Steering is solved once per frame; water forces and translation run at
+    // a fixed 120 Hz (1-4 substeps) so slams and surface crossings are stable.
+    // Fixed 120 Hz when the frame allows it. Cap at two substeps: the water
+    // kinematics are refreshed once per frame, and allowing more substeps on a
+    // slow frame would turn a CPU spike into a feedback loop.
+    const substeps = clamp(Math.ceil(dt / (1 / 120)), 1, 2);
+    const step = dt / substeps;
+    this.hydroControl.thrustAccel = thrustAccel;
+    this.hydroControl.reverseAccel = reverseAccel;
+    this.hydroControl.verticalAccel = verticalAccel;
+
+    let hydro = this.hydro;
+    let hullMs = 0;
+    for (let s = 0; s < substeps; s++) {
+      hydro = this.hull.apply(this, ocean, this.hydroControl, this.tmpCurrent, s === 0);
+      hullMs += this.hull.lastMs;
+      this.velocity.addScaledVector(hydro.accel, step);
+      this.position.addScaledVector(this.velocity, step);
+    }
+    this.hydro = hydro;
+    this.hullMs = hullMs;
+
+    // Dry-hull flight: keep the snout-led ballistic glide and the small
+    // speed-dependent body lift, but gravity has already been integrated by
+    // the hull. Only add the aerodynamic terms while the hull is essentially
+    // out of the water.
+    if (hydro.wetFraction < 0.02) {
       const airSpeed = this.velocity.length();
       const horizontalAirspeed = Math.hypot(this.velocity.x, this.velocity.z);
       const levelness = airSpeed > 0.01 ? clamp(horizontalAirspeed / airSpeed, 0, 1) : 0;
-      const lift = movement.airLift * airSpeed * airSpeed * levelness;
-      this.velocity.y += (lift - movement.airGravity) * dt;
+      this.velocity.y += movement.airLift * airSpeed * airSpeed * levelness * dt;
 
-      // The snout is the flight handle: the ballistic arc follows the nose
-      // without snapping the whole momentum vector around instantly. Steering
-      // authority fades near stall speed so the dolphin cannot hover in place.
+      let vf = this.velocity.dot(this.forward);
+      let vr = this.velocity.dot(this.right);
+      let vu = this.velocity.dot(this.up);
+      vf -= vf * (movement.airForwardDrag + Math.abs(vf) * movement.airForwardQuadraticDrag) * dt;
+      vr -= vr * movement.airLateralDrag * dt;
+      vu -= vu * movement.airVerticalDrag * dt;
+      this.velocity
+        .copy(this.forward).multiplyScalar(vf)
+        .addScaledVector(this.right, vr)
+        .addScaledVector(this.up, vu);
+
       const steerSpeed = this.velocity.length();
       const steerAuthority = clamp((steerSpeed - 4.0) / 10.0, 0, 1);
       if (steerAuthority > 0.001) {
@@ -727,8 +747,7 @@ export class Dolphin {
       }
     }
 
-    // --- Integrate -------------------------------------------------------
-    this.position.addScaledVector(this.velocity, dt);
+    this.speed = this.velocity.length();
 
     if (this.position.y > surfaceHeight + 0.25) {
       this.airborne = true;
@@ -1005,6 +1024,7 @@ export class Dolphin {
     this.telemetry.heading = ((-this.targetYaw * 180) / Math.PI + 720) % 360;
     this.telemetry.underwater = !centerAbove;
     this.telemetry.breaches = this.breachCount;
+    this.telemetry.hydro = this.hydro;
 
     return this.telemetry;
   }

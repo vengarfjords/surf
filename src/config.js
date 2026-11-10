@@ -110,7 +110,7 @@ export const TUNING = {
     // Airborne translation. The animal is ballistic, but the body still
     // glides: low drag, reduced gravity, a little speed-dependent lift and
     // real velocity steering from the snout.
-    airGravity: 8.8,
+    airGravity: 9.81,
     airLift: 0.0065,
     airSteer: 0.72,
     airForwardDrag: 0.01,
@@ -134,6 +134,49 @@ export const TUNING = {
     bodyRadius: 0.52,
     noseRadius: 0.24,
     cameraShakeDecay: 3.4,
+  },
+
+  /**
+   * M2 hull hydrodynamics. The physics hull is a surface of revolution
+   * slightly inside the visual mesh, sampled as 196 panels. Mass is derived
+   * from the displaced volume; buoyancyRatio < 1 leaves the animal a little
+   * positively buoyant so it floats with a stable waterline.
+   */
+  hydro: {
+    hullScale: 0.82,
+    radialPanels: 12,
+    density: 1025,
+    buoyancyRatio: 1.0,
+    // Lungs: near the surface the animal displaces a little extra volume;
+    // that gas compresses with depth, so below ~2 m it is neutrally buoyant.
+    lungFraction: 0.2,
+    lungDepthScale: 1.6,
+    lungSpeedFade: 0.6,
+    addedMassForward: 0.10,
+    addedMassLateral: 1.0,
+    addedMassVertical: 1.0,
+    dragNormal: 0.65,
+    dragTangential: 0.003,
+    airDragNormal: 0.05,
+    airDragTangential: 0.004,
+    slamDrag: 2.4,
+    slamMinSpeed: 0.35,
+    // Fin lift: pectorals and flukes are separate lifting surfaces, so a
+    // banked body generates a sideways component through its rolled span.
+    pectoralArea: 0.04,
+    flukeArea: 0.06,
+    finLiftSlope: 1.5,
+    flukeLiftSlope: 1.2,
+    flukeOscillation: 0.12,
+    finLiftMax: 1.2,
+    liftCap: 5200,
+    thrustAerationLoss: 0.75,
+    // Passive surface trim when the player is not pitching: the body settles
+    // parallel to the local face instead of floating nose-up forever.
+    surfaceTrimDepth: 1.2,
+    surfaceTrimRate: 1.4,
+    surfaceTrimSpeed: 4.5,
+    panelDebugScale: 0.00045,
   },
 
   camera: {
@@ -377,6 +420,17 @@ export const TUNE_CONTROLS = [
   { path: "water.timeScale", label: "wave time scale", min: 0, max: 2, step: 0.01 },
   { path: "water.foamAmount", label: "whitecap amount", min: 0, max: 1.6, step: 0.01 },
   { path: "water.foamThreshold", label: "whitecap threshold", min: 0.15, max: 1, step: 0.01 },
+  { path: "hydro.buoyancyRatio", label: "buoyancy ratio", min: 0.9, max: 1.05, step: 0.001 },
+  { path: "hydro.lungFraction", label: "lung buoyancy", min: 0, max: 0.4, step: 0.005 },
+  { path: "hydro.lungDepthScale", label: "lung depth scale", min: 0.3, max: 4, step: 0.05 },
+  { path: "hydro.lungSpeedFade", label: "lung speed fade", min: 0, max: 1, step: 0.01 },
+  { path: "hydro.addedMassLateral", label: "added mass · side", min: 0, max: 2, step: 0.01 },
+  { path: "hydro.addedMassVertical", label: "added mass · vertical", min: 0, max: 2, step: 0.01 },
+  { path: "hydro.dragNormal", label: "panel normal drag", min: 0.1, max: 2.5, step: 0.01 },
+  { path: "hydro.dragTangential", label: "skin drag", min: 0.0005, max: 0.02, step: 0.0005 },
+  { path: "hydro.finLiftSlope", label: "fin lift", min: 0, max: 6, step: 0.05 },
+  { path: "hydro.slamDrag", label: "slam drag", min: 0, max: 8, step: 0.1 },
+  { path: "hydro.surfaceTrimRate", label: "surface trim", min: 0, max: 4, step: 0.05 },
   { path: "debug.probe", label: "water probe", type: "toggle" },
   { path: "debug.gpuProbe", label: "GPU parity probe", type: "toggle" },
   { path: "debug.crestOverlay", label: "crest lines", type: "toggle" },

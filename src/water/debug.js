@@ -58,6 +58,24 @@ export class WaterDebug {
     this.group.add(this.arrow);
     scene.add(this.group);
 
+    // Per-panel force vectors. This buffer is filled by Hull.apply() every
+    // substep; the overlay only copies it when the debug toggle is on.
+    this.forceGroup = new THREE.Group();
+    this.forceGroup.name = "hull-force-vectors";
+    const forceGeo = new THREE.BufferGeometry();
+    forceGeo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array(dolphin.hull.debugCount * 6), 3)
+    );
+    this.forceLines = new THREE.LineSegments(
+      forceGeo,
+      new THREE.LineBasicMaterial({ color: 0xffce72, depthTest: false, transparent: true, opacity: 0.8 })
+    );
+    this.forceLines.frustumCulled = false;
+    this.forceLines.renderOrder = 21;
+    this.forceGroup.add(this.forceLines);
+    scene.add(this.forceGroup);
+
     this.readout = document.createElement("div");
     this.readout.id = "waterReadout";
     this.readout.className = "water-readout";
@@ -75,7 +93,13 @@ export class WaterDebug {
     const debug = TUNING.debug;
     const show = this.started && (debug.probe || debug.readout);
     this.group.visible = this.started && debug.probe;
+    this.forceGroup.visible = this.started && debug.forceVectors;
     this.readout.style.display = this.started && debug.readout ? "" : "none";
+    if (this.forceGroup.visible) {
+      const attr = this.forceLines.geometry.attributes.position;
+      attr.array.set(this.dolphin.hull.debugPositions);
+      attr.needsUpdate = true;
+    }
 
     // The probe sits a few metres ahead of the snout so it is visible in the
     // chase shot. It samples at the dolphin's height, not at the camera.
@@ -116,6 +140,13 @@ export class WaterDebug {
     const slopeDeg = (Math.atan(surf.slope) * 180) / Math.PI;
     const gpuText = this.gpuHeight === null ? "—" : `${(this.gpuDelta * 100).toFixed(1)} cm`;
     const dirDeg = ((Math.atan2(full.waveDirectionZ, full.waveDirectionX) * 180) / Math.PI + 360) % 360;
+    const h = this.dolphin.hydro;
+    const hydroLine = h
+      ? `<br><b>HULL</b> wet ${h.wettedArea.toFixed(1)} m² · ${h.mass.toFixed(0)} kg · ` +
+        `F·fwd ${h.forwardForce.toFixed(0)} N · P·fwd ${h.pressureForwardForce.toFixed(0)} N · buoy ${h.buoyancyForce.toFixed(0)} N · ` +
+        `FK ${h.fkForce.toFixed(0)} N · lung ${h.lungForce.toFixed(0)} N · drag ${h.dragForce.toFixed(0)} N · ` +
+        `lift ${h.liftForce.toFixed(0)} N · slam ${h.slamForce.toFixed(0)} N`
+      : "";
     this.readout.innerHTML =
       `<b>SEA</b> Hs ${stats.height.toFixed(1)} m · λ ${stats.peakWavelength.toFixed(0)} m · ` +
       `T ${stats.peakPeriod.toFixed(1)} s · c ${phase.toFixed(1)} m/s · ${dirDeg.toFixed(0)}°` +
@@ -123,6 +154,7 @@ export class WaterDebug {
       `face ${slopeDeg.toFixed(1)}° · foam ${clamp((1 - surf.jacobian) * 1.5, 0, 1).toFixed(2)} · ` +
       `GPU Δ ${gpuText}` +
       `<br><b>SURF</b> dolphin ${speed.toFixed(1)} m/s · phase ${phase.toFixed(1)} m/s · ` +
-      `${ratio.toFixed(2)}×${ratio > 0.92 && ratio < 1.15 ? " — on the face" : ""}`;
+      `${ratio.toFixed(2)}×${ratio > 0.92 && ratio < 1.15 ? " — on the face" : ""}` +
+      hydroLine;
   }
 }

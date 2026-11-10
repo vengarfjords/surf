@@ -61,8 +61,13 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         dhdx += amp * w.x * c;
         dhdz += amp * w.y * c;
         float ha = amp * uChop;
-        horizX += ha * w.x * c;
-        horizZ += ha * w.y * c;
+        // Horizontal displacement is Q*A*unitDirection*cos(theta). w.x/w.y
+        // are kx/kz, so normalise them; using them directly adds a spurious
+        // factor of k and makes the rendered surface disagree with the CPU.
+        vec2 kvec = vec2(w.x, w.y);
+        vec2 dir = kvec * inversesqrt(max(dot(kvec, kvec), 1e-8));
+        horizX += ha * dir.x * c;
+        horizZ += ha * dir.y * c;
         dxdx -= ha * w.x * w.x * s;
         dzdz -= ha * w.y * w.y * s;
         dxdz -= ha * w.x * w.y * s;

@@ -348,7 +348,12 @@ export class Ocean {
       fragmentShader: probeFragmentShader,
       side: THREE.DoubleSide,
     });
-    this.probeMesh = new THREE.Mesh(this.geometry, this.probeMaterial);
+    // The parity probe gets a dedicated 96×96 patch (±12 m, 25 cm cells).
+    // This isolates CPU-vs-shader parity from the main clipmap's tessellation
+    // error, which is measured separately by the visual surface itself.
+    const probeGeo = new THREE.PlaneGeometry(24, 24, 192, 192);
+    probeGeo.rotateX(-Math.PI / 2);
+    this.probeMesh = new THREE.Mesh(probeGeo, this.probeMaterial);
     this.probeMesh.frustumCulled = false;
     this.probeScene.add(this.probeMesh);
     this.probeCamera = new THREE.OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 0.1, 140);
@@ -368,30 +373,33 @@ export class Ocean {
     const rings = TUNING.water.surfaceRings;
     const segments = TUNING.water.surfaceSegments;
     const exponent = TUNING.water.meshExponent;
-    const positions = [];
-    const uvs = [];
+    const positions = [0, 0, 0];
+    const uvs = [0, 0.5];
     const indices = [];
 
-    // Camera-following radial clipmap: cubic ring spacing puts sub-metre
-    // geometry under the dolphin and still reaches 7 km for the horizon.
+    // A single centre vertex caps the innermost ring. Without it the 1×1
+    // parity probe sits in a tiny hole at the mesh centre and reads back the
+    // clear colour instead of the surface.
     for (let i = 0; i < rings; i++) {
       const t = i / (rings - 1);
-      // t = 0 intentionally collapses the first ring to the centre so the
-      // fan closes: the probe camera sits exactly under the hole otherwise.
-      const r = Math.pow(t, exponent) * radius;
+      const r = Math.pow(t, exponent) * radius + 0.12;
       for (let j = 0; j < segments; j++) {
         const a = (j / segments) * Math.PI * 2;
         positions.push(Math.cos(a) * r, 0, Math.sin(a) * r);
         uvs.push(j / segments, t);
       }
     }
+    for (let j = 0; j < segments; j++) {
+      const j2 = (j + 1) % segments;
+      indices.push(0, 1 + j, 1 + j2);
+    }
     for (let i = 0; i < rings - 1; i++) {
       for (let j = 0; j < segments; j++) {
         const j2 = (j + 1) % segments;
-        const a = i * segments + j;
-        const b = i * segments + j2;
-        const c = (i + 1) * segments + j;
-        const d = (i + 1) * segments + j2;
+        const a = 1 + i * segments + j;
+        const b = 1 + i * segments + j2;
+        const c = 1 + (i + 1) * segments + j;
+        const d = 1 + (i + 1) * segments + j2;
         indices.push(a, c, b, b, c, d);
       }
     }
@@ -733,8 +741,8 @@ export class Ocean {
     return this.water.sample(x, y, z, out);
   }
 
-  sampleWaterBatch(positions, out, stride = 3) {
-    return this.water.sampleBatch(positions, out, stride);
+  sampleWaterBatch(positions, out, stride = 3, forForces = false) {
+    return this.water.sampleBatch(positions, out, stride, positions.length / stride, forForces);
   }
 
   addSurfaceContact(x, z, force, radius = 0.85) {

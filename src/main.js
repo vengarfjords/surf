@@ -11,6 +11,7 @@ import { OceanAudio } from "./audio.js";
 import { HUD } from "./hud.js";
 import { Post } from "./post.js";
 import { WaterDebug } from "./water/debug.js";
+import { createScenarios } from "./water/scenarios.js";
 import { clamp, lerp, smoothstep } from "./utils.js";
 
 const frame = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -81,6 +82,7 @@ async function boot() {
   const cameraRig = new CameraRig(camera, ocean);
   const post = new Post(renderer, scene, camera);
   const waterDebug = new WaterDebug(scene, ocean, dolphin);
+  const scenarios = createScenarios({ ocean, dolphin, input, water: ocean.water });
   const hidden = new HiddenThings(scene, seabed.sim, (main, sub) => hud.toast(main, sub));
 
   let started = false;
@@ -217,6 +219,8 @@ async function boot() {
     waveUpdateMs: 0,
     oceanMs: 0,
     seabedMs: 0,
+    dolphinMs: 0,
+    hullMs: 0,
     effectsMs: 0,
     drawCalls: 0,
     triangles: 0,
@@ -238,9 +242,11 @@ async function boot() {
     sharedShader.time.value = total;
 
     const stepInput = started ? input : idleInput;
+    const dolphinStart = performance.now();
     const telemetry = frozen
       ? dolphin.telemetry
       : dolphin.update(dt, stepInput, ocean, seabed, effects);
+    const dolphinMs = performance.now() - dolphinStart;
     telemetry.x = dolphin.position.x;
     telemetry.z = dolphin.position.z;
     telemetry.y = dolphin.position.y;
@@ -409,6 +415,8 @@ async function boot() {
       perf.gpuMs = gpuFrameMs;
       perf.oceanMs = lastOceanMs;
       perf.seabedMs = seabedMs;
+      perf.dolphinMs = dolphinMs;
+      perf.hullMs = dolphin.hullMs || 0;
       perf.effectsMs = effectsMs;
       perf.waveUpdateMs = ocean.water.lastUniformMs || 0;
       perf.drawCalls = renderer.info.render.calls;
@@ -431,6 +439,7 @@ async function boot() {
     ocean,
     water: ocean.water,
     waterDebug,
+    scenarios,
     seabed,
     dolphin,
     cameraRig,
