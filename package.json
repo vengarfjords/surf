@@ -1,0 +1,24 @@
+{
+  "name": "ocean",
+  "version": "1.0.0",
+  "description": "A 3 km neritic drift — a low-fi underwater dolphin simulator.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "three",
+    "ocean",
+    "dolphin",
+    "webgl"
+  ],
+  "dependencies": {
+    "three": "^0.187.0",
+    "vite": "^8.3.6"
+  },
+  "devDependencies": {
+    "@gltf-transform/cli": "^4.5.1"
+  }
+}

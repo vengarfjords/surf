@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#062d33" />
+    <title>ocean — a neritic drift</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main id="stage">
+      <canvas id="scene" aria-label="An underwater dolphin simulation in a 3 by 3 kilometre neritic zone"></canvas>
+
+      <div class="hud" id="hud">
+        <header class="hud-top">
+          <div class="rec">
+            <span class="rec-dot"></span>
+            <span class="rec-label">REC</span>
+            <span class="timecode" id="timecode">00:00:00:00</span>
+            <span class="tape">NRZ03 / A-CAM</span>
+          </div>
+          <div class="site-mark">
+            <span>NRZ—03 / <em>neritic shelf</em></span>
+            <span class="thin" id="coords">X +0000 · Z +0000</span>
+          </div>
+        </header>
+
+        <div class="title-lockup" id="titleLockup">
+          <h1>ocean</h1>
+          <p><span>a neritic drift</span><span class="rule"></span><span>3 × 3 km</span></p>
+        </div>
+
+        <footer class="hud-bottom">
+          <div class="telemetry">
+            <div class="readout">
+              <span class="label">DEPTH</span>
+              <span class="value" id="depth">00.0</span><span class="unit">m</span>
+            </div>
+            <div class="readout">
+              <span class="label">SPD</span>
+              <span class="value" id="speed">0.0</span><span class="unit">m/s</span>
+            </div>
+            <div class="readout alt-readout">
+              <span class="label">ALT</span>
+              <span class="value" id="altitude">0.0</span><span class="unit">m</span>
+            </div>
+            <div class="bar"><i id="speedBar"></i></div>
+          </div>
+
+          <div class="hint" id="hint">
+            <span><b>W</b> glide</span>
+            <span><b>S</b> brake</span>
+            <span><b>A</b><b>D</b> bank</span>
+            <span><b>SPACE</b><b>C</b> rise / dive</span>
+            <span><b>SHIFT</b> surge</span>
+            <span class="mouse-hint"><b>MOUSE</b> look / steer</span>
+            <span><b>T</b> tune</span>
+          </div>
+
+          <div class="compass">
+            <div class="compass-ring">
+              <span class="n">N</span>
+              <span class="e">E</span>
+              <span class="s">S</span>
+              <span class="w">W</span>
+              <i id="compassNeedle"></i>
+            </div>
+            <span class="heading" id="heading">000°</span>
+            <span class="sound-state" id="soundState">SND—ON</span>
+          </div>
+        </footer>
+
+        <div class="surface-indicator" id="surfaceIndicator">
+          <span class="surface-line"></span>
+          <span id="surfaceLabel">SURFACE</span>
+        </div>
+
+        <div class="toast" id="toast">
+          <span class="toast-main" id="toastMain"></span>
+          <span class="toast-sub" id="toastSub"></span>
+        </div>
+      </div>
+
+      <div class="grain-overlay"></div>
+      <div class="vignette-overlay"></div>
+      <div class="lens-edge"></div>
+
+      <div class="start-prompt" id="startPrompt">
+        <button id="enterButton" type="button">
+          <span class="enter-caption">click to enter the water</span>
+          <span class="enter-sub">sound on · the body follows the mouse · <b>W</b> to glide</span>
+        </button>
+        <span class="start-foot">no objective · no timer · stay out as long as you like</span>
+      </div>
+
+      <aside class="tuner" id="tuner" aria-hidden="true">
+        <div class="tuner-head">
+          <span>SWIM FEEL / TUNING</span>
+          <button id="tunerClose" type="button" aria-label="Close tuning panel">×</button>
+        </div>
+        <div class="tuner-body" id="tunerBody"></div>
+        <p class="tuner-foot">Press <b>T</b> to close · changes are live · <b>window.OCEAN</b></p>
+      </aside>
+
+      <div class="loading" id="loading">
+        <span class="loading-mark"></span>
+        <span id="loadingText">mapping the shelf</span>
+      </div>
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
