@@ -280,6 +280,7 @@ export class Ocean {
     this._solverSurface = {};
     this._solver3D = {};
     this._foamSample = {};
+    this._probeSample = {};
     this._underwater = 1;
     this._wetness = 0;
     this._tempColor = new THREE.Color();
@@ -595,7 +596,11 @@ export class Ocean {
           // thrust loss and the breaker jet.
           float broken = smoothstep(0.15, 0.7, vBreak);
           float aeration = clamp(
-            broken * (0.35 + 0.5 * foamNoise) * (0.35 + 0.65 * vPeakCrest) * uAerationAmount,
+            broken *
+              (0.35 + 0.5 * foamNoise) *
+              (0.35 + 0.65 * vPeakCrest) *
+              smoothstep(0.35, 0.85, crest) *
+              uAerationAmount,
             0.0,
             0.85
           );
@@ -631,6 +636,15 @@ export class Ocean {
           foam = max(foam, bodyFoam * 0.9);
           foam = clamp(foam, 0.0, 1.0);
 
+          // Color-only tube cue: a dark cavity under the plunging lip. The
+          // heightfield cannot overhang, so this is shading, not geometry.
+          float tubeMask =
+            broken *
+            plunge *
+            smoothstep(0.52, 0.9, vPeakCrest) *
+            smoothstep(0.5, 0.85, crest) *
+            (1.0 - smoothstep(0.94, 1.0, crest));
+
           // ---- above the surface ----------------------------------------
           float cosView = clamp(dot(view, microN), 0.0, 1.0);
           float fres = 0.02 + 0.98 * pow(1.0 - cosView, 5.0);
@@ -659,6 +673,7 @@ export class Ocean {
           body += uTopColor * (0.02 + crest * 0.08) * 0.35;
 
           vec3 above = mix(body, sky, clamp(0.04 + fres * 0.82, 0.0, 0.94));
+          above = mix(above, vec3(0.004, 0.03, 0.05), tubeMask * 0.35);
 
           float sunAlign = max(dot(refl, uSunDir), 0.0);
           float specPower = mix(1200.0, 70.0, smoothstep(80.0, 1800.0, vDistance));
@@ -670,7 +685,7 @@ export class Ocean {
           above += uSunColor * glint;
 
           vec3 foamColor = mix(vec3(0.6, 0.72, 0.7), vec3(0.96, 0.99, 0.96), smoothstep(0.1, 0.8, foamNoise + lace * 0.25));
-          above = mix(above, foamColor, foam * 0.88);
+          above = mix(above, foamColor, foam * 0.88 * (1.0 - tubeMask * 0.45));
 
           // ---- below the surface ----------------------------------------
           // Snell's window: refracted sky within the critical angle
@@ -1062,7 +1077,8 @@ export class Ocean {
     const oldCenterX = u.uCenter.value.x;
     const oldCenterZ = u.uCenter.value.y;
     const oldSim = u.uSimScale.value;
-    u.uCenter.value.set(x, z);
+    const sample = this.water.sampleSurface(x, z, this._probeSample);
+    u.uCenter.value.set(sample.parameterX, sample.parameterZ);
     u.uSimScale.value = 0;
 
     this.probeCamera.position.set(x, 60, z);
@@ -1085,7 +1101,7 @@ export class Ocean {
     u.uSimScale.value = oldSim;
 
     const q = this._probePixels[0] * 256 + this._probePixels[1];
-    return (q / 65535) * 16 - 8;
+    return (q / 65535) * 96 - 48;
   }
 
   shouldDrawSurface() {

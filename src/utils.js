@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { PALETTE } from "./config.js";
+import { PALETTE, TUNING } from "./config.js";
 
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
@@ -100,11 +100,21 @@ export function seabedHeight(x, z) {
     Math.exp(-((x - 2) * (x - 2) + (z - 26) * (z - 26)) / 4800) * 2.4 +
     Math.exp(-((x + 34) * (x + 34) + (z - 78) * (z - 78)) / 9500) * 1.35;
 
-  // A broad surf bank east of the opening reef. It rises from ~10 m to ~3 m
-  // over roughly 400 m, which is where the M3 swell shoals, steepens and
-  // breaks. Shared by the sand mesh, reef placement, wave field and physics.
-  const surfBank =
-    Math.exp(-((x - 260) * (x - 260) + (z - 140) * (z - 140)) / 28800) * 8.2;
+  // A directional deep-water big-wave ridge aligned across the dominant
+  // swell. The seaward side falls into a broad ~32 m basin; the ridge crest
+  // sits ~14 m below the surface, deep enough for a 20-30 m face to shoal and
+  // break without the heightfield collapsing into the old ~3 m bank. The
+  // compact taper keeps the basin from deepening the opening reef.
+  const swx = Math.cos(TUNING.water.swellDirection);
+  const swz = Math.sin(TUNING.water.swellDirection);
+  const dsx = x - TUNING.water.surfZoneX;
+  const dsz = z - TUNING.water.surfZoneZ;
+  const sCross = dsx * swx + dsz * swz;
+  const sAlong = -dsx * swz + dsz * swx;
+  const basinR = Math.hypot((sCross + 170) / 220, sAlong / 400);
+  const surfBasin = Math.pow(1 - smoothstep(0.72, 1.0, basinR), 2) * 22;
+  const ridgeR = Math.hypot(sCross / 140, sAlong / 220);
+  const surfRidge = Math.pow(1 - smoothstep(0.68, 1.0, ridgeR), 2) * 14;
 
   // Patchy reef shelf outcrops, slight raised humps.
   const shelf = Math.max(0, fbm(x * 0.0072 + 51.1, z * 0.0072 + 4.4, 2) - 0.5) * 2.7;
@@ -112,8 +122,14 @@ export function seabedHeight(x, z) {
   const radius = Math.max(Math.abs(x), Math.abs(z));
   const openWater = smoothstep(1120, 1510, radius) * 14;
 
-  const depth =
-    7.15 + broad * 6.4 + mid * 2.1 + fine * 0.6 + channel - bar - shelf - surfBank + openWater;
+  const baseDepth =
+    7.15 + broad * 6.4 + mid * 2.1 + fine * 0.6 + channel - bar - shelf + openWater;
+
+  // Inside the big-wave arena, replace the noisy shelf depth with a controlled
+  // deep floor so the 20 m swell cannot expose shallow sand through a trough.
+  const arenaMask = 1 - smoothstep(280, 430, Math.hypot(dsx, dsz));
+  const arenaDepth = 16 + surfBasin - surfRidge;
+  const depth = baseDepth + (arenaDepth - baseDepth) * arenaMask;
   return -Math.max(2.55, depth);
 }
 

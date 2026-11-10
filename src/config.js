@@ -10,8 +10,8 @@ export const TUNING = {
   world: {
     size: 3000,
     boundary: 1425,
-    start: { x: -2.5, y: -5.8, z: 8.0 },
-    startYaw: 0.06,
+    start: { x: 380, y: -2.0, z: 240 },
+    startYaw: 0.96,
     startPitch: -0.04,
   },
 
@@ -180,21 +180,21 @@ export const TUNING = {
   },
 
   camera: {
-    chaseDistance: 3.35,
-    chaseHeight: 1.15,
+    chaseDistance: 11.0,
+    chaseHeight: 7.5,
     // A small shoulder offset keeps the shot alive without making the view
     // point across the dolphin instead of along its snout.
     shoulder: 0.7,
-    targetAhead: 2.95,
-    lookUp: 0.1,
+    targetAhead: 6.0,
+    lookUp: 0.6,
     // The camera orbits the snout target, not the lagging physical heading.
     lookResponsiveness: 14.0,
     positionLag: 10.0,
     rotationLag: 16.0,
     waterlineLag: 6.0,
-    speedPullback: 1.15,
+    speedPullback: 2.0,
     speedFov: 13,
-    baseFov: 62,
+    baseFov: 64,
     rollFollow: 0.27,
     handheld: 1.0,
     shake: 0.85,
@@ -217,29 +217,30 @@ export const TUNING = {
    */
   water: {
     seed: 20261109,
-    preset: "moderate",
-    surfZoneX: 260,
-    surfZoneZ: 140,
-    swellHeight: 2.15,
-    swellWavelength: 58,
-    swellWavelengthSpread: 0.17,
+    preset: "surf",
+    surfZoneX: 450,
+    surfZoneZ: 300,
+    swellHeight: 20,
+    swellWavelength: 280,
+    swellWavelengthSpread: 0.06,
     swellDirection: 0.61,
-    swellDirectionSpread: 0.24,
+    swellDirectionSpread: 0.04,
     swellComponents: 96,
-    windSeaHeight: 0.55,
-    windSeaWavelength: 11.5,
-    windSeaWavelengthSpread: 0.42,
+    windSeaHeight: 0.35,
+    windSeaWavelength: 22,
+    windSeaWavelengthSpread: 0.35,
     windSeaDirection: 1.02,
     windSeaDirectionSpread: 0.62,
     windSeaComponents: 32,
     // Gerstner horizontal displacement scale. The generator computes a safe
     // base value from the total steepness; this is an artistic multiplier.
-    chop: 0.78,
+    chop: 0.65,
     timeScale: 1.0,
+    startTime: 4.5,
     // Rendering / foam.
     foamThreshold: 0.56,
-    foamAmount: 0.8,
-    detailStrength: 0.55,
+    foamAmount: 0.9,
+    detailStrength: 0.4,
     // M3 depth response. The wave spectrum is evaluated with finite-depth
     // dispersion and Green's-law shoaling using the baked bathymetry; the
     // breaker is a saturated, aerated crest (a heightfield cannot overhang).
@@ -247,9 +248,9 @@ export const TUNING = {
     shoalReference: 12,
     shoalStrength: 0.25,
     breakRatio: 0.85,
-    breakSoftness: 0.12,
-    breakerJet: 0.65,
-    breakerLip: 0.12,
+    breakSoftness: 0.08,
+    breakerJet: 0.35,
+    breakerLip: 0.25,
     aerationAmount: 0.85,
     foamPersistence: 0.6,
     // Local nonlinear shallow-water solver over the surf bank. The domain is
@@ -266,15 +267,15 @@ export const TUNING = {
     // Advected foam/aeration state for the analytic surf bank. This is shared
     // by the surface shader and the hull physics.
     foamFieldEnabled: true,
-    foamFieldExtent: 192,
-    foamFieldCells: 96,
+    foamFieldExtent: 400,
+    foamFieldCells: 128,
     foamFieldRate: 15,
     foamFieldDecay: 0.18,
     foamFieldSource: 0.7,
     // Ambient breaker mist above the surf line. Reuses the particle budget;
     // the rate is spawns per second near the bank.
     surfSpray: true,
-    surfSprayRate: 30,
+    surfSprayRate: 12,
     // Subsurface bubble plume under the break line, emitted only while the
     // camera is underwater.
     surfBubbles: true,
@@ -447,8 +448,8 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
   { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf"] },
-  { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 4, step: 0.05 },
-  { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 110, step: 1 },
+  { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 24, step: 0.05 },
+  { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 350, step: 1 },
   { path: "water.swellDirection", label: "swell direction", min: 0, max: 6.28, step: 0.01 },
   { path: "water.swellDirectionSpread", label: "swell spread", min: 0.02, max: 0.9, step: 0.01 },
   { path: "water.swellWavelengthSpread", label: "swell bandwidth", min: 0.04, max: 0.5, step: 0.01 },
@@ -458,6 +459,7 @@ export const TUNE_CONTROLS = [
   { path: "water.windSeaDirectionSpread", label: "wind spread", min: 0.05, max: 1.2, step: 0.01 },
   { path: "water.chop", label: "crest sharpness", min: 0, max: 1.4, step: 0.01 },
   { path: "water.timeScale", label: "wave time scale", min: 0, max: 2, step: 0.01 },
+  { path: "water.startTime", label: "wave start time", min: 0, max: 40, step: 0.5 },
   { path: "water.foamAmount", label: "whitecap amount", min: 0, max: 1.6, step: 0.01 },
   { path: "water.foamThreshold", label: "whitecap threshold", min: 0.15, max: 1, step: 0.01 },
   { path: "water.depthResponse", label: "depth response", type: "toggle" },
@@ -511,7 +513,8 @@ export const TUNE_CONTROLS = [
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.dynamicQuality", label: "dynamic quality", type: "toggle" },
   { path: "visuals.dynamicQualityMinScale", label: "min render scale", min: 0.4, max: 0.8, step: 0.01 },
-  { path: "camera.chaseDistance", label: "camera distance", min: 2.5, max: 12, step: 0.1 },
+  { path: "camera.chaseDistance", label: "camera distance", min: 2.5, max: 18, step: 0.1 },
+  { path: "camera.chaseHeight", label: "camera height", min: 1, max: 12, step: 0.1 },
   { path: "camera.shoulder", label: "camera shoulder", min: 0, max: 2.2, step: 0.01 },
   { path: "camera.lookResponsiveness", label: "look response", min: 2, max: 28, step: 0.1 },
 ];

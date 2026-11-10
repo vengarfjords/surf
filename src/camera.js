@@ -44,7 +44,7 @@ export class CameraRig {
     const speedNorm = clamp(speed / TUNING.movement.boostSpeed, 0, 1.15);
     const worldUp = WORLD_UP;
     const water = this.ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
-    const submerged = dolphin.position.y < water.height - 0.16;
+    const deep = dolphin.position.y < water.height - 2.5;
     // Near the surface, let the camera sit in the waterline band so a true
     // half-in/half-out frame is possible instead of forcing it 18 cm down.
     const nearSurface = Math.abs(dolphin.position.y - water.height) < 0.55;
@@ -84,13 +84,20 @@ export class CameraRig {
     targetLook.addScaledVector(worldUp, camCfg.lookUp);
 
     if (!started) {
-      // An unhurried attract shot, just off the creature's flank. The reef is
-      // already in front of the animal; the observer waits at the edge of it.
-      const a = 1.48 + Math.sin(this.time * 0.045) * 0.12;
-      this.tmp2.set(Math.sin(a) * 5.1, 1.35, Math.cos(a) * 5.1);
-      targetPos.copy(dolphin.position).add(this.tmp2).addScaledVector(worldUp, 0.25);
-      targetLook.copy(dolphin.position).addScaledVector(fwd, 1.35);
-      targetLook.y += 0.55;
+      // Cinematic pre-start view: look across the big-wave ridge from the
+      // seaward side so the default screen shows the 20-30 m faces.
+      const cfg = TUNING.water;
+      const wx = Math.cos(cfg.swellDirection);
+      const wz = Math.sin(cfg.swellDirection);
+      const px = -wz;
+      const pz = wx;
+      const drift = Math.sin(this.time * 0.05) * 35;
+      targetPos.set(
+        cfg.surfZoneX - 135 * wx + drift * px,
+        34,
+        cfg.surfZoneZ - 135 * wz + drift * pz
+      );
+      targetLook.set(cfg.surfZoneX + 10 * wx, 2, cfg.surfZoneZ + 10 * wz);
     }
 
     // Handheld drift / fluid camera noise.
@@ -104,24 +111,22 @@ export class CameraRig {
     targetLook.y += Math.cos(this.time * 0.3 + 0.2) * 0.08 * hh;
     targetLook.z += Math.sin(this.time * 0.27 + 0.9) * 0.11 * hh;
 
-    // Avoid the seafloor and the underside of the surface. The dolphin may
-    // breach; when it does, the camera is allowed to break through with it.
-    const camSurf = this.ocean.getWaterSample(targetPos.x, targetPos.z);
-    if (submerged) {
-      const ceiling = camSurf.height + (nearSurface ? 0.12 : -0.32);
-      if (targetPos.y > ceiling) targetPos.y = ceiling;
-    } else {
-      // When the dolphin is on or above the surface, let the camera break
-      // through with it so a breach actually reveals the sky.
-      if (this.position.y > camSurf.height - 0.2 && targetPos.y < camSurf.height + 0.52) {
-        targetPos.y = camSurf.height + 0.52;
+    if (started) {
+      // Avoid the seafloor and the underside of the surface. The dolphin may
+      // breach; when it does, the camera is allowed to break through with it.
+      const camSurf = this.ocean.getWaterSample(targetPos.x, targetPos.z);
+      if (deep) {
+        const ceiling = camSurf.height + (nearSurface ? 0.12 : -0.32);
+        if (targetPos.y > ceiling) targetPos.y = ceiling;
+      } else {
+        // Keep the chase camera above the local surface while the animal is on
+        // or above the water. In a 20-30 m swell the camera's own wave can
+        // otherwise swallow it even when the dolphin is clear.
+        targetPos.y = Math.max(targetPos.y, camSurf.height + 1.0);
       }
-      if (targetPos.y < camSurf.height - 0.35 && this.position.y > camSurf.height + 0.3) {
-        targetPos.y = camSurf.height + 0.35;
-      }
+      const floorAt = seabed.getSurfaceHeight(targetPos.x, targetPos.z);
+      if (targetPos.y < floorAt + 0.52) targetPos.y = floorAt + 0.52;
     }
-    const floorAt = seabed.getSurfaceHeight(targetPos.x, targetPos.z);
-    if (targetPos.y < floorAt + 0.52) targetPos.y = floorAt + 0.52;
 
     if (!this.initialized) {
       this.position.copy(targetPos);
@@ -137,17 +142,19 @@ export class CameraRig {
     // through a steep bank or a crest.
     const smoothedSurf = this.ocean.getWaterSample(this.position.x, this.position.z);
     const smoothedFloor = seabed.getSurfaceHeight(this.position.x, this.position.z);
-    if (submerged && !nearSurface && this.position.y > smoothedSurf.height - 0.18) {
-      this.position.y = lerp(this.position.y, smoothedSurf.height - 0.18, 0.3);
-    } else if (submerged && nearSurface) {
-      // Keep the camera inside a narrow band around the local surface.
-      const lo = smoothedSurf.height - 0.22;
-      const hi = smoothedSurf.height + 0.12;
-      if (this.position.y < lo) this.position.y = lerp(this.position.y, lo, 0.3);
-      if (this.position.y > hi) this.position.y = lerp(this.position.y, hi, 0.3);
-    }
-    if (this.position.y < smoothedFloor + 0.48) {
-      this.position.y = lerp(this.position.y, smoothedFloor + 0.48, 0.4);
+    if (started) {
+      if (deep && !nearSurface && this.position.y > smoothedSurf.height - 0.18) {
+        this.position.y = lerp(this.position.y, smoothedSurf.height - 0.18, 0.3);
+      } else if (deep && nearSurface) {
+        // Keep the camera inside a narrow band around the local surface.
+        const lo = smoothedSurf.height - 0.22;
+        const hi = smoothedSurf.height + 0.12;
+        if (this.position.y < lo) this.position.y = lerp(this.position.y, lo, 0.3);
+        if (this.position.y > hi) this.position.y = lerp(this.position.y, hi, 0.3);
+      }
+      if (this.position.y < smoothedFloor + 0.48) {
+        this.position.y = lerp(this.position.y, smoothedFloor + 0.48, 0.4);
+      }
     }
 
     // Camera shake is a decaying, frequency-shaped impulse, not random noise.

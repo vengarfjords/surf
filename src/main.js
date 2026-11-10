@@ -50,6 +50,8 @@ async function boot() {
 
   const lights = createLights(scene);
   const ocean = new Ocean(renderer, scene);
+  ocean.time = TUNING.water.startTime;
+  ocean.water.setTime(ocean.time);
   const loadingText = document.getElementById("loadingText");
   loadingText.textContent = "reading the swell";
   await frame();
@@ -82,6 +84,45 @@ async function boot() {
   await frame();
 
   const dolphin = await Dolphin.create(scene);
+  // Spawn on a steep breaking face near the big-wave ridge. The default swell
+  // can be ±14 m, so a static altitude would start inside a wave; this also
+  // makes the first view show the face the animal is meant to ride.
+  {
+    const cfg = TUNING.water;
+    const dirX = ocean.water.peak ? ocean.water.peak.dx : 1;
+    const dirZ = ocean.water.peak ? ocean.water.peak.dz : 0;
+    let best = null;
+    for (let crossDist = -20; crossDist >= -150; crossDist -= 5) {
+      for (let alongDist = -100; alongDist <= 100; alongDist += 5) {
+        const x = cfg.surfZoneX + crossDist * dirX - alongDist * dirZ;
+        const z = cfg.surfZoneZ + crossDist * dirZ + alongDist * dirX;
+        const s = { ...ocean.getWaterSample(x, z) };
+        if (s.depth < 11 || s.depth > 34) continue;
+        if (s.breakMask < 0.5) continue;
+        const alongSlope = s.slopeX * dirX + s.slopeZ * dirZ;
+        if (alongSlope > -0.12) continue;
+        const score =
+          -alongSlope * 4 + s.breakMask - Math.abs(alongDist) * 0.01 - Math.abs(crossDist + 80) * 0.002;
+        if (!best || score > best.score) best = { x, z, s, score };
+      }
+    }
+    if (best) {
+      const yaw = Math.atan2(dirX, dirZ);
+      dolphin.position.set(best.x, best.s.height + 4.0, best.z);
+      dolphin.yaw = dolphin.targetYaw = yaw;
+      dolphin.pitch = dolphin.targetPitch = 0.04;
+      dolphin.qYaw.setFromAxisAngle(dolphin.tmp.set(0, 1, 0), yaw);
+      dolphin.qPitch.setFromAxisAngle(dolphin.tmp2.set(1, 0, 0), -0.04);
+      dolphin.orientation.copy(dolphin.qYaw).multiply(dolphin.qPitch);
+      dolphin.forward.set(0, 0, 1).applyQuaternion(dolphin.orientation);
+      dolphin.up.set(0, 1, 0).applyQuaternion(dolphin.orientation);
+      dolphin.right.set(1, 0, 0).applyQuaternion(dolphin.orientation);
+      dolphin.velocity.set(dirX * 4, 0, dirZ * 4);
+    } else {
+      dolphin.position.y =
+        ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) + 6.0;
+    }
+  }
   const cameraRig = new CameraRig(camera, ocean);
   const post = new Post(renderer, scene, camera);
   const waterDebug = new WaterDebug(scene, ocean, dolphin);
@@ -644,8 +685,8 @@ async function boot() {
         O.setFreeView([112, h + 18.5, 32], [120, h + 15.2, 40], 56);
       } else if (shotMode === "solver") {
         O.freeze(false);
-        O.water.setPreset("moderate");
-        O.setFreeView([260, 16, 140], [260 - 0.46 * 140, 2, 140 + 0.55 * 140], 62);
+        O.water.setPreset("surf");
+        O.setFreeView([300, 22, 200], [405, 8, 270], 62);
       }
     }, 2800);
   }

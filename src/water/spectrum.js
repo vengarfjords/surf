@@ -150,15 +150,15 @@ export function applyPreset(water, name) {
       foamAmount: 0.8,
     },
     surf: {
-      swellHeight: 3.0,
-      swellWavelength: 66,
-      windSeaHeight: 0.85,
-      windSeaWavelength: 13.5,
+      swellHeight: 20,
+      swellWavelength: 280,
+      windSeaHeight: 0.35,
+      windSeaWavelength: 22,
       swellDirection: 0.61,
-      windSeaDirection: 1.12,
-      chop: 1.0,
+      windSeaDirection: 1.02,
+      chop: 0.65,
       timeScale: 1.0,
-      foamAmount: 1.05,
+      foamAmount: 0.9,
     },
   };
   const p = presets[name];
