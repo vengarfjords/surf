@@ -84,45 +84,11 @@ async function boot() {
   await frame();
 
   const dolphin = await Dolphin.create(scene);
-  // Spawn on a steep breaking face near the big-wave ridge. The default swell
-  // can be ±14 m, so a static altitude would start inside a wave; this also
-  // makes the first view show the face the animal is meant to ride.
-  {
-    const cfg = TUNING.water;
-    const dirX = ocean.water.peak ? ocean.water.peak.dx : 1;
-    const dirZ = ocean.water.peak ? ocean.water.peak.dz : 0;
-    let best = null;
-    for (let crossDist = -20; crossDist >= -150; crossDist -= 5) {
-      for (let alongDist = -100; alongDist <= 100; alongDist += 5) {
-        const x = cfg.surfZoneX + crossDist * dirX - alongDist * dirZ;
-        const z = cfg.surfZoneZ + crossDist * dirZ + alongDist * dirX;
-        const s = { ...ocean.getWaterSample(x, z) };
-        if (s.depth < 11 || s.depth > 34) continue;
-        if (s.breakMask < 0.5) continue;
-        const alongSlope = s.slopeX * dirX + s.slopeZ * dirZ;
-        if (alongSlope > -0.12) continue;
-        const score =
-          -alongSlope * 4 + s.breakMask - Math.abs(alongDist) * 0.01 - Math.abs(crossDist + 80) * 0.002;
-        if (!best || score > best.score) best = { x, z, s, score };
-      }
-    }
-    if (best) {
-      const yaw = Math.atan2(dirX, dirZ);
-      dolphin.position.set(best.x, best.s.height + 4.0, best.z);
-      dolphin.yaw = dolphin.targetYaw = yaw;
-      dolphin.pitch = dolphin.targetPitch = 0.04;
-      dolphin.qYaw.setFromAxisAngle(dolphin.tmp.set(0, 1, 0), yaw);
-      dolphin.qPitch.setFromAxisAngle(dolphin.tmp2.set(1, 0, 0), -0.04);
-      dolphin.orientation.copy(dolphin.qYaw).multiply(dolphin.qPitch);
-      dolphin.forward.set(0, 0, 1).applyQuaternion(dolphin.orientation);
-      dolphin.up.set(0, 1, 0).applyQuaternion(dolphin.orientation);
-      dolphin.right.set(1, 0, 0).applyQuaternion(dolphin.orientation);
-      dolphin.velocity.set(dirX * 4, 0, dirZ * 4);
-    } else {
-      dolphin.position.y =
-        ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) + 6.0;
-    }
-  }
+  // Start at the surface in the seaward lineup. The big-wave swell moves the
+  // local surface by many metres, so the fixed config altitude is replaced by
+  // the current water height; the player can then paddle onto the ridge.
+  dolphin.position.y =
+    ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) + 1.0;
   const cameraRig = new CameraRig(camera, ocean);
   const post = new Post(renderer, scene, camera);
   const waterDebug = new WaterDebug(scene, ocean, dolphin);
@@ -171,6 +137,13 @@ async function boot() {
       started = true;
       elapsed = 0;
       input.enabled = true;
+      // The pre-start attract shot can run for a while and the big swell can
+      // carry the idle animal below the surface; start the player at the
+      // current lineup surface instead of underwater.
+      dolphin.position.y =
+        ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) + 0.5;
+      dolphin.velocity.set(0, 0, 0);
+      dolphin.pitch = dolphin.targetPitch = 0.04;
       audio.start();
       input.requestPointerLock();
     },
