@@ -13,9 +13,8 @@ import { clamp, smoothstep } from "../utils.js";
  * breaking profile and spectral swell remain authoritative for geometry.
  */
 export class FoamField {
-  constructor(wave, bathy) {
+  constructor(wave) {
     this.wave = wave;
-    this.bathy = bathy;
     this.centerX = TUNING.water.surfZoneX;
     this.centerZ = TUNING.water.surfZoneZ;
     this.extent = TUNING.water.foamFieldExtent;
@@ -30,7 +29,6 @@ export class FoamField {
 
     const n = this.n;
     const count = n * n;
-    this.bed = new Float32Array(count);
     this.foam = new Float32Array(count);
     this.next = new Float32Array(count);
     this.data = new Uint8Array(count * 4);
@@ -42,16 +40,8 @@ export class FoamField {
     this.texture.colorSpace = THREE.NoColorSpace;
     this.texture.needsUpdate = true;
 
-    const originX = this.centerX - this.extent * 0.5;
-    const originZ = this.centerZ - this.extent * 0.5;
-    for (let j = 0; j < n; j++) {
-      const z = originZ + (j + 0.5) * this.dx;
-      for (let i = 0; i < n; i++) {
-        const x = originX + (i + 0.5) * this.dx;
-        this.bed[j * n + i] = Math.max(0.35, bathy.sampleDepth(x, z));
-      }
-    }
     this._sample = {};
+    this._state = {};
     this.updateTexture();
   }
 
@@ -73,7 +63,6 @@ export class FoamField {
     const dx = this.dx;
     const foam = this.foam;
     const next = this.next;
-    const bed = this.bed;
     const wave = this.wave;
     const cfg = TUNING.water;
     const peak = wave.peak;
@@ -95,12 +84,10 @@ export class FoamField {
       for (let i = 0; i < n; i++) {
         const x = originX + (i + 0.5) * dx;
         const idx = j * n + i;
-        const depth = bed[idx];
-        const x0 = Math.max(1e-4, wave.peakK * depth);
-        const ratio = clamp(1 / Math.sqrt(Math.tanh(x0)), 0.65, 4.5);
-        const shoal = clamp(Math.pow(cfg.shoalReference / depth, cfg.shoalStrength), 0.5, 3.2);
-        const localH = wave.stats.height * shoal;
-        const breaking = smoothstep(cfg.breakRatio - cfg.breakSoftness, cfg.breakRatio + cfg.breakSoftness, localH / depth);
+        const state = wave.depthState(x, z, this._state);
+        const ratio = state.ratio;
+        const focus = state.focus;
+        const breaking = state.breakMask;
         const arg = kx * ratio * x + kz * ratio * z + phase;
         const crest = 0.5 + 0.5 * Math.sin(arg);
         // Source only across the break onset, not the saturated shallow bank:
@@ -115,12 +102,12 @@ export class FoamField {
         // Orbital advection plus a small onshore drift and cross-wave swirl.
         const wobble = 0.38;
         const u =
-          Math.sin(arg) * omega * amp * 0.65 * dirX +
-          drift * dirX +
+          Math.sin(arg) * omega * amp * 0.65 * focus * dirX +
+          drift * Math.sqrt(focus) * dirX +
           wobble * Math.sin(z * 0.23 + this.time * 0.37) * Math.cos(x * 0.11 - this.time * 0.19);
         const v =
-          Math.sin(arg) * omega * amp * 0.65 * dirZ +
-          drift * dirZ +
+          Math.sin(arg) * omega * amp * 0.65 * focus * dirZ +
+          drift * Math.sqrt(focus) * dirZ +
           wobble * Math.sin(x * 0.19 - this.time * 0.31) * Math.cos(z * 0.13 + this.time * 0.23);
 
         const px = i - (u * dt) / dx;

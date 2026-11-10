@@ -102,10 +102,15 @@ export function buildSpectrum(cfg) {
   let steepness = 0;
   let ampSum = 0;
   let variance = 0;
+  let swellVariance = 0;
+  let windVariance = 0;
   for (const c of components) {
     steepness += c.amp * c.k;
     ampSum += c.amp;
-    variance += c.amp * c.amp * 0.5;
+    const v = c.amp * c.amp * 0.5;
+    variance += v;
+    if (c.layer === 0) swellVariance += v;
+    else windVariance += v;
   }
   const safeQ = 0.82 / Math.max(1e-6, steepness);
   const chop = safeQ * clamp(cfg.chop, 0, 1.4);
@@ -118,6 +123,8 @@ export function buildSpectrum(cfg) {
     height: 4 * Math.sqrt(variance),
     swellHeight: cfg.swellHeight,
     windSeaHeight: cfg.windSeaHeight,
+    swellVariance,
+    windVariance,
     peakWavelength: peak ? peak.wavelength : 0,
     peakPeriod: peak ? TAU / peak.omega : 0,
     peakPhaseSpeed: peak ? peak.omega / peak.k : 0,
@@ -134,31 +141,43 @@ export function applyPreset(water, name) {
     calm: {
       swellHeight: 0.8,
       swellWavelength: 46,
+      swellWavelengthSpread: 0.2,
+      swellDirectionSpread: 0.28,
       windSeaHeight: 0.28,
       windSeaWavelength: 8.5,
       chop: 0.62,
       timeScale: 1.0,
       foamAmount: 0.35,
+      surfFocus: 2,
+      surfFocusRadius: 60,
     },
     moderate: {
       swellHeight: 2.15,
       swellWavelength: 58,
+      swellWavelengthSpread: 0.17,
+      swellDirectionSpread: 0.24,
       windSeaHeight: 0.55,
       windSeaWavelength: 11.5,
       chop: 0.78,
       timeScale: 1.0,
       foamAmount: 0.8,
+      surfFocus: 8,
+      surfFocusRadius: 80,
     },
     surf: {
-      swellHeight: 3.0,
-      swellWavelength: 66,
-      windSeaHeight: 0.85,
-      windSeaWavelength: 13.5,
+      swellHeight: 6,
+      swellWavelength: 150,
+      swellWavelengthSpread: 0.08,
+      swellDirectionSpread: 0.06,
+      windSeaHeight: 0.9,
+      windSeaWavelength: 16,
       swellDirection: 0.61,
-      windSeaDirection: 1.12,
-      chop: 1.0,
+      windSeaDirection: 1.02,
+      chop: 1.12,
       timeScale: 1.0,
       foamAmount: 1.05,
+      surfFocus: 24,
+      surfFocusRadius: 140,
     },
   };
   const p = presets[name];

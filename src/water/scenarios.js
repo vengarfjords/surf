@@ -156,8 +156,8 @@ export function createScenarios({ ocean, dolphin, input, water, effects }) {
       };
       const errors = [];
       for (let i = 0; i < count; i++) {
-        const x = (rnd() - 0.5) * 800;
-        const z = (rnd() - 0.5) * 800;
+        const x = (rnd() - 0.5) * 1600;
+        const z = (rnd() - 0.5) * 1600;
         const cpu = ocean.getWaterHeight(x, z);
         const gpu = ocean.gpuProbeHeight(x, z);
         errors.push(Math.abs(cpu - gpu));
@@ -236,7 +236,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects }) {
           const z = TUNING.water.surfZoneZ + gz;
           const s = { ...ocean.getWaterSample(x, z) };
           const along = s.slopeX * dirX + s.slopeZ * dirZ;
-          if (s.breakMask > 0.25 && s.depth > 2.5 && s.depth < 6 && along < -0.1) {
+          if (s.breakMask > 0.35 && s.depth > 8 && s.depth < 50 && along < -0.05) {
             const score = s.breakMask * 1.4 - along;
             if (!face || score > face.score) face = { x, z, s, along, score };
           }
