@@ -14,8 +14,12 @@ export class OceanAudio {
     this.ambientGain = null;
     this.rumbleGain = null;
     this.flowGain = null;
+    this.surfGain = null;
+    this.surfFilter = null;
+    this.crashBuffer = null;
     this.reverb = null;
     this.chirpTimer = 6 + Math.random() * 8;
+    this.surfCrashTimer = 5 + Math.random() * 8;
     this.enabled = true;
     this.time = 0;
   }
@@ -125,6 +129,27 @@ export class OceanAudio {
       flowSrc.start();
       this.flowGain = flowGain;
 
+      // Breaker roar: filtered noise whose level follows the distance to the
+      // surf bank and a slow set rhythm. Underwater the band closes into a
+      // muffled low rumble.
+      this.crashBuffer = this._noiseBuffer(3.2);
+      const surfSrc = ctx.createBufferSource();
+      surfSrc.buffer = this._noiseBuffer(6);
+      surfSrc.loop = true;
+      const surfFilter = ctx.createBiquadFilter();
+      surfFilter.type = "bandpass";
+      surfFilter.frequency.value = 520;
+      surfFilter.Q.value = 0.4;
+      const surfGain = ctx.createGain();
+      surfGain.gain.value = 0;
+      surfSrc.connect(surfFilter);
+      surfFilter.connect(surfGain);
+      surfGain.connect(this.bus);
+      surfGain.connect(this.reverb);
+      surfSrc.start();
+      this.surfFilter = surfFilter;
+      this.surfGain = surfGain;
+
       gain.gain.setTargetAtTime(0.2, ctx.currentTime, 1.8);
   }
 
@@ -168,6 +193,19 @@ export class OceanAudio {
     this.rumbleGain.gain.setTargetAtTime((0.12 + under * 0.08) * live, now, 1.2);
     this.flowGain.gain.setTargetAtTime((1 - under) * 0.055 * live, now, 0.4);
 
+    const surf = Math.max(0, Math.min(1, state.surf ?? 0));
+    const set = 0.62 + 0.38 * Math.sin(this.time * 0.19 + Math.sin(this.time * 0.071) * 1.5);
+    const surfCutoff = under > 0.5 ? 190 : 620;
+    this.surfFilter.frequency.setTargetAtTime(surfCutoff, now, 0.7);
+    const surfLevel = surf * TUNING.audio.surf * live * (0.1 + under * 0.06) * set;
+    this.surfGain.gain.setTargetAtTime(surfLevel, now, 0.7);
+
+    this.surfCrashTimer -= dt;
+    if (this.surfCrashTimer <= 0 && surf > 0.12) {
+      this.surfCrashTimer = 5 + Math.random() * 7;
+      this._surfCrash(surf, under);
+    }
+
     this.chirpTimer -= dt;
     if (this.chirpTimer <= 0) {
       this.chirpTimer = 7 + Math.random() * 15;
@@ -201,6 +239,31 @@ export class OceanAudio {
     if (Math.random() > 0.56) {
       setTimeout(() => this._chirp(), 80 + Math.random() * 190);
     }
+  }
+
+  _surfCrash(level, under) {
+    if (!this.ctx || !this.enabled) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.crashBuffer;
+    src.playbackRate.value = 0.9 + Math.random() * 0.2;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.Q.value = 0.4;
+    filter.frequency.setValueAtTime(under > 0.5 ? 220 : 1200, now);
+    filter.frequency.exponentialRampToValueAtTime(under > 0.5 ? 90 : 260, now + 2.2);
+    const gain = ctx.createGain();
+    const amp = 0.09 * level * TUNING.audio.surf * (under > 0.5 ? 0.5 : 1);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, amp), now + 0.25);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 2.6);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.bus);
+    gain.connect(this.reverb);
+    src.start(now, Math.random() * 0.4);
+    src.stop(now + 2.7);
   }
 
   event(name, intensity = 1) {

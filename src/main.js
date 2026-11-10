@@ -495,10 +495,14 @@ async function boot() {
       if (input.boost && !wasSurge) audio.event("whoosh", 0.75);
       wasSurge = input.boost;
       if (dolphin.edgeWarning) hud.boundaryToast(elapsed);
+      const sdx = camera.position.x - ocean.foamField.centerX;
+      const sdz = camera.position.z - ocean.foamField.centerZ;
+      const surf = 1 - smoothstep(70, 320, Math.hypot(sdx, sdz));
       audio.update(dt, {
         underwater: camState.underwater,
         depth: telemetry.depth,
         speed: dolphin.speed,
+        surf,
       });
     }
 
