@@ -137,7 +137,7 @@ export const TUNING = {
     surfCarry: 0.55,
     surfGlide: 1.1,
     surfAttitude: 5.5,
-    surfFaceRoll: 0.65,
+    surfFaceRoll: 1.0,
     surfBank: 1.7,
     surfMaxBank: 1.15,
     surfCarveDrag: 0.25,

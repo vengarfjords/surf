@@ -290,12 +290,6 @@ export class Dolphin {
     this.surfNormal = new THREE.Vector3();
     this.surfTangent = new THREE.Vector3();
     this.surfLine = new THREE.Vector3();
-    this.faceNormal = new THREE.Vector3();
-    this.faceForward = new THREE.Vector3();
-    this.faceRight = new THREE.Vector3();
-    this.faceMatrix = new THREE.Matrix4();
-    this.faceQuat = new THREE.Quaternion();
-    this.faceRollQuat = new THREE.Quaternion();
     this.prevCenterAbove = false;
     this.wasClearAbove = false;
     this.airborne = false;
@@ -463,11 +457,6 @@ export class Dolphin {
     sp.qPitch.setFromAxisAngle(X_AXIS, -(viewPitch + this.tumblePitch));
     sp.qRoll.setFromAxisAngle(Z_AXIS, this.roll + this.tumbleRoll);
     sp.targetQ.copy(sp.qYaw).multiply(sp.qPitch).multiply(sp.qRoll);
-    // On a wave the visible body uses the exact tangent frame: up along the
-    // face normal, forward along the ridden line.
-    if (this.poseBlend > 0.001) {
-      sp.targetQ.slerp(this.faceQuat, this.poseBlend);
-    }
     sp.forwardTarget.set(0, 0, 1).applyQuaternion(sp.targetQ);
     sp.backTarget.copy(sp.forwardTarget).multiplyScalar(-1);
     sp.upTarget.set(0, 1, 0).applyQuaternion(sp.targetQ);
@@ -746,29 +735,6 @@ export class Dolphin {
       // effort is the player's target change, not the body being swept around
       // by the wave.
       this.yawRate = inputYawRate;
-
-      // Face frame for the visible body: up follows the local surface normal
-      // and forward stays in the tangent plane along the ridden line. This is
-      // the exact wave angle, rather than a partial pitch/roll approximation.
-      this.faceNormal.set(-water.slopeX, 1, -water.slopeZ).normalize();
-      this.faceForward.copy(this.surfLine);
-      this.faceForward.addScaledVector(
-        this.faceNormal,
-        -this.faceForward.dot(this.faceNormal)
-      );
-      if (this.faceForward.lengthSq() > 1e-6) this.faceForward.normalize();
-      else this.faceForward.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
-      this.faceRight.crossVectors(this.faceNormal, this.faceForward).normalize();
-      this.faceMatrix.makeBasis(this.faceRight, this.faceNormal, this.faceForward);
-      this.faceQuat.setFromRotationMatrix(this.faceMatrix);
-      // Keep the player's carve lean on top of the face alignment.
-      const carveLean = clamp(
-        -this.yawRate * TUNING.movement.surfBank,
-        -TUNING.movement.surfMaxBank,
-        TUNING.movement.surfMaxBank
-      );
-      this.faceRollQuat.setFromAxisAngle(this.faceForward, carveLean);
-      this.faceQuat.multiply(this.faceRollQuat);
     }
     const slopeAlong = water.slopeX * Math.sin(this.yaw) + water.slopeZ * Math.cos(this.yaw);
     const slopeRight = water.slopeX * Math.cos(this.yaw) - water.slopeZ * Math.sin(this.yaw);
