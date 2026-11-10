@@ -217,28 +217,28 @@ export const TUNING = {
    */
   water: {
     seed: 20261109,
-    preset: "moderate",
-    surfZoneX: 260,
-    surfZoneZ: 140,
-    swellHeight: 2.15,
-    swellWavelength: 58,
-    swellWavelengthSpread: 0.17,
+    preset: "surf",
+    surfZoneX: 450,
+    surfZoneZ: 300,
+    swellHeight: 6,
+    swellWavelength: 150,
+    swellWavelengthSpread: 0.08,
     swellDirection: 0.61,
-    swellDirectionSpread: 0.24,
+    swellDirectionSpread: 0.06,
     swellComponents: 96,
-    windSeaHeight: 0.55,
-    windSeaWavelength: 11.5,
+    windSeaHeight: 0.9,
+    windSeaWavelength: 16,
     windSeaWavelengthSpread: 0.42,
     windSeaDirection: 1.02,
     windSeaDirectionSpread: 0.62,
     windSeaComponents: 32,
     // Gerstner horizontal displacement scale. The generator computes a safe
     // base value from the total steepness; this is an artistic multiplier.
-    chop: 0.78,
+    chop: 1.12,
     timeScale: 1.0,
     // Rendering / foam.
     foamThreshold: 0.56,
-    foamAmount: 0.8,
+    foamAmount: 1.05,
     detailStrength: 0.55,
     // M3 depth response. The wave spectrum is evaluated with finite-depth
     // dispersion and Green's-law shoaling using the baked bathymetry; the
@@ -246,12 +246,20 @@ export const TUNING = {
     depthResponse: true,
     shoalReference: 12,
     shoalStrength: 0.25,
-    breakRatio: 0.85,
-    breakSoftness: 0.12,
-    breakerJet: 0.65,
-    breakerLip: 0.12,
+    breakRatio: 0.55,
+    breakSoftness: 0.1,
+    breakerJet: 0.35,
+    breakerLip: 0.28,
     aerationAmount: 0.85,
     foamPersistence: 0.6,
+    // Reef focus: the swell refracts and focuses over the deep bank, turning
+    // the open-shelf swell into a 20-30 m big-wave arena. `surfFocus` is the
+    // peak multiplier, `surfFocusRadius` the Gaussian sigma in metres.
+    surfFocus: 24,
+    surfFocusRadius: 140,
+    surfFocusWidth: 50,
+    surfRidgeCross: -60,
+    surfWindFocus: 0.12,
     // Local nonlinear shallow-water solver over the surf bank. The domain is
     // fixed around the bank; the analytic spectral field forces the open
     // boundaries. 160² cells at 30 Hz is ~25k updates per step.
@@ -266,15 +274,15 @@ export const TUNING = {
     // Advected foam/aeration state for the analytic surf bank. This is shared
     // by the surface shader and the hull physics.
     foamFieldEnabled: true,
-    foamFieldExtent: 192,
-    foamFieldCells: 96,
+    foamFieldExtent: 400,
+    foamFieldCells: 128,
     foamFieldRate: 15,
     foamFieldDecay: 0.18,
     foamFieldSource: 0.7,
     // Ambient breaker mist above the surf line. Reuses the particle budget;
     // the rate is spawns per second near the bank.
     surfSpray: true,
-    surfSprayRate: 30,
+    surfSprayRate: 10,
     // Subsurface bubble plume under the break line, emitted only while the
     // camera is underwater.
     surfBubbles: true,
@@ -453,8 +461,8 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
   { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf"] },
-  { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 4, step: 0.05 },
-  { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 110, step: 1 },
+  { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 12, step: 0.05 },
+  { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 350, step: 1 },
   { path: "water.swellDirection", label: "swell direction", min: 0, max: 6.28, step: 0.01 },
   { path: "water.swellDirectionSpread", label: "swell spread", min: 0.02, max: 0.9, step: 0.01 },
   { path: "water.swellWavelengthSpread", label: "swell bandwidth", min: 0.04, max: 0.5, step: 0.01 },
@@ -467,12 +475,17 @@ export const TUNE_CONTROLS = [
   { path: "water.foamAmount", label: "whitecap amount", min: 0, max: 1.6, step: 0.01 },
   { path: "water.foamThreshold", label: "whitecap threshold", min: 0.15, max: 1, step: 0.01 },
   { path: "water.depthResponse", label: "depth response", type: "toggle" },
+  { path: "water.surfFocus", label: "reef focus", min: 1, max: 50, step: 0.5 },
+  { path: "water.surfFocusRadius", label: "reef focus length", min: 40, max: 220, step: 1 },
+  { path: "water.surfFocusWidth", label: "reef focus width", min: 20, max: 100, step: 1 },
+  { path: "water.surfRidgeCross", label: "reef ridge cross", min: -120, max: 0, step: 1 },
+  { path: "water.surfWindFocus", label: "reef wind focus", min: 0, max: 0.5, step: 0.01 },
   { path: "water.shoalReference", label: "shoal reference depth", min: 4, max: 25, step: 0.5 },
   { path: "water.shoalStrength", label: "shoaling strength", min: 0, max: 0.5, step: 0.01 },
-  { path: "water.breakRatio", label: "break H/h", min: 0.5, max: 1.2, step: 0.01 },
+  { path: "water.breakRatio", label: "break H/h", min: 0.4, max: 1.2, step: 0.01 },
   { path: "water.breakSoftness", label: "break softness", min: 0.02, max: 0.3, step: 0.01 },
-  { path: "water.breakerLip", label: "breaker lip", min: 0, max: 0.4, step: 0.01 },
-  { path: "water.breakerJet", label: "breaker jet", min: 0, max: 2, step: 0.05 },
+  { path: "water.breakerLip", label: "breaker lip", min: 0, max: 0.6, step: 0.01 },
+  { path: "water.breakerJet", label: "breaker jet", min: 0, max: 3, step: 0.05 },
   { path: "water.aerationAmount", label: "aeration", min: 0, max: 1, step: 0.01 },
   { path: "water.foamPersistence", label: "foam persistence", min: 0, max: 1, step: 0.01 },
   { path: "water.solverEnabled", label: "surf-zone solver", type: "toggle" },
