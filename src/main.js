@@ -497,12 +497,22 @@ async function boot() {
       if (dolphin.edgeWarning) hud.boundaryToast(elapsed);
       const sdx = camera.position.x - ocean.foamField.centerX;
       const sdz = camera.position.z - ocean.foamField.centerZ;
-      const surf = 1 - smoothstep(70, 320, Math.hypot(sdx, sdz));
+      const surfDist = Math.hypot(sdx, sdz) || 1;
+      const surf = 1 - smoothstep(70, 320, surfDist);
+      camera.updateMatrixWorld();
+      const rx = camera.matrixWorld.elements[0];
+      const rz = camera.matrixWorld.elements[2];
+      const rlen = Math.hypot(rx, rz);
+      const surfPan =
+        rlen > 1e-4
+          ? clamp(((-sdx * rx - sdz * rz) / (surfDist * rlen)) * 0.7, -0.7, 0.7)
+          : 0;
       audio.update(dt, {
         underwater: camState.underwater,
         depth: telemetry.depth,
         speed: dolphin.speed,
         surf,
+        surfPan,
       });
     }
 

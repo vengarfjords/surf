@@ -513,6 +513,7 @@ export const TUNE_CONTROLS = [
   { path: "visuals.volumetricCaustics", label: "caustic light", min: 0, max: 1.8, step: 0.01 },
   { path: "visuals.surfaceHaze", label: "surface haze", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.surfaceMist", label: "sea mist", min: 0, max: 1.5, step: 0.01 },
+  { path: "audio.master", label: "master volume", min: 0, max: 0.6, step: 0.01 },
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.dynamicQuality", label: "dynamic quality", type: "toggle" },
   { path: "visuals.dynamicQualityMinScale", label: "min render scale", min: 0.4, max: 0.8, step: 0.01 },
