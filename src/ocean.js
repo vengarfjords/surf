@@ -619,9 +619,11 @@ export class Ocean {
           foam = max(foam, vSolverFoam * 1.15);
           // Break the advected field into lacy patches at render resolution;
           // the 2 m state grid is too smooth to read as foam on its own.
-          // Reuse the foam noise and lace already evaluated above.
+          // Reuse the foam noise and lace already evaluated above, and keep
+          // blue gaps instead of laying down a uniform cream sheet.
           float fieldLace = 0.55 * foamNoise + 0.45 * lace;
-          foam = max(foam, vFoamField * (0.45 + 0.8 * fieldLace));
+          float fieldMask = smoothstep(0.28, 0.72, fieldLace);
+          foam = max(foam, vFoamField * fieldMask * 1.15);
           // Meniscus/foam collar hugging the dolphin at the waterline.
           float bodyDist = length(vWorld.xz - uBodyPos.xz);
           float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));

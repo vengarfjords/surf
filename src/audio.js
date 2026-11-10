@@ -52,7 +52,7 @@ export class OceanAudio {
       comp.knee.value = 22;
       comp.ratio.value = 5;
       comp.attack.value = 0.03;
-      comp.release.value = 1.2;
+      comp.release.value = 1.0;
       comp.connect(master);
 
       this.bus = ctx.createGain();
