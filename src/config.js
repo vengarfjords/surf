@@ -159,19 +159,52 @@ export const TUNING = {
     firstPerson: false,
   },
 
+  /**
+   * Authoritative wave field (M1).
+   *
+   * Two explicit directional component sums are evaluated with exactly the
+   * same data on CPU and GPU:
+   *   - swell: a narrow JONSWAP peak (long, coherent, organised groups)
+   *   - wind sea: a broad, shorter, steeper sea offset from the swell
+   *
+   * `swellHeight` / `windSeaHeight` are significant wave heights Hs (m).
+   * Wavelengths are peak wavelengths in metres; directions are radians,
+   * measured from +X toward +Z (the direction the waves travel).
+   * See src/water/spectrum.js for the spectrum construction.
+   */
+  water: {
+    seed: 20261109,
+    preset: "moderate",
+    swellHeight: 2.15,
+    swellWavelength: 58,
+    swellWavelengthSpread: 0.17,
+    swellDirection: 0.61,
+    swellDirectionSpread: 0.24,
+    swellComponents: 96,
+    windSeaHeight: 0.55,
+    windSeaWavelength: 11.5,
+    windSeaWavelengthSpread: 0.42,
+    windSeaDirection: 1.02,
+    windSeaDirectionSpread: 0.62,
+    windSeaComponents: 32,
+    // Gerstner horizontal displacement scale. The generator computes a safe
+    // base value from the total steepness; this is an artistic multiplier.
+    chop: 0.78,
+    timeScale: 1.0,
+    // Rendering / foam.
+    foamThreshold: 0.56,
+    foamAmount: 0.8,
+    detailStrength: 0.55,
+    // Radial clipmap dimensions (camera-following, exponential in radius).
+    surfaceRadius: 7000,
+    surfaceRings: 220,
+    surfaceSegments: 256,
+    meshExponent: 3.0,
+  },
+
   waves: {
-    // Long fair-weather swell, wind chop, and a tiny capillary shimmer.
-    windSpeed: 8.4,
-    windDirection: 0.61,
-    amplitude: 0.47,
-    choppiness: 0.78,
-    waveCount: 6,
-    shallowFade: 0.78,
-    foamThreshold: 0.38,
-    foamAmount: 0.62,
-    surfaceRadius: 3600,
-    surfaceRings: 168,
-    surfaceSegments: 220,
+    // Small local GPU heightfield used only for contact wakes and the
+    // dolphin's parting of the surface. The large-scale sea is `water`.
     simResolution: 192,
     simExtent: 92,
     simRecenters: 29,
@@ -179,6 +212,19 @@ export const TUNING = {
     simDamping: 0.986,
     displacementScale: 0.92,
     splashThreshold: 1.4,
+  },
+
+  debug: {
+    probe: false,
+    // The parity probe is a synchronous 1x1 readback. It is a diagnostic, not
+    // a frame-path feature, so it is off by default; toggle it in the T panel.
+    gpuProbe: false,
+    crestOverlay: false,
+    slopeOverlay: false,
+    foamOverlay: false,
+    forceVectors: false,
+    readout: true,
+    postProcessing: true,
   },
 
   sand: {
@@ -317,8 +363,28 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.bodyFollow", label: "segment follow", min: 0.25, max: 2.5, step: 0.01 },
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
-  { path: "waves.amplitude", label: "swell height", min: 0, max: 1.4, step: 0.01 },
-  { path: "waves.choppiness", label: "chop", min: 0, max: 1.4, step: 0.01 },
+  { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf"] },
+  { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 4, step: 0.05 },
+  { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 110, step: 1 },
+  { path: "water.swellDirection", label: "swell direction", min: 0, max: 6.28, step: 0.01 },
+  { path: "water.swellDirectionSpread", label: "swell spread", min: 0.02, max: 0.9, step: 0.01 },
+  { path: "water.swellWavelengthSpread", label: "swell bandwidth", min: 0.04, max: 0.5, step: 0.01 },
+  { path: "water.windSeaHeight", label: "wind sea Hs", min: 0, max: 1.6, step: 0.02 },
+  { path: "water.windSeaWavelength", label: "wind sea λ", min: 4, max: 25, step: 0.5 },
+  { path: "water.windSeaDirection", label: "wind direction", min: 0, max: 6.28, step: 0.01 },
+  { path: "water.windSeaDirectionSpread", label: "wind spread", min: 0.05, max: 1.2, step: 0.01 },
+  { path: "water.chop", label: "crest sharpness", min: 0, max: 1.4, step: 0.01 },
+  { path: "water.timeScale", label: "wave time scale", min: 0, max: 2, step: 0.01 },
+  { path: "water.foamAmount", label: "whitecap amount", min: 0, max: 1.6, step: 0.01 },
+  { path: "water.foamThreshold", label: "whitecap threshold", min: 0.15, max: 1, step: 0.01 },
+  { path: "debug.probe", label: "water probe", type: "toggle" },
+  { path: "debug.gpuProbe", label: "GPU parity probe", type: "toggle" },
+  { path: "debug.crestOverlay", label: "crest lines", type: "toggle" },
+  { path: "debug.slopeOverlay", label: "slope overlay", type: "toggle" },
+  { path: "debug.foamOverlay", label: "foam / aeration", type: "toggle" },
+  { path: "debug.forceVectors", label: "force vectors (M2)", type: "toggle" },
+  { path: "debug.readout", label: "water readout", type: "toggle" },
+  { path: "debug.postProcessing", label: "post-processing", type: "toggle" },
   { path: "sand.interactionStrength", label: "sand disturbance", min: 0.1, max: 2.4, step: 0.01 },
   { path: "sand.maxCutDepth", label: "sand cut depth", min: 1, max: 7, step: 0.1 },
   { path: "sand.maxContactDepth", label: "contact cut depth", min: 0.2, max: 2.5, step: 0.05 },

@@ -1,4 +1,4 @@
-import { TUNE_CONTROLS } from "./config.js";
+import { TUNE_CONTROLS, TUNING } from "./config.js";
 import { timecode } from "./utils.js";
 
 function getPath(obj, path) {
@@ -84,6 +84,13 @@ export class HUD {
         const on = this.audio?.toggle();
         this.el.soundState.textContent = on ? "SND—ON" : "SND—OFF";
       }
+      if (e.code === "KeyP" && this.started) {
+        TUNING.debug.postProcessing = !TUNING.debug.postProcessing;
+        this.toast(
+          TUNING.debug.postProcessing ? "post-processing on" : "post-processing off",
+          TUNING.debug.postProcessing ? "film grade, bloom, volumetric haze" : "raw water, native resolution"
+        );
+      }
     });
   }
 
@@ -131,6 +138,39 @@ export class HUD {
       row.className = "tuner-row";
       const label = document.createElement("label");
       label.textContent = control.label;
+
+      if (control.type === "toggle") {
+        row.classList.add("is-toggle");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = Boolean(getPath(this.tuning, control.path));
+        input.addEventListener("change", () => {
+          setPath(this.tuning, control.path, input.checked);
+        });
+        row.append(label, input);
+        this.el.tunerBody.appendChild(row);
+        continue;
+      }
+
+      if (control.type === "preset") {
+        row.classList.add("is-preset");
+        const select = document.createElement("select");
+        for (const option of control.options ?? []) {
+          const o = document.createElement("option");
+          o.value = option;
+          o.textContent = option;
+          select.appendChild(o);
+        }
+        select.value = getPath(this.tuning, control.path);
+        select.addEventListener("change", () => {
+          setPath(this.tuning, control.path, select.value);
+          window.OCEAN?.water?.setPreset(select.value);
+        });
+        row.append(label, select);
+        this.el.tunerBody.appendChild(row);
+        continue;
+      }
+
       const output = document.createElement("output");
       const range = document.createElement("input");
       range.type = "range";

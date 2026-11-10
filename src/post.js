@@ -534,7 +534,16 @@ export class Post {
     this.film.material.uniforms.uAberration.value = TUNING.visuals.aberration;
     this.film.material.uniforms.uVignette.value = TUNING.visuals.vignette;
 
+    // "Post off" still needs the output transform (ACES + sRGB), otherwise
+    // raw shader values are written straight to an sRGB framebuffer and the
+    // water looks unnaturally dark. This chain has no grade, grain, bloom,
+    // volumetric haze or downsampling.
+    this.rawComposer = new EffectComposer(renderer);
+    this.rawComposer.addPass(new RenderPass(scene, camera));
+    this.rawComposer.addPass(new OutputPass());
+
     this.started = false;
+    this.enabled = true;
     this.setSize(window.innerWidth, window.innerHeight);
     this._frame = 0;
     this.sunDir = new THREE.Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
@@ -559,9 +568,21 @@ export class Post {
     return texture;
   }
 
+  /** Toggle the whole post chain. Raw mode renders at native resolution so
+   *  the water can be judged without grain, bloom, grade or volumetric haze. */
+  setEnabled(enabled) {
+    this.enabled = enabled;
+    this.setSize(window.innerWidth, window.innerHeight);
+  }
+
   setSize(w, h) {
     const dpr = Math.min(window.devicePixelRatio || 1, TUNING.visuals.maxPixelRatio);
-    this.renderer.setPixelRatio(dpr * TUNING.visuals.renderScale);
+    if (this.enabled) {
+      this.renderer.setPixelRatio(dpr * TUNING.visuals.renderScale);
+    } else {
+      // Clean-judging mode: native pixels, no composer downsample.
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    }
     this.renderer.setSize(w, h, false);
     // The composer is the real render budget. Keep its internal buffers at a
     // fixed fraction of CSS pixels regardless of devicePixelRatio, and cap the
@@ -578,9 +599,19 @@ export class Post {
     // Bloom is a soft effect; half resolution is indistinguishable in motion
     // and removes several full-screen Gaussian passes from the frame.
     this.bloom.setSize(target.width * 0.25, target.height * 0.25);
+
+    this.rawComposer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    this.rawComposer.setSize(w, h);
   }
 
   render(dt, state) {
+    if (!this.enabled) {
+      // The film grade normally pulls exposure down; without it, use a
+      // slightly lower exposure so raw-mode highlights do not clip.
+      this.renderer.toneMappingExposure = TUNING.visuals.exposure * 0.72;
+      this.rawComposer.render(dt);
+      return;
+    }
     this._frame++;
     const time = performance.now() * 0.001;
     this.film.material.uniforms.uTime.value = time;

@@ -10,6 +10,7 @@ import { Input } from "./input.js";
 import { OceanAudio } from "./audio.js";
 import { HUD } from "./hud.js";
 import { Post } from "./post.js";
+import { WaterDebug } from "./water/debug.js";
 import { clamp, lerp, smoothstep } from "./utils.js";
 
 const frame = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -37,7 +38,7 @@ async function boot() {
     TUNING.camera.baseFov,
     window.innerWidth / window.innerHeight,
     0.08,
-    9000
+    12000
   );
   camera.position.set(0, -2, 0);
   camera.rotation.order = "YXZ";
@@ -79,6 +80,7 @@ async function boot() {
   const dolphin = await Dolphin.create(scene);
   const cameraRig = new CameraRig(camera, ocean);
   const post = new Post(renderer, scene, camera);
+  const waterDebug = new WaterDebug(scene, ocean, dolphin);
   const hidden = new HiddenThings(scene, seabed.sim, (main, sub) => hud.toast(main, sub));
 
   let started = false;
@@ -89,6 +91,22 @@ async function boot() {
   let fishAccumulator = 0;
   let ventClock = 0;
   let cullClock = 0;
+  let frozen = false;
+  let freeView = null;
+  let postEnabled = TUNING.debug.postProcessing;
+
+  const idleInput = {
+    consumeMouse: () => ({ dx: 0, dy: 0 }),
+    forward: false,
+    brake: false,
+    left: false,
+    right: false,
+    rise: false,
+    dive: false,
+    boost: false,
+    pitchUpKeys: false,
+    pitchDownKeys: false,
+  };
   const bubbleVents = [
     { x: 7.5, z: 18 },
     { x: -18, z: 41 },
@@ -183,6 +201,30 @@ async function boot() {
   hud.setLoading(true);
   hud.setSound(true);
 
+  // Lightweight instrumentation. GPU timing uses one timer query in flight;
+  // the extension is optional, so every consumer must tolerate null.
+  const gl = renderer.getContext();
+  const timerExt = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+  let pendingGpuQuery = null;
+  let gpuFrameMs = 0;
+  let lastOceanMs = 0;
+  let perfAccum = 0;
+  let perfFrames = 0;
+  let frameMsAvg = 16.7;
+  const perf = {
+    frameMs: 16.7,
+    gpuMs: 0,
+    waveUpdateMs: 0,
+    oceanMs: 0,
+    seabedMs: 0,
+    effectsMs: 0,
+    drawCalls: 0,
+    triangles: 0,
+    components: 0,
+    waveField: 0,
+  };
+  window.OCEAN_PERF = perf;
+
   let lastFrameTime = performance.now();
   let total = 0;
   function animate(now = performance.now()) {
@@ -195,25 +237,30 @@ async function boot() {
     }
     sharedShader.time.value = total;
 
-    const neutralInput = started ? input : {
-      consumeMouse: () => ({ dx: 0, dy: 0 }),
-      forward: false,
-      brake: false,
-      left: false,
-      right: false,
-      rise: false,
-      dive: false,
-      boost: false,
-      pitchUpKeys: false,
-      pitchDownKeys: false,
-    };
-
-    const telemetry = dolphin.update(dt, neutralInput, ocean, seabed, effects);
+    const stepInput = started ? input : idleInput;
+    const telemetry = frozen
+      ? dolphin.telemetry
+      : dolphin.update(dt, stepInput, ocean, seabed, effects);
     telemetry.x = dolphin.position.x;
     telemetry.z = dolphin.position.z;
     telemetry.y = dolphin.position.y;
 
     const camState = cameraRig.update(dt, dolphin, seabed, started);
+
+    // Fixed cinematic camera for screenshots / comparisons. Physics and the
+    // wave clock keep running; only the view is pinned.
+    if (freeView) {
+      camera.position.copy(freeView.position);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(freeView.look);
+      camera.fov = freeView.fov ?? TUNING.camera.baseFov;
+      camera.updateProjectionMatrix();
+      const wh = ocean.getWaterHeight(camera.position.x, camera.position.z);
+      camState.underwater = camera.position.y < wh ? 1 : 0;
+      camState.underwaterTarget = camState.underwater;
+      camState.waterHeight = wh;
+      camState.wetness = 0;
+    }
 
     // Reef and seagrass chunks are submitted only when they are still inside
     // the readable fog envelope. A slow cadence is enough at swim speeds and
@@ -249,7 +296,10 @@ async function boot() {
       .lerp(sunWarm, 0.55)
       .lerp(sunCool, camState.underwater * 0.78);
 
+    const seabedStart = performance.now();
     seabed.update(dt, dolphin, camera, fogColor, fogDensity);
+    const seabedMs = performance.now() - seabedStart;
+    const oceanStart = performance.now();
     ocean.update(
       dt,
       dolphin.position,
@@ -258,6 +308,9 @@ async function boot() {
       Math.max(camState.wetness, dolphin.wetness * 0.65),
       { fogColor, fogDensity }
     );
+    const oceanMs = performance.now() - oceanStart;
+    waterDebug.setStarted(started);
+    waterDebug.update(dt);
 
     fishAccumulator += dt;
     if (fishAccumulator > 1 / 24) {
@@ -285,10 +338,12 @@ async function boot() {
         effects.bubbleBurst(vent.x + (Math.random() - 0.5) * 1.5, floor + 0.18, vent.z + (Math.random() - 0.5) * 1.5, 1, 0.3, 0.45 + Math.random() * 0.7);
       }
     }
+    const effectsStart = performance.now();
     effects.update(dt, camera, fogColor, fogDensity, current);
     snow.update(dt, camera, fogColor, fogDensity, camState.underwater);
     motes.update(dt, camera, fogColor, fogDensity, camState.underwater);
     shafts.update(camera, total, camState.underwater);
+    const effectsMs = performance.now() - effectsStart;
 
     hud.update(dt, telemetry, elapsed, camState.underwater, clamp(dolphin.speed / TUNING.movement.boostSpeed, 0, 1.2));
 
@@ -317,12 +372,52 @@ async function boot() {
     renderer.toneMappingExposure =
       TUNING.visuals.exposure * lerp(1.04, 0.92, smoothstep(5, 34, camDepth) * camState.underwater);
 
+    if (TUNING.debug.postProcessing !== postEnabled) {
+      postEnabled = TUNING.debug.postProcessing;
+      post.setEnabled(postEnabled);
+    }
+
+    const startGpuQuery = timerExt && !pendingGpuQuery;
+    if (startGpuQuery) {
+      pendingGpuQuery = gl.createQuery();
+      gl.beginQuery(timerExt.TIME_ELAPSED_EXT, pendingGpuQuery);
+    }
     post.render(dt, {
       underwater: camState.underwater,
       wetness: Math.max(camState.wetness, dolphin.wetness * 0.6),
       speedNorm: camState.speedNorm,
       waterLevel: camState.waterHeight,
     });
+    if (startGpuQuery) {
+      gl.endQuery(timerExt.TIME_ELAPSED_EXT);
+    } else if (pendingGpuQuery) {
+      const available = gl.getQueryParameter(pendingGpuQuery, gl.QUERY_RESULT_AVAILABLE);
+      if (available) {
+        const disjoint = gl.getParameter(timerExt.GPU_DISJOINT_EXT);
+        if (!disjoint) gpuFrameMs = gl.getQueryParameter(pendingGpuQuery, gl.QUERY_RESULT) / 1e6;
+        gl.deleteQuery(pendingGpuQuery);
+        pendingGpuQuery = null;
+      }
+    }
+
+    lastOceanMs = oceanMs;
+    perfAccum += dt;
+    perfFrames++;
+    if (perfAccum > 0.75) {
+      frameMsAvg = (perfAccum * 1000) / perfFrames;
+      perf.frameMs = frameMsAvg;
+      perf.gpuMs = gpuFrameMs;
+      perf.oceanMs = lastOceanMs;
+      perf.seabedMs = seabedMs;
+      perf.effectsMs = effectsMs;
+      perf.waveUpdateMs = ocean.water.lastUniformMs || 0;
+      perf.drawCalls = renderer.info.render.calls;
+      perf.triangles = renderer.info.render.triangles;
+      perf.components = ocean.water.count;
+      perf.waveField = ocean.water.stats.height;
+      perfAccum = 0;
+      perfFrames = 0;
+    }
 
     requestAnimationFrame(animate);
   }
@@ -334,9 +429,12 @@ async function boot() {
     camera,
     renderer,
     ocean,
+    water: ocean.water,
+    waterDebug,
     seabed,
     dolphin,
     cameraRig,
+    perf,
     fish,
     jellyfish,
     reefs,
@@ -362,6 +460,36 @@ async function boot() {
       dolphin.resetVisualChain();
       cameraRig.initialized = false;
     },
+    // Debug / capture helpers. `freeze` stops dolphin physics only; waves and
+    // rendering keep running so screenshots feel alive.
+    freeze: (value = true) => {
+      frozen = value;
+    },
+    pose: (x, y, z, yaw = dolphin.yaw, pitch = 0) => {
+      dolphin.position.set(x, y, z);
+      dolphin.yaw = yaw;
+      dolphin.targetYaw = yaw;
+      dolphin.pitch = pitch;
+      dolphin.targetPitch = pitch;
+      dolphin.roll = 0;
+      dolphin.targetRoll = 0;
+      dolphin.velocity.set(0, 0, 0);
+      dolphin.update(0.0001, idleInput, ocean, seabed, effects);
+      dolphin.root.position.copy(dolphin.position);
+      cameraRig.initialized = false;
+    },
+    setFreeView: (position, look, fov = TUNING.camera.baseFov) => {
+      freeView = {
+        position: new THREE.Vector3(position[0], position[1], position[2]),
+        look: new THREE.Vector3(look[0], look[1], look[2]),
+        fov,
+      };
+    },
+    clearFreeView: () => {
+      freeView = null;
+      cameraRig.initialized = false;
+    },
+    setPreset: (name) => ocean.water.setPreset(name),
     get info() {
       return {
         fpsHint: "~",

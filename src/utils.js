@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { TUNING, PALETTE } from "./config.js";
+import { PALETTE } from "./config.js";
 
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
@@ -142,93 +142,6 @@ export function seabedNormal(x, z, out = { x: 0, y: 1, z: 0 }) {
   out.x /= l;
   out.y /= l;
   out.z /= l;
-  return out;
-}
-
-/** Shared wind-driven wave spectrum. Same values drive GPU and CPU. */
-function waveTable() {
-  return [
-    { dirOffset: 0.03, wavelength: 61, amp: 0.29, steep: 0.7, phase: 0.2 },
-    { dirOffset: -0.27, wavelength: 37, amp: 0.19, steep: 0.8, phase: 1.7 },
-    { dirOffset: 0.34, wavelength: 23.5, amp: 0.115, steep: 0.75, phase: 4.4 },
-    { dirOffset: -0.57, wavelength: 14.5, amp: 0.068, steep: 0.7, phase: 2.2 },
-    { dirOffset: 0.65, wavelength: 8.2, amp: 0.032, steep: 0.58, phase: 5.3 },
-    { dirOffset: -0.18, wavelength: 4.6, amp: 0.015, steep: 0.5, phase: 3.1 },
-  ];
-}
-
-const WAVES = waveTable();
-
-export function getWaveSet(time) {
-  const w = TUNING.waves;
-  const wind = w.windSpeed / 8.4;
-  const chop = w.choppiness;
-  const baseDir = w.windDirection;
-  return WAVES.slice(0, w.waveCount).map((def, i) => {
-    const dir = baseDir + def.dirOffset * (0.55 + chop * 0.5);
-    const k = (Math.PI * 2) / def.wavelength;
-    const omega = Math.sqrt(9.81 * k);
-    const amp = def.amp * (w.amplitude / 0.47) * Math.pow(wind, 1.25);
-    const phase = def.phase * 10.0 + omega * time;
-    const horizontal = def.steep * amp * (0.44 + chop * 0.36);
-    return {
-      dx: Math.cos(dir),
-      dz: Math.sin(dir),
-      k,
-      omega,
-      amp,
-      phase,
-      q: horizontal,
-      wavelength: def.wavelength,
-      index: i,
-    };
-  });
-}
-
-export function waveHeightAt(x, z, time) {
-  const set = getWaveSet(time);
-  // Gerstner horizontal displacement makes the surface non-parametric.
-  // Invert it with two cheap fixed-point iterations for a true world-space
-  // height readback; this is the shared CPU fallback for physics.
-  let bx = x;
-  let bz = z;
-  for (let iter = 0; iter < 2; iter++) {
-    let ox = 0;
-    let oz = 0;
-    for (let i = 0; i < set.length; i++) {
-      const w = set[i];
-      const arg = w.k * (w.dx * bx + w.dz * bz) + w.phase;
-      const c = Math.cos(arg);
-      ox += w.q * w.dx * c;
-      oz += w.q * w.dz * c;
-    }
-    bx = x - ox;
-    bz = z - oz;
-  }
-  let h = 0;
-  for (let i = 0; i < set.length; i++) {
-    const w = set[i];
-    h += w.amp * Math.sin(w.k * (w.dx * bx + w.dz * bz) + w.phase);
-  }
-  return h * TUNING.waves.shallowFade;
-}
-
-export function waveSampleAt(x, z, time, out = {}) {
-  const e = 0.28;
-  const h = waveHeightAt(x, z, time);
-  const hx1 = waveHeightAt(x + e, z, time);
-  const hx0 = waveHeightAt(x - e, z, time);
-  const hz1 = waveHeightAt(x, z + e, time);
-  const hz0 = waveHeightAt(x, z - e, time);
-  out.height = h;
-  out.nx = (hx0 - hx1) / (2 * e);
-  out.ny = 1;
-  out.nz = (hz0 - hz1) / (2 * e);
-  const l = Math.hypot(out.nx, 1, out.nz);
-  out.nx /= l;
-  out.ny /= l;
-  out.nz /= l;
-  out.velocityX = (waveHeightAt(x, z, time + 0.012) - h) / 0.012;
   return out;
 }
 

@@ -1,23 +1,16 @@
 import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
-import {
-  clamp,
-  getWaveSet,
-  glslFog,
-  glslNoise,
-  smoothstep,
-  waveHeightAt,
-  waveSampleAt,
-} from "./utils.js";
+import { clamp, glslFog, glslNoise } from "./utils.js";
+import { WaveField } from "./water/field.js";
+import { makeBathymetryTexture } from "./water/bathymetry.js";
+import { MAX_WAVES, probeFragmentShader, waterVertexShader } from "./water/shaders.js";
 
 /**
- * A seamless procedural water normal/ripple map. The previous surface used a
- * lattice of sines, which read as a regular grid from above. This map sums
- * twelve integer-frequency wave vectors, so it tiles without seams while the
- * interference pattern stays irregular. R/G are the x/z normal, B is a height
- * mask used for ripple brightness on the underside.
+ * Seamless procedural ripple maps. Three independent maps are sampled at
+ * non-commensurate world scales in the shader, which is the visual stand-in
+ * for three FFT cascades: high-frequency detail only, never physics.
  */
-function makeWaterNormalTexture(size = 256) {
+function makeWaterNormalTexture(size = 256, seed = 1) {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext("2d");
@@ -26,7 +19,7 @@ function makeWaterNormalTexture(size = 256) {
   const tau = Math.PI * 2;
   const waves = [
     [3, 5, 0.42, 0.0],
-    [7, -2, 0.30, 1.7],
+    [7, -2, 0.3, 1.7],
     [-5, 9, 0.24, 3.1],
     [11, 7, 0.16, 5.2],
     [-13, 9, 0.12, 2.4],
@@ -36,8 +29,9 @@ function makeWaterNormalTexture(size = 256) {
     [5, -11, 0.18, 1.0],
     [-19, 13, 0.06, 2.9],
     [29, 3, 0.04, 5.8],
-    [2, 19, 0.10, 4.2],
+    [2, 19, 0.1, 4.2],
   ];
+  const phaseShift = seed * 1.937;
   let p = 0;
   for (let y = 0; y < size; y++) {
     const v = y / size;
@@ -48,14 +42,14 @@ function makeWaterNormalTexture(size = 256) {
       let dhdv = 0;
       for (let i = 0; i < waves.length; i++) {
         const w = waves[i];
-        const a = tau * (w[0] * u + w[1] * v) + w[3];
+        const a = tau * (w[0] * u + w[1] * v) + w[3] + phaseShift * (i + 1);
         const s = Math.sin(a);
         const c = Math.cos(a) * w[2] * tau;
         h += s * w[2];
         dhdu += c * w[0];
         dhdv += c * w[1];
       }
-      const scale = 0.004;
+      const scale = 0.0042;
       let nx = -dhdu * scale;
       let nz = -dhdv * scale;
       const len = Math.hypot(nx, 1, nz);
@@ -87,10 +81,8 @@ const FULLSCREEN_VERT = /* glsl */ `
 `;
 
 /**
- * GPU heightfield for surface contact and propagating wakes.
- * R = surface height, G = vertical velocity. A tiny wave-equation integrator
- * runs in ping-pong render targets and is also sampled by the ocean vertex
- * shader to part the surface around the dolphin.
+ * Small GPU heightfield for surface contact and propagating wakes. The large
+ * sea is the analytic WaveField; this only parts the surface around the body.
  */
 class SurfaceSimulation {
   constructor(renderer) {
@@ -158,7 +150,6 @@ class SurfaceSimulation {
           float w = stateAt(vUv - vec2(uTexel.x, 0.0)).r;
           float laplacian = n + s + e + w - 4.0 * h;
 
-          // Gentle advection by a slow shelf current.
           vec2 cur = vec2(0.0022, -0.0014) * uTexel;
           float carried = stateAt(vUv - cur).r;
           h = mix(h, carried, 0.006);
@@ -275,11 +266,14 @@ export class Ocean {
     this.renderer = renderer;
     this.scene = scene;
     this.time = 0;
+    this.water = new WaveField(TUNING.water);
     this.sim = new SurfaceSimulation(renderer);
     this.lastSample = {};
+    this._surfaceSample = {};
     this._underwater = 1;
     this._wetness = 0;
     this._tempColor = new THREE.Color();
+    this._waveSig = "";
 
     this.sunDir = new THREE.Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
     this.fogColor = new THREE.Color(PALETTE.fogShallow);
@@ -290,20 +284,20 @@ export class Ocean {
     this.skyZenith = new THREE.Color(PALETTE.skyZenith);
     this.sunColor = new THREE.Color(PALETTE.sunColor);
 
+    const bathy = makeBathymetryTexture(192);
+    this.bathyTexture = bathy.texture;
+
     this.uniforms = {
       uTime: { value: 0 },
       uCenter: { value: new THREE.Vector2() },
+      uWaves: { value: Array.from({ length: MAX_WAVES }, () => new THREE.Vector4()) },
+      uWaveCount: { value: this.water.count },
+      uChop: { value: this.water.chop },
+      uMaxCrest: { value: Math.max(0.5, this.water.stats.height * 0.8) },
       uSimCenter: { value: this.sim.center },
       uSimExtent: { value: this.sim.extent },
       uSimState: { value: this.sim.texture },
-      uAmplitude: { value: TUNING.waves.amplitude },
-      uWind: { value: TUNING.waves.windSpeed },
-      uChop: { value: TUNING.waves.choppiness },
-      uWaveCount: { value: TUNING.waves.waveCount },
-      uWaveDirs: {
-        value: Array.from({ length: 6 }, () => new THREE.Vector2(1, 0)),
-      },
-      uWaveParams: { value: Array.from({ length: 6 }, () => new THREE.Vector4()) },
+      uSimScale: { value: 1 },
       uSunDir: { value: this.sunDir },
       uSunColor: { value: this.sunColor },
       uDeepColor: { value: this.waterDeep },
@@ -314,41 +308,77 @@ export class Ocean {
       uFogDensity: { value: 0.025 },
       uCameraPos: { value: new THREE.Vector3() },
       uUnderwater: { value: 1 },
-      uFoamAmount: { value: TUNING.waves.foamAmount },
-      uFoamThreshold: { value: TUNING.waves.foamThreshold },
-      uDisplacement: { value: TUNING.waves.displacementScale },
-      uWetness: { value: 0 },
-      uWaterNormal: { value: makeWaterNormalTexture() },
+      uFoamAmount: { value: TUNING.water.foamAmount },
+      uFoamThreshold: { value: TUNING.water.foamThreshold },
+      uWindDir: { value: new THREE.Vector2(1, 0) },
+      uDetailStrength: { value: TUNING.water.detailStrength },
+      uDetailScale: { value: new THREE.Vector3(53.0, 17.0, 5.7) },
+      uDetail0: { value: makeWaterNormalTexture(256, 1) },
+      uDetail1: { value: makeWaterNormalTexture(256, 2) },
+      uDetail2: { value: makeWaterNormalTexture(256, 3) },
+      uBathy: { value: bathy.texture },
+      uBathyExtent: { value: bathy.extent },
+      uBathyMaxDepth: { value: bathy.maxDepth },
+      uDebugCrest: { value: 0 },
+      uDebugSlope: { value: 0 },
+      uDebugFoam: { value: 0 },
     };
 
     this.material = this._buildMaterial();
-    this.mesh = new THREE.Mesh(this._buildGeometry(), this.material);
+    this.geometry = this._buildGeometry();
+    this.mesh = new THREE.Mesh(this.geometry, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 1;
     this.scene.add(this.mesh);
 
+    this.probeTarget = new THREE.WebGLRenderTarget(1, 1, {
+      type: THREE.UnsignedByteType,
+      format: THREE.RGBAFormat,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      depthBuffer: true,
+      stencilBuffer: false,
+      generateMipmaps: false,
+    });
+    this.probeTarget.texture.colorSpace = THREE.NoColorSpace;
+    this.probeScene = new THREE.Scene();
+    this.probeMaterial = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: waterVertexShader(MAX_WAVES),
+      fragmentShader: probeFragmentShader,
+      side: THREE.DoubleSide,
+    });
+    this.probeMesh = new THREE.Mesh(this.geometry, this.probeMaterial);
+    this.probeMesh.frustumCulled = false;
+    this.probeScene.add(this.probeMesh);
+    this.probeCamera = new THREE.OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 0.1, 140);
+    this._probePixels = new Uint8Array(4);
+    this._clearColor = new THREE.Color();
+
     this.sky = this._buildSky();
     this.scene.add(this.sky);
 
-    this.splashPoints = [];
     this.tmpVec = new THREE.Vector3();
     this.tmpVec2 = new THREE.Vector3();
     this.updateWaveUniforms();
   }
 
   _buildGeometry() {
-    const radius = TUNING.waves.surfaceRadius;
-    const rings = TUNING.waves.surfaceRings;
-    const segments = TUNING.waves.surfaceSegments;
+    const radius = TUNING.water.surfaceRadius;
+    const rings = TUNING.water.surfaceRings;
+    const segments = TUNING.water.surfaceSegments;
+    const exponent = TUNING.water.meshExponent;
     const positions = [];
     const uvs = [];
     const indices = [];
 
-    // Exponentially denser rings near the viewer: 0.4 m geometry at the
-    // surface, kilometres of ocean at the horizon.
+    // Camera-following radial clipmap: cubic ring spacing puts sub-metre
+    // geometry under the dolphin and still reaches 7 km for the horizon.
     for (let i = 0; i < rings; i++) {
       const t = i / (rings - 1);
-      const r = Math.pow(t, 2.45) * radius + 0.08;
+      // t = 0 intentionally collapses the first ring to the centre so the
+      // fan closes: the probe camera sits exactly under the hole otherwise.
+      const r = Math.pow(t, exponent) * radius;
       for (let j = 0; j < segments; j++) {
         const a = (j / segments) * Math.PI * 2;
         positions.push(Math.cos(a) * r, 0, Math.sin(a) * r);
@@ -373,89 +403,17 @@ export class Ocean {
   }
 
   _buildMaterial() {
-    const uniforms = this.uniforms;
     return new THREE.ShaderMaterial({
-      uniforms,
+      uniforms: this.uniforms,
       side: THREE.DoubleSide,
       transparent: false,
       depthWrite: true,
       fog: false,
-      vertexShader: /* glsl */ `
-        precision highp float;
-        uniform float uTime;
-        uniform vec2 uCenter;
-        uniform sampler2D uSimState;
-        uniform vec2 uSimCenter;
-        uniform float uSimExtent;
-        uniform int uWaveCount;
-        uniform vec2 uWaveDirs[6];
-        uniform vec4 uWaveParams[6];
-        uniform float uDisplacement;
-        uniform float uWind;
-        varying vec3 vWorld;
-        varying vec3 vNormalW;
-        varying vec3 vViewDir;
-        varying float vSimHeight;
-        varying float vWaveHeight;
-        varying float vCrest;
-        varying float vDistance;
-
-        vec2 simSample(vec2 world) {
-          vec2 uv = (world - uSimCenter) / uSimExtent + 0.5;
-          if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec2(0.0);
-          return texture2D(uSimState, uv).rg;
-        }
-
-        void main() {
-          vec3 world = vec3(position.x + uCenter.x, 0.0, position.z + uCenter.y);
-          float h = 0.0;
-          float dhx = 0.0;
-          float dhz = 0.0;
-          vec3 horiz = vec3(0.0);
-
-          for (int i = 0; i < 6; i++) {
-            if (i >= uWaveCount) break;
-            vec2 dir = uWaveDirs[i];
-            vec4 wp = uWaveParams[i]; // k, amplitude, phase, horizontal
-            float arg = wp.x * dot(dir, world.xz) + wp.z;
-            float s = sin(arg);
-            float c = cos(arg);
-            h += wp.y * s;
-            dhx += wp.y * wp.x * dir.x * c;
-            dhz += wp.y * wp.x * dir.y * c;
-            horiz.x += wp.w * dir.x * c;
-            horiz.z += wp.w * dir.y * c;
-          }
-
-          world.x += horiz.x;
-          world.z += horiz.z;
-          vec2 sim = simSample(world.xz);
-          world.y = h * (0.9 + uWind * 0.012) + sim.r * uDisplacement;
-
-          vec2 hx = simSample(world.xz + vec2(0.7, 0.0)) - simSample(world.xz - vec2(0.7, 0.0));
-          vec2 hz = simSample(world.xz + vec2(0.0, 0.7)) - simSample(world.xz - vec2(0.0, 0.7));
-          float simGradX = hx.x;
-          float simGradZ = hz.x;
-
-          vec3 n = normalize(vec3(-dhx - simGradX * 2.2, 1.0, -dhz - simGradZ * 2.2));
-          world.x += -simGradX * 0.55;
-          world.z += -simGradZ * 0.55;
-
-          vec4 mv = viewMatrix * vec4(world, 1.0);
-          gl_Position = projectionMatrix * mv;
-          vWorld = world;
-          vNormalW = normalize(n);
-          vSimHeight = sim.r;
-          vWaveHeight = h;
-          vCrest = clamp((h + 0.08) / 0.62, 0.0, 1.0);
-          vDistance = length(world.xz - uCenter);
-          vViewDir = normalize(world - cameraPosition);
-        }
-      `,
+      vertexShader: waterVertexShader(MAX_WAVES),
       fragmentShader: /* glsl */ `
         precision highp float;
+
         uniform float uTime;
-        uniform sampler2D uWaterNormal;
         uniform vec3 uSunDir;
         uniform vec3 uSunColor;
         uniform vec3 uDeepColor;
@@ -468,134 +426,185 @@ export class Ocean {
         uniform float uUnderwater;
         uniform float uFoamAmount;
         uniform float uFoamThreshold;
-        uniform float uWetness;
+        uniform vec2 uWindDir;
+        uniform float uDetailStrength;
+        uniform vec3 uDetailScale;
+        uniform sampler2D uDetail0;
+        uniform sampler2D uDetail1;
+        uniform sampler2D uDetail2;
+        uniform sampler2D uBathy;
+        uniform float uBathyExtent;
+        uniform float uBathyMaxDepth;
+        uniform float uDebugCrest;
+        uniform float uDebugSlope;
+        uniform float uDebugFoam;
+
         varying vec3 vWorld;
         varying vec3 vNormalW;
-        varying vec3 vViewDir;
-        varying float vSimHeight;
         varying float vWaveHeight;
         varying float vCrest;
+        varying float vJacobian;
         varying float vDistance;
+        varying vec2 vSlope;
 
         ${glslNoise}
         ${glslFog}
 
+        vec3 skyReflection(vec3 d) {
+          float h = clamp(d.y, 0.0, 1.0);
+          vec3 col = mix(uSkyHorizon * 0.9, uSkyZenith, pow(h, 0.35));
+          col = mix(col, uSkyHorizon * 1.02, exp(-max(d.y, 0.0) * 10.0) * 0.45);
+
+          vec2 cp = d.xz / (max(d.y, 0.03) + 0.22);
+          float baseCloud = fbm2(cp * 1.2 + vec2(uTime * 0.002, 0.0));
+          float clouds = fbm2(cp * 2.7 + vec2(baseCloud * 2.4 + uTime * 0.0012, baseCloud));
+          float band = smoothstep(0.46, 0.7, clouds + 0.1 * smoothstep(0.0, 0.3, d.y));
+          col = mix(col, vec3(0.74, 0.76, 0.72), band * (0.16 - 0.08 * h));
+
+          float sd = max(dot(d, uSunDir), 0.0);
+          col += uSunColor * (pow(sd, 700.0) * 2.1 + pow(sd, 30.0) * 0.18 + pow(sd, 5.0) * 0.05);
+          return col;
+        }
+
+        vec2 detailSlope(vec2 p, float dist) {
+          // Three non-commensurate cascades. The far fade is a cheap normal
+          // filter: sub-pixel ripple slopes are removed before they shimmer.
+          float fadeNear = 1.0 - smoothstep(120.0, 1100.0, dist);
+          float fadeFar = 1.0 - smoothstep(1800.0, 4200.0, dist);
+          vec2 drift = uWindDir * uTime;
+          vec2 uv0 = p / uDetailScale.x + drift * 0.009;
+          vec2 uv1 = p / uDetailScale.y + vec2(-uWindDir.y, uWindDir.x) * uTime * 0.011;
+          vec2 uv2 = p / uDetailScale.z + drift * 0.017;
+          vec2 s0 = texture2D(uDetail0, uv0).rg * 2.0 - 1.0;
+          vec2 s1 = texture2D(uDetail1, uv1).rg * 2.0 - 1.0;
+          vec2 s2 = texture2D(uDetail2, uv2).rg * 2.0 - 1.0;
+          vec2 s = s0 * 0.52 * fadeNear + s1 * 0.32 * fadeNear + s2 * 0.2 * fadeFar;
+          return s * uDetailStrength;
+        }
+
+        float detailHeight(vec2 p, float dist) {
+          float fade = 1.0 - smoothstep(150.0, 900.0, dist);
+          float h0 = texture2D(uDetail0, p / uDetailScale.x + uWindDir * uTime * 0.009).b;
+          float h1 = texture2D(uDetail1, p / uDetailScale.y + vec2(-uWindDir.y, uWindDir.x) * uTime * 0.011).b;
+          return (h0 * 0.6 + h1 * 0.4) * fade;
+        }
+
         void main() {
           vec3 n = normalize(vNormalW);
           vec3 view = normalize(uCameraPos - vWorld);
-          if (dot(view, n) < 0.0) n = -n;
-          float lookingUp = clamp(-view.y, 0.0, 1.0);
+          vec2 detail = detailSlope(vWorld.xz, vDistance);
+          float microHeight = detailHeight(vWorld.xz, vDistance);
+          vec3 microN = normalize(vec3(n.x + detail.x * 0.28, n.y, n.z + detail.y * 0.28));
+          if (microN.y < 0.0) microN = -microN;
 
-          // Two scales of an irregular tiling normal map. The old lattice of
-          // sine waves read as a regular grid from the air; this keeps the
-          // ripple field broken up while retaining real wave slopes.
-          float detailFade = 1.0 - smoothstep(40.0, 260.0, vDistance);
-          vec2 uvA = vWorld.xz * 0.075 + vec2(uTime * 0.012, uTime * 0.007);
-          vec2 uvB = vec2(vWorld.z, -vWorld.x) * 0.17 - vec2(uTime * 0.005, -uTime * 0.009);
-          vec4 waterA = texture2D(uWaterNormal, uvA);
-          vec4 waterB = texture2D(uWaterNormal, uvB);
-          vec2 slopeA = waterA.rg * 2.0 - 1.0;
-          vec2 slopeB = waterB.rg * 2.0 - 1.0;
-          slopeB = vec2(-slopeB.y, slopeB.x);
-          vec2 slope = slopeA * 0.8 + slopeB * 0.55 * detailFade;
-          vec3 microN = normalize(vec3(n.x + slope.x * 0.32, n.y, n.z + slope.y * 0.32));
-          float rippleBrightness = waterA.b * 0.65 + waterB.b * 0.35;
+          float distFilter = smoothstep(600.0, 3600.0, vDistance);
+          microN = normalize(mix(microN, vec3(0.0, 1.0, 0.0), distFilter * 0.55));
 
-          // Wind-aligned foam: a broad broken field plus stretched lacing.
-          // The old single fbm was smooth and read as milk rather than spray.
-          vec2 windDir = vec2(0.72, 0.69);
-          float along = dot(vWorld.xz, windDir);
-          float across = dot(vWorld.xz, vec2(-windDir.y, windDir.x));
-          float foamNoise = vnoise(vWorld.xz * 1.7 + vec2(uTime * 0.06, -uTime * 0.04));
-          float foamLace = vnoise(vec2(along * 1.25 + uTime * 0.05, across * 5.2 - uTime * 0.04) + 17.3);
-          float lace = smoothstep(0.52, 0.88, foamLace);
-          float crestFoam = smoothstep(uFoamThreshold + 0.06, uFoamThreshold + 0.32, vCrest + foamNoise * 0.16 - 0.16);
-          float faceFoam = smoothstep(0.58, 0.9, vCrest + lace * 0.25 - 0.2) * (0.2 + 0.8 * lace);
-          float upset = smoothstep(0.015, 0.16, abs(vSimHeight));
-          float simFoam = upset * 0.7;
-          float foam = clamp((crestFoam * 0.4 + faceFoam * 0.25) * uFoamAmount + simFoam, 0.0, 1.0);
-          foam *= smoothstep(0.35, 0.8, foamNoise + lace * 0.3 + foam * 0.2);
-          float foamFine = vnoise(vWorld.xz * 8.5 + vec2(uTime * 0.11, -uTime * 0.08));
-          foam *= smoothstep(0.2, 0.75, foamFine * 0.6 + foamNoise * 0.4);
-          foam *= 1.0 - smoothstep(320.0, 900.0, vDistance);
+          float depthRaw = texture2D(uBathy, vWorld.xz / uBathyExtent + 0.5).r * uBathyMaxDepth;
+          float pathDepth = clamp(depthRaw, 0.0, 24.0);
 
-          // Above the surface: Fresnel sky reflection with a broken cloud
-          // veil, crest translucency and a sharp sun glitter path. The broad
-          // reflection is pulled toward the water body so grazing angles stay
-          // blue instead of becoming a white sheet.
+          vec2 p = vWorld.xz;
+          float crest = clamp(vCrest, 0.0, 1.0);
+          float compression = 1.0 - smoothstep(0.08, 0.62, vJacobian);
+          float slopeEnergy = smoothstep(0.1, 0.25, length(vSlope));
+          float foamNoise = fbm2(p * 0.31 + vec2(uTime * 0.014, -uTime * 0.009));
+          float perpA = dot(p, uWindDir);
+          float perpB = dot(p, vec2(-uWindDir.y, uWindDir.x));
+          float lace = vnoise(vec2(perpA * 0.32 + uTime * 0.05, perpB * 1.9 - uTime * 0.04) + 13.7);
+          float windMask = smoothstep(0.4, 0.72, foamNoise * 0.72 + lace * 0.42);
+          float crestMask = smoothstep(0.16, 0.78, crest);
+          float foamSignal =
+            crestMask * (0.35 + slopeEnergy * 0.45 + windMask * 0.35) +
+            compression * 2.2;
+          float foam = smoothstep(uFoamThreshold, uFoamThreshold + 0.17, foamSignal) * uFoamAmount;
+          foam *= 1.0 - smoothstep(1200.0, 4200.0, vDistance);
+          float fineFoam = vnoise(p * 4.6 + vec2(uTime * 0.16, -uTime * 0.12));
+          foam *= 0.55 + 0.6 * fineFoam;
+          foam = clamp(foam, 0.0, 1.0);
+
+          // ---- above the surface ----------------------------------------
+          float cosView = clamp(dot(view, microN), 0.0, 1.0);
+          float fres = 0.02 + 0.98 * pow(1.0 - cosView, 5.0);
           vec3 refl = reflect(-view, microN);
+          vec3 sky = skyReflection(refl);
+
+          float shallowMix = smoothstep(0.9, 14.0, pathDepth);
+          vec3 shallow = uTopColor * 0.55 + vec3(0.0, 0.08, 0.085);
+          vec3 body = mix(shallow, uDeepColor, shallowMix);
+          body *= 0.82 + 0.24 * crest;
+
+          // Wave-face legibility: faces tilted toward the sun collect more
+          // direct light, faces tilted away sit in their own shadow. This is
+          // an artistic scattering term, not a fake slope force; it exists so
+          // a surfer can read the face shape from above.
+          vec2 sunFlat = normalize(uSunDir.xz);
+          float faceSun = clamp(-dot(n.xz, sunFlat) * 2.4, -1.0, 1.0);
+          body *= 1.0 + faceSun * 0.16;
+          float crestLip = smoothstep(0.42, 0.92, crest);
+          body += uTopColor * crestLip * 0.055;
+
+          // Light transmitted through a thin, backlit crest.
+          float backlit = pow(max(dot(view, -uSunDir), 0.0), 1.6) * crest * crest;
+          body += vec3(0.12, 0.38, 0.3) * backlit * 0.5;
+          body += uTopColor * (0.02 + crest * 0.08) * 0.35;
+
+          vec3 above = mix(body, sky, clamp(0.04 + fres * 0.82, 0.0, 0.94));
+
           float sunAlign = max(dot(refl, uSunDir), 0.0);
-          vec3 sky = mix(uSkyHorizon, uSkyZenith * 0.82, pow(clamp(refl.y, 0.0, 1.0), 0.55));
-          sky += uSunColor * (pow(sunAlign, 140.0) * 0.9 + pow(sunAlign, 8.0) * 0.035);
-          vec2 cloudUV = refl.xz / (max(refl.y, 0.03) + 0.26);
-          float cloudVeil = smoothstep(0.45, 0.72, vnoise(cloudUV * 1.8 + vec2(uTime * 0.002, 0.0)));
-          sky = mix(sky, vec3(0.58, 0.61, 0.62), cloudVeil * 0.06);
-          sky = mix(sky, uDeepColor * 0.55 + uTopColor * 0.45, 0.34);
-          float viewDot = clamp(dot(view, microN), 0.0, 1.0);
-          float fres = 0.02 + 0.98 * pow(1.0 - viewDot, 5.0);
-          vec3 body = uDeepColor * 0.72 + uTopColor * 0.22;
-          body += uTopColor * (0.02 + vCrest * 0.13) * 0.45;
-          vec3 above = mix(body, sky, clamp(0.08 + fres * 0.65, 0.0, 0.85));
-          above += uSunColor * pow(sunAlign, 700.0) * 0.45;
-          above += uSunColor * pow(sunAlign, 60.0) * 0.05;
-          above += uTopColor * pow(sunAlign, 24.0) * 0.06;
-          float whiteWater = clamp(foam * 1.5, 0.0, 1.0);
-          vec3 foamColor = mix(
-            vec3(0.42, 0.55, 0.58),
-            vec3(0.93, 0.96, 0.94),
-            smoothstep(0.15, 0.85, foamNoise + lace * 0.3)
-          );
-          above = mix(above, foamColor, whiteWater * 0.6);
-          above = mix(above, vec3(0.96, 0.98, 0.97), whiteWater * 0.08);
-          above = applyWaterFog(above, vDistance, uFogColor, uFogDensity * 0.34);
+          float specPower = mix(1200.0, 70.0, smoothstep(80.0, 1800.0, vDistance));
+          float glint = pow(sunAlign, specPower) * mix(2.6, 0.3, smoothstep(100.0, 2200.0, vDistance));
+          glint += pow(sunAlign, 55.0) * 0.075;
+          float sparkle = smoothstep(0.52, 0.92, vnoise(p * 3.4 + vec2(uTime * 0.22, -uTime * 0.19)));
+          glint += pow(sunAlign, 22.0) * (0.025 + 0.045 * sparkle);
+          glint *= 0.55 + sparkle * 0.9;
+          above += uSunColor * glint;
 
-          // Below: the underside of the ceiling. At the shallow grazing angles
-          // a submerged camera normally sees, this is mostly dark total
-          // internal reflection with thin, moving caustic veins — not a white
-          // skylight. Keep the energy bounded so it never blooms into paint.
-          float up = smoothstep(-0.12, 0.95, lookingUp);
-          // The underside is a liquid ceiling: steep rays look through the
-          // Snell window into the bright sky, while grazing rays sit in dark
-          // total internal reflection with caustic veins running through it.
-          vec3 underNormal = normalize(vec3(microN.x * 1.35, microN.y, microN.z * 1.35));
-          float cosUp = clamp(dot(-view, underNormal), 0.0, 1.0);
-          float window = smoothstep(0.5, 0.82, cosUp);
-          float rim = exp(-pow((cosUp - 0.64) / 0.10, 2.0));
-          float rippleFine = smoothstep(0.42, 0.82, rippleBrightness);
-          // Grazing rays are total internal reflection: a smooth silver-blue
-          // mirror of the water column, with bright ripple bands rather than
-          // noise-shaped shadows. Steep rays open into the window.
-          vec3 below = mix(uDeepColor * 0.52, uTopColor * 0.15, 0.12 + up * 0.28);
-          below *= 0.82 + 0.18 * vCrest;
-          below += uTopColor * rippleFine * 0.055 * (0.4 + 0.6 * up);
-          below += uTopColor * pow(rippleBrightness, 3.0) * 0.045;
-          below += uTopColor * window * 0.08;
+          vec3 foamColor = mix(vec3(0.6, 0.72, 0.7), vec3(0.96, 0.99, 0.96), smoothstep(0.1, 0.8, foamNoise + lace * 0.25));
+          above = mix(above, foamColor, foam * 0.88);
 
-          window *= 0.78 + 0.22 * rippleBrightness;
-          vec3 windowColor =
-            uTopColor * (0.5 + 0.3 * window) +
-            uSunColor * pow(max(dot(-view, uSunDir), 0.0), 8.0) * 0.32;
-          windowColor *= 0.82 + 0.32 * rippleBrightness;
-          below = mix(below, windowColor, window * 0.8);
-          // A bright turquoise lip where the refracted window folds under
-          // the wave, plus a narrow sunball caught in the surface.
-          below += uSunColor * rim * (0.35 + 0.65 * up) * 0.08;
-          below += uSunColor * pow(max(dot(-view, uSunDir), 0.0), 90.0) * 0.11 * window;
+          // ---- below the surface ----------------------------------------
+          vec3 up = -view;
+          float cosUp = clamp(dot(up, microN), 0.0, 1.0);
+          float window = smoothstep(0.652, 0.697, cosUp);
+          float rim = exp(-pow((cosUp - 0.661) / 0.016, 2.0));
 
-          float upWash = pow(up, 1.6);
-          below += vec3(0.02, 0.08, 0.15) * upWash * 0.1;
-          below += uSunColor * pow(max(dot(-view, uSunDir), 0.0), 4.0) * 0.016 * upWash;
-          // A shifting specular sheen across the underside of the swell.
-          float sheen = pow(max(dot(reflect(-view, microN), uSunDir), 0.0), 22.0);
-          below += uSunColor * sheen * 0.1 * smoothstep(-0.1, 0.45, lookingUp);
-          below *= 0.9 + clamp(vCrest, 0.0, 1.0) * 0.16;
-          below += uTopColor * foam * 0.1;
-          below = mix(below, vec3(0.35, 0.48, 0.5), foam * 0.16);
-          below = applyWaterFog(below, vDistance, uFogColor, uFogDensity * 0.5);
-          below *= 0.95;
+          vec3 tir = uDeepColor * 0.52 + uTopColor * 0.055;
+          tir *= 0.9 + 0.18 * crest;
+          tir += uTopColor * (0.045 + 0.075 * crest) * (0.35 + 0.65 * microHeight);
+          tir += uTopColor * pow(max(0.0, 1.0 - cosUp), 1.4) * 0.07;
+          float undersideSheen = pow(max(dot(reflect(-view, microN), uSunDir), 0.0), 26.0);
+          tir += uSunColor * undersideSheen * 0.08;
+          tir += vec3(0.02, 0.075, 0.12) * (0.5 + 0.5 * microHeight) * 0.25;
 
-          vec3 color = uUnderwater > 0.5 ? below : above;
-          color = min(color, vec3(1.7));
+          vec3 winCol = skyReflection(normalize(up));
+          winCol = mix(winCol, uTopColor * 0.75, 0.28);
+          winCol += uSunColor * pow(max(dot(normalize(up), uSunDir), 0.0), 90.0) * 0.7;
+          winCol *= 0.82 + 0.3 * microHeight;
+
+          vec3 below = mix(tir, winCol, window * 0.92);
+          below += uTopColor * rim * 0.8;
+          below = mix(below, vec3(0.55, 0.7, 0.68), foam * 0.24);
+          below = applyWaterFog(below, vDistance, uFogColor, uFogDensity * 0.72);
+
+          vec3 aboveFog = applyWaterFog(above, vDistance, uFogColor, uFogDensity * 0.78);
+
+          vec3 color = mix(aboveFog, below, clamp(uUnderwater, 0.0, 1.0));
+
+          // ---- debug overlays ------------------------------------------
+          if (uDebugCrest > 0.5) {
+            float band = abs(fract((vWaveHeight + 2.0) / 0.35) - 0.5);
+            float line = 1.0 - smoothstep(0.0, 0.055, band);
+            color = mix(color, vec3(0.15, 1.0, 0.62), line * 0.65);
+          }
+          if (uDebugSlope > 0.5) {
+            float s = clamp(length(vSlope) / 0.7, 0.0, 1.0);
+            color = mix(color, vec3(s * 1.3, 0.15 + s * 0.5, 1.0 - s), 0.55);
+          }
+          if (uDebugFoam > 0.5) {
+            color = mix(color, vec3(1.0, 0.2, 0.75), foam * 0.8);
+          }
+
+          color = min(color, vec3(1.8));
           gl_FragColor = vec4(color, 1.0);
         }
       `,
@@ -636,10 +645,9 @@ export class Ocean {
         void main() {
           vec3 d = normalize(vDir);
           float h = clamp(d.y, -0.05, 1.0);
-          vec3 col = mix(uHorizon, uZenith, pow(max(h, 0.0), 0.48));
-          col = mix(col, uHorizon * 1.055, exp(-max(h, 0.0) * 10.0) * 0.7);
+          vec3 col = mix(uHorizon, uZenith, pow(max(h, 0.0), 0.5));
+          col = mix(col, uHorizon * 1.05, exp(-max(h, 0.0) * 10.0) * 0.72);
 
-          // Blown-out, layered fair-weather cloud banks.
           vec2 cp = d.xz / (max(d.y, 0.035) + 0.22);
           float baseCloud = fbm2(cp * 1.25 + vec2(uTime * 0.003, 0.0));
           float clouds = fbm2(cp * 2.7 + vec2(baseCloud * 2.8 + uTime * 0.002, baseCloud));
@@ -656,37 +664,77 @@ export class Ocean {
         }
       `,
     });
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(5200, 40, 28), material);
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(9000, 40, 28), material);
     mesh.frustumCulled = false;
     mesh.renderOrder = -10;
     return mesh;
   }
 
+  _needsRebuild() {
+    const w = TUNING.water;
+    const sig = [
+      w.seed,
+      w.swellHeight,
+      w.swellWavelength,
+      w.swellWavelengthSpread,
+      w.swellDirection,
+      w.swellDirectionSpread,
+      w.swellComponents,
+      w.windSeaHeight,
+      w.windSeaWavelength,
+      w.windSeaWavelengthSpread,
+      w.windSeaDirection,
+      w.windSeaDirectionSpread,
+      w.windSeaComponents,
+      w.chop,
+    ].join("|");
+    if (sig === this._waveSig) return false;
+    this._waveSig = sig;
+    return true;
+  }
+
   updateWaveUniforms() {
-    const set = getWaveSet(this.time);
-    for (let i = 0; i < 6; i++) {
-      const w = set[i];
-      if (!w) {
-        this.uniforms.uWaveDirs.value[i].set(1, 0);
-        this.uniforms.uWaveParams.value[i].set(0, 0, 0, 0);
-        continue;
+    if (this._needsRebuild()) this.water.rebuild(TUNING.water);
+    this.water.setTime(this.time);
+    const waves = this.uniforms.uWaves.value;
+    const n = this.water.count;
+    for (let i = 0; i < MAX_WAVES; i++) {
+      const v = waves[i];
+      if (i < n) {
+        v.set(this.water.kx[i], this.water.kz[i], this.water.amp[i], this.water.phase[i]);
+      } else {
+        v.set(0, 0, 0, 0);
       }
-      this.uniforms.uWaveDirs.value[i].set(w.dx, w.dz);
-      this.uniforms.uWaveParams.value[i].set(w.k, w.amp, w.phase, w.q);
     }
-    this.uniforms.uAmplitude.value = TUNING.waves.amplitude;
-    this.uniforms.uWind.value = TUNING.waves.windSpeed;
-    this.uniforms.uChop.value = TUNING.waves.choppiness;
-    this.uniforms.uWaveCount.value = TUNING.waves.waveCount;
+    this.uniforms.uWaveCount.value = n;
+    this.uniforms.uChop.value = this.water.chop;
+    this.uniforms.uMaxCrest.value = Math.max(0.5, this.water.stats.height * 0.8);
+    this.uniforms.uFoamAmount.value = TUNING.water.foamAmount;
+    this.uniforms.uFoamThreshold.value = TUNING.water.foamThreshold;
+    this.uniforms.uDetailStrength.value = TUNING.water.detailStrength;
+    this.uniforms.uWindDir.value.set(
+      Math.cos(TUNING.water.windSeaDirection),
+      Math.sin(TUNING.water.windSeaDirection)
+    );
   }
 
-  /** CPU-accessible water height. Deterministic analytic fallback. */
+  /** CPU-accessible surface height (same field the renderer draws). */
   getWaterHeight(x, z) {
-    return waveHeightAt(x, z, this.time);
+    return this.water.sampleHeight(x, z);
   }
 
+  /** Surface-only sample kept for existing callers (camera, dolphin). */
   getWaterSample(x, z) {
-    return waveSampleAt(x, z, this.time, this.lastSample);
+    return this.water.sampleSurface(x, z, this.lastSample);
+  }
+
+  /** Full 3D sample for physics. */
+  sampleWater(x, y, z, out = {}) {
+    return this.water.sample(x, y, z, out);
+  }
+
+  sampleWaterBatch(positions, out, stride = 3) {
+    return this.water.sampleBatch(positions, out, stride);
   }
 
   addSurfaceContact(x, z, force, radius = 0.85) {
@@ -694,15 +742,14 @@ export class Ocean {
   }
 
   update(dt, playerPos, camera, underwater, wetness, context = {}) {
-    this.time += dt;
+    this.time += dt * TUNING.water.timeScale;
     const u = this.uniforms;
     u.uTime.value = this.time;
     u.uCenter.value.set(camera.position.x, camera.position.z);
     u.uCameraPos.value.copy(camera.position);
-    u.uWetness.value = wetness;
+    u.uUnderwater.value = underwater;
 
-    const camUnder = camera.position.y < this.getWaterHeight(camera.position.x, camera.position.z);
-    u.uUnderwater.value = camUnder ? 1 : 0;
+    const camSurf = this.water.sampleSurface(camera.position.x, camera.position.z, this._surfaceSample);
     u.uFogColor.value.copy(context.fogColor || this.fogColor);
     u.uFogDensity.value = context.fogDensity ?? TUNING.visuals.underwaterDensity;
 
@@ -710,22 +757,60 @@ export class Ocean {
     u.uSimState.value = this.sim.texture;
     u.uSimCenter.value.copy(this.sim.center);
     u.uSimExtent.value = this.sim.extent;
-    u.uDisplacement.value = TUNING.waves.displacementScale;
-    u.uFoamAmount.value = TUNING.waves.foamAmount;
-    u.uFoamThreshold.value = TUNING.waves.foamThreshold;
+    const waveStart = performance.now();
     this.updateWaveUniforms();
+    this.water.lastUniformMs = performance.now() - waveStart;
+    u.uDebugCrest.value = TUNING.debug.crestOverlay ? 1 : 0;
+    u.uDebugSlope.value = TUNING.debug.slopeOverlay ? 1 : 0;
+    u.uDebugFoam.value = TUNING.debug.foamOverlay ? 1 : 0;
 
-    this.mesh.visible = this.shouldDrawSurface(camera);
-    this.sky.visible = !camUnder;
+    this.mesh.visible = true;
+    this.sky.visible = camera.position.y > camSurf.height;
     this.sky.position.set(camera.position.x, Math.min(camera.position.y, 0) * 0.2, camera.position.z);
     this.skyUniforms.uTime.value = this.time;
     u.uSunDir.value.copy(this.sunDir);
   }
 
-  shouldDrawSurface(camera) {
-    // When the camera is deep and looking away from the surface, the
-    // circumhorizon polygon can fill the screen. It is still correct (the
-    // surface is above), so draw it; culling would introduce pop.
+  /**
+   * One-pixel top-down render of the actual ocean mesh at (x,z). The fragment
+   * writes vWaveHeight as 16-bit fixed point; this validates the rendered
+   * mesh against the CPU field, including tessellation error. Synchronous
+   * readback is acceptable because this is a debug probe (2 Hz), never part of
+   * the frame path.
+   */
+  gpuProbeHeight(x, z) {
+    const u = this.uniforms;
+    const renderer = this.renderer;
+    const oldCenterX = u.uCenter.value.x;
+    const oldCenterZ = u.uCenter.value.y;
+    const oldSim = u.uSimScale.value;
+    u.uCenter.value.set(x, z);
+    u.uSimScale.value = 0;
+
+    this.probeCamera.position.set(x, 60, z);
+    this.probeCamera.up.set(0, 0, -1);
+    this.probeCamera.lookAt(x, 0, z);
+    this.probeCamera.updateMatrixWorld();
+
+    const oldTarget = renderer.getRenderTarget();
+    renderer.getClearColor(this._clearColor);
+    const oldAlpha = renderer.getClearAlpha();
+    renderer.setRenderTarget(this.probeTarget);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear(true, true, false);
+    renderer.render(this.probeScene, this.probeCamera);
+    renderer.readRenderTargetPixels(this.probeTarget, 0, 0, 1, 1, this._probePixels);
+    renderer.setRenderTarget(oldTarget);
+    renderer.setClearColor(this._clearColor, oldAlpha);
+
+    u.uCenter.value.set(oldCenterX, oldCenterZ);
+    u.uSimScale.value = oldSim;
+
+    const q = this._probePixels[0] * 256 + this._probePixels[1];
+    return (q / 65535) * 16 - 8;
+  }
+
+  shouldDrawSurface() {
     return true;
   }
 
