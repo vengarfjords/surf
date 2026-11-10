@@ -280,6 +280,7 @@ export class Dolphin {
     this.speed = 0;
     this.surfing = false;
     this.surfTime = 0;
+    this.surfFlatTime = 0;
     this.surfFaceBank = 0;
     this.surfPitch = 0;
     this.poseBlend = 0;
@@ -663,6 +664,18 @@ export class Dolphin {
     const surfDepth = TUNING.movement.surfDepth;
     const steepFace =
       faceSlope > TUNING.movement.surfMinSlope * (this.surfing ? 0.55 : 1.0);
+    const crestFlat = faceSlope < TUNING.movement.surfMinSlope * 0.55;
+    if (this.surfing) {
+      this.surfFlatTime = crestFlat ? this.surfFlatTime + dt : 0;
+    } else {
+      this.surfFlatTime = 0;
+    }
+    // Hold through a briefly flat crest instead of releasing and popping off
+    // the top. Keep holding while the body is still moving up or sitting above
+    // the waterline; release only after the crest has settled.
+    const crestHolds =
+      this.surfing &&
+      (this.surfFlatTime < 2.5 || this.velocity.y > 1.0 || surfaceDist > 0.4);
     const speedEnough = this.surfing
       ? this.speed > 3.5
       : this.speed > TUNING.movement.surfMinSpeed;
@@ -670,10 +683,12 @@ export class Dolphin {
       ? surfaceDist > -surfDepth - 4.0 && surfaceDist < 4.0
       : surfaceDist > -surfDepth - 1.0 && surfaceDist < 0.9;
     const launching =
-      surfaceDist > 0.15 && this.velocity.y > TUNING.movement.surfReleaseRise;
+      input.boost &&
+      surfaceDist > 0.4 &&
+      this.velocity.y > TUNING.movement.surfReleaseRise;
     const surfable =
       nearArena &&
-      steepFace &&
+      (steepFace || crestHolds) &&
       speedEnough &&
       nearSurface &&
       !launching &&
@@ -950,27 +965,24 @@ export class Dolphin {
       // Soft ceiling. Crest pressure can throw a light, half-wet hull several
       // metres into the air; unless the player is boosting or asking to rise,
       // settle the back onto the waterline instead of letting it hover.
-      const capDist = targetDist + 0.4;
+      const capDist = targetDist + 0.5;
       if (!input.boost && dist > capDist) {
-        const pull = 1 - Math.exp(-30 * dt);
+        const pull = 1 - Math.exp(-20 * dt);
         this.position.y -= (dist - capDist) * pull;
-        if (this.velocity.y > 0) this.velocity.y *= 1 - 0.9 * pull;
+        if (this.velocity.y > 0) this.velocity.y *= 1 - 0.85 * pull;
       }
-      // Hard ceiling for an unpowered ride: wave lift can still outrun the
-      // spring, but it should not turn a normal glide into a hover. Space/C or
-      // boost releases the contact before this matters.
-      if (!input.boost && this.position.y > surfWater.height + capDist + 0.25) {
-        this.position.y = surfWater.height + capDist + 0.25;
-        if (this.velocity.y > 0) this.velocity.y *= 0.25;
+      if (!input.boost && this.position.y > surfWater.height + capDist + 0.2) {
+        this.position.y = surfWater.height + capDist + 0.2;
+        if (this.velocity.y > 0) this.velocity.y *= 0.2;
       }
 
       // Damped surface follow. The spring alone leaves a static offset when
       // the face is rising or the hull is being pushed down; this keeps the
       // body at a consistent waterline so the back stays readable in the
       // chase view. It is not a pin: the state release above still applies.
-      const follow = 1 - Math.exp(-(input.boost ? 3.0 : 24.0) * dt);
+      const follow = 1 - Math.exp(-(input.boost ? 3.0 : 16.0) * dt);
       this.position.y += (surfWater.height + targetDist - this.position.y) * follow;
-      this.velocity.y += (surfaceVy - this.velocity.y) * follow * 0.7;
+      this.velocity.y += (surfaceVy - this.velocity.y) * follow * 0.5;
 
       // The face is the engine. Gravity's along-face component accelerates
       // the body down the wave; the tail stays off.
@@ -1438,6 +1450,23 @@ export class Dolphin {
       this._updateSpineAnimation(dt);
     } else {
       this.root.quaternion.copy(this.orientation);
+    }
+
+    // Final surf ceiling. The hull can receive a large crest lift after the
+    // contact's single-point sample; clamp against the same analytic height
+    // the HUD uses so a normal ride cannot be thrown into a hover. Space/C or
+    // boost releases the contact before this applies.
+    if (this.surfing && !input.boost) {
+      const wh = ocean.getWaterHeight(this.position.x, this.position.z);
+      const capY = wh - TUNING.movement.surfDepth + 0.25;
+      const floorY = wh - TUNING.movement.surfDepth - 0.2;
+      if (this.position.y > capY) {
+        this.position.y = capY;
+        if (this.velocity.y > 0) this.velocity.y *= 0.2;
+      } else if (this.position.y < floorY) {
+        this.position.y = floorY;
+        if (this.velocity.y < 0) this.velocity.y *= 0.2;
+      }
     }
 
     // Telemetry for HUD / camera.
