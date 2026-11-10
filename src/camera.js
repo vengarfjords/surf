@@ -55,17 +55,22 @@ export class CameraRig {
     // velocity can trail behind without dragging the view with them. While
     // surfing, the face pitch pulls the view down the wave with the body.
     this.surfBlend = damp(this.surfBlend, dolphin.surfing ? 1 : 0, 3.5, dt);
+    // On a wave the camera should stay behind the ridden line, not the raw
+    // mouse yaw: the body is carried toward the wave direction while surfing.
+    const lookYaw =
+      dolphin.targetYaw +
+      wrapAngle(dolphin.yaw - dolphin.targetYaw) * this.surfBlend;
     const lookPitch = clamp(
       lerp(dolphin.targetPitch, dolphin.pitch, camCfg.surfLookPitch * this.surfBlend),
       -1.45,
       1.45
     );
     if (!this.initialized) {
-      this.orbitYaw = dolphin.targetYaw;
+      this.orbitYaw = lookYaw;
       this.orbitPitch = lookPitch;
     } else {
       const lookAlpha = 1 - Math.exp(-camCfg.lookResponsiveness * dt);
-      const yawDelta = wrapAngle(dolphin.targetYaw - this.orbitYaw);
+      const yawDelta = wrapAngle(lookYaw - this.orbitYaw);
       this.orbitYaw = wrapAngle(this.orbitYaw + yawDelta * lookAlpha);
       this.orbitPitch = damp(this.orbitPitch, lookPitch, camCfg.lookResponsiveness, dt);
     }
