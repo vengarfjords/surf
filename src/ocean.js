@@ -359,7 +359,6 @@ export class Ocean {
       uPeakKz: { value: this.water.peakKz },
       uPeakPhase: { value: this.water.peakPhaseNow || 0 },
       uBreakerLip: { value: TUNING.water.breakerLip },
-      uVisualFold: { value: TUNING.water.barrelFold },
       uAerationAmount: { value: TUNING.water.aerationAmount },
       uFoamPersistence: { value: TUNING.water.foamPersistence },
       uPeakWavelength: { value: this.water.stats.peakWavelength },
@@ -916,7 +915,6 @@ export class Ocean {
     this.uniforms.uPeakKz.value = this.water.peakKz;
     this.uniforms.uPeakPhase.value = this.water.peakPhaseNow || 0;
     this.uniforms.uBreakerLip.value = TUNING.water.breakerLip;
-    this.uniforms.uVisualFold.value = TUNING.water.barrelFold;
     this.uniforms.uAerationAmount.value = TUNING.water.aerationAmount;
     this.uniforms.uFoamPersistence.value = TUNING.water.foamPersistence;
     this.uniforms.uPeakWavelength.value = this.water.stats.peakWavelength;
@@ -1120,11 +1118,9 @@ export class Ocean {
     const oldCenterX = u.uCenter.value.x;
     const oldCenterZ = u.uCenter.value.y;
     const oldSim = u.uSimScale.value;
-    const oldFold = u.uVisualFold.value;
     const sample = this.water.sampleSurface(x, z, this._probeSample);
     u.uCenter.value.set(sample.parameterX, sample.parameterZ);
     u.uSimScale.value = 0;
-    u.uVisualFold.value = 0;
 
     this.probeCamera.position.set(x, 60, z);
     this.probeCamera.up.set(0, 0, -1);
@@ -1144,7 +1140,6 @@ export class Ocean {
 
     u.uCenter.value.set(oldCenterX, oldCenterZ);
     u.uSimScale.value = oldSim;
-    u.uVisualFold.value = oldFold;
 
     const q = this._probePixels[0] * 256 + this._probePixels[1];
     return (q / 65535) * 96 - 48;

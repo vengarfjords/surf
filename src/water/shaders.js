@@ -47,7 +47,6 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     uniform float uPeakKz;
     uniform float uPeakPhase;
     uniform float uBreakerLip;
-    uniform float uVisualFold;
     uniform float uPeakWavelength;
     uniform sampler2D uSolverTexture;
     uniform vec2 uSolverCenter;
@@ -161,17 +160,6 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         dhdz += dLip * uPeakKz * ratio;
       }
       h += lip;
-
-      // Visual-only barrel fold: displace the focused crest forward and down
-      // so the rendered surface overhangs. CPU physics and the parity probe
-      // keep the analytic height (uVisualFold is zero in the probe).
-      float faceHs = uHs * shoal * focusHs;
-      float foldPhase = sin(peakArg + 0.2);
-      float fold = breakMask * smoothstep(-0.15, 0.75, foldPhase) * uVisualFold;
-      vec2 peakDir = normalize(vec2(uPeakKx, uPeakKz) + vec2(1e-5));
-      horizX += peakDir.x * fold * faceHs * 0.35;
-      horizZ += peakDir.y * fold * faceHs * 0.35;
-      h -= fold * faceHs * 0.18;
 
       vec3 world = base + vec3(horizX, h, horizZ);
 

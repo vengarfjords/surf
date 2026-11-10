@@ -250,9 +250,6 @@ export const TUNING = {
     breakSoftness: 0.1,
     breakerJet: 0.35,
     breakerLip: 0.28,
-    // Visual-only crest fold: the rendered face overhangs while CPU physics
-    // keeps the analytic height. 0 disables it.
-    barrelFold: 1,
     aerationAmount: 0.85,
     foamPersistence: 0.6,
     // Reef focus: the swell refracts and focuses over the deep bank, turning
@@ -482,7 +479,6 @@ export const TUNE_CONTROLS = [
   { path: "water.breakRatio", label: "break H/h", min: 0.4, max: 1.2, step: 0.01 },
   { path: "water.breakSoftness", label: "break softness", min: 0.02, max: 0.3, step: 0.01 },
   { path: "water.breakerLip", label: "breaker lip", min: 0, max: 0.6, step: 0.01 },
-  { path: "water.barrelFold", label: "barrel fold", min: 0, max: 2, step: 0.05 },
   { path: "water.breakerJet", label: "breaker jet", min: 0, max: 3, step: 0.05 },
   { path: "water.aerationAmount", label: "aeration", min: 0, max: 1, step: 0.01 },
   { path: "water.foamPersistence", label: "foam persistence", min: 0, max: 1, step: 0.01 },
