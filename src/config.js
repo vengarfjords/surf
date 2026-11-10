@@ -123,7 +123,23 @@ export const TUNING = {
     // Passive wave riding: a steep descending/along-face run fades the tail
     // stroke out and lets the local surface slope drive the body.
     coastSlope: 0.06,
-    coastDrive: 0.6,
+    // Surf contact: a soft attachment to a steep face. The body is held a
+    // little below the local surface, aligned to the face, and the tangential
+    // velocity is carved toward the heading instead of skating straight on.
+    surfGrip: 10.0,
+    surfDepth: 0.02,
+    surfMinSlope: 0.075,
+    surfMinSpeed: 5.0,
+    surfSpring: 70,
+    surfDamp: 12,
+    surfDrive: 0.9,
+    surfPump: 1.25,
+    surfAttitude: 5.5,
+    surfFaceRoll: 0.65,
+    surfBank: 1.7,
+    surfMaxBank: 1.15,
+    surfCarveDrag: 0.25,
+    surfReleaseRise: 6.5,
 
     // A quiet, always-present current keeps world and camera alive.
     currentX: 0.2,
@@ -186,6 +202,9 @@ export const TUNING = {
   camera: {
     chaseDistance: 9.5,
     chaseHeight: 5.5,
+    surfDistance: 5.5,
+    surfHeight: 3.2,
+    surfShoulder: 5.5,
     // A small shoulder offset keeps the shot alive without making the view
     // point across the dolphin instead of along its snout.
     shoulder: 0.7,
@@ -200,6 +219,8 @@ export const TUNING = {
     speedFov: 16,
     baseFov: 64,
     rollFollow: 0.27,
+    surfRollFollow: 0.42,
+    surfLookPitch: 0.62,
     handheld: 1.0,
     shake: 0.85,
     surgeBank: 0.15,
@@ -440,7 +461,14 @@ export const TUNE_CONTROLS = [
   { path: "movement.airLift", label: "air lift", min: 0, max: 0.05, step: 0.001 },
   { path: "movement.airGravity", label: "air gravity", min: 0, max: 14, step: 0.05 },
   { path: "movement.coastSlope", label: "coast trigger slope", min: 0.02, max: 0.3, step: 0.01 },
-  { path: "movement.coastDrive", label: "wave slope drive", min: 0, max: 1.5, step: 0.01 },
+  { path: "movement.surfGrip", label: "surf carve grip", min: 0, max: 14, step: 0.1 },
+  { path: "movement.surfDepth", label: "surf ride depth", min: 0, max: 1.5, step: 0.01 },
+  { path: "movement.surfSpring", label: "surf hold", min: 10, max: 140, step: 1 },
+  { path: "movement.surfAttitude", label: "surf face attitude", min: 0, max: 12, step: 0.1 },
+  { path: "movement.surfFaceRoll", label: "surf face lean", min: 0, max: 1.2, step: 0.01 },
+  { path: "movement.surfBank", label: "surf carve bank", min: 0, max: 4, step: 0.05 },
+  { path: "movement.surfDrive", label: "surf wave drive", min: 0, max: 1.6, step: 0.01 },
+  { path: "movement.surfPump", label: "surf wave pump", min: 0, max: 3, step: 0.05 },
   { path: "movement.breachImpulse", label: "breach kick", min: 0, max: 6, step: 0.05 },
   { path: "dolphin.tailBeatSpeed", label: "tail beat", min: 0.15, max: 2.6, step: 0.01 },
   { path: "dolphin.tailBeatAccel", label: "accel beat", min: 0, max: 1.8, step: 0.01 },

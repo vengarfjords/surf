@@ -298,6 +298,11 @@ async function boot() {
         }
       }
       if (!found) break;
+      // Keep the immediate area around the animal clear. Ambient breaker mist
+      // is atmosphere, but a column on the chase sightline hides the dolphin.
+      const ddx = x - dolphin.position.x;
+      const ddz = z - dolphin.position.z;
+      if (ddx * ddx + ddz * ddz < 22 * 22) continue;
       const height = ocean.getWaterHeight(x, z);
       const peak = ocean.water.peak;
       effects.surfMist(

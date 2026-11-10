@@ -633,11 +633,17 @@ export class Ocean {
           float fieldLace = 0.55 * foamNoise + 0.45 * lace;
           float fieldMask = smoothstep(0.28, 0.72, fieldLace);
           foam = max(foam, vFoamField * fieldMask * 1.15);
-          // Meniscus/foam collar hugging the dolphin at the waterline.
+          // Broken meniscus collar hugging the dolphin at the waterline. Keep
+          // it lacy and rare: a solid ring reads as a glowing halo and makes
+          // the animal look like it is hovering on top of the surface.
           float bodyDist = length(vWorld.xz - uBodyPos.xz);
-          float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));
-          float bodyFoam = bodyRing * uBodyActive * clamp(uBodySpeed / 7.0, 0.2, 1.1);
-          foam = max(foam, bodyFoam * 0.9);
+          float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.18, 2.0));
+          float bodyFoam =
+            bodyRing *
+            uBodyActive *
+            clamp(uBodySpeed / 12.0, 0.04, 0.28) *
+            smoothstep(0.35, 0.72, lace);
+          foam = max(foam, bodyFoam * 0.3);
           // Foam running down the upper face. The 2D world-space noise is
           // deliberately stretched along the crest and keyed to wave height,
           // so it reads as streaks on the face rather than a flat wall.
@@ -696,6 +702,12 @@ export class Ocean {
           float specPower = mix(1200.0, 70.0, smoothstep(80.0, 1800.0, vDistance));
           float glint = pow(sunAlign, specPower) * mix(2.6, 0.3, smoothstep(100.0, 2200.0, vDistance));
           glint += pow(sunAlign, 55.0) * 0.075;
+          // Keep the immediate water around the animal from turning into a
+          // field of white sun-glitter; the body must stay readable.
+          float bodyClear =
+            1.0 -
+            0.9 * uBodyActive * exp(-pow(length(vWorld.xz - uBodyPos.xz) / 6.0, 2.0));
+          glint *= bodyClear;
           float sparkle = smoothstep(0.52, 0.92, vnoise(p * 3.4 + vec2(uTime * 0.22, -uTime * 0.19)));
           glint += pow(sunAlign, 22.0) * (0.012 + 0.025 * sparkle);
           glint *= 0.55 + sparkle * 0.9;
@@ -752,7 +764,7 @@ export class Ocean {
           float meniscus = exp(-pow(camGap / 0.05, 2.0)) * nearSurface;
           vec3 color = mix(below, aboveFog, aboveWeight);
           color = mix(color, vec3(0.92, 0.99, 0.97), meniscus * 0.22);
-          color = mix(color, vec3(0.9, 0.99, 0.95), bodyRing * uBodyActive * 0.22);
+
 
           // ---- debug overlays ------------------------------------------
           if (uDebugCrest > 0.5) {

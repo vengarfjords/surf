@@ -249,7 +249,7 @@ export class ParticleFX {
       softness: 0.32,
       additive: false,
       opacity: 0.8,
-      nearFade: 8,
+      nearFade: 12,
     });
     this.bubbles = new CPUParticles(scene, 380, {
       softness: 0.42,
