@@ -122,13 +122,13 @@ export const TUNING = {
     airTailScale: 0.35,
     // Passive wave riding: a steep descending/along-face run fades the tail
     // stroke out and lets the local surface slope drive the body.
-    coastSlope: 0.06,
+    coastSlope: 0.01,
     // Surf contact: a soft attachment to a steep face. The body is held at the
     // planing waterline, aligned to the face, and the tangential velocity is
     // carved toward the heading instead of skating straight on.
     surfGrip: 10.0,
     surfDepth: 0.1,
-    surfMinSlope: 0.075,
+    surfMinSlope: 0.05,
     surfMinSpeed: 5.0,
     surfSpring: 60,
     surfDamp: 16,
@@ -242,8 +242,8 @@ export const TUNING = {
     preset: "surf",
     surfZoneX: 450,
     surfZoneZ: 300,
-    swellHeight: 13.5,
-    swellWavelength: 360,
+    swellHeight: 40.5,
+    swellWavelength: 1080,
     swellWavelengthSpread: 0.09,
     swellDirection: 0.61,
     swellDirectionSpread: 0.1,
@@ -457,7 +457,7 @@ export const TUNE_CONTROLS = [
   { path: "movement.airSteer", label: "air control", min: 0, max: 4, step: 0.01 },
   { path: "movement.airLift", label: "air lift", min: 0, max: 0.05, step: 0.001 },
   { path: "movement.airGravity", label: "air gravity", min: 0, max: 14, step: 0.05 },
-  { path: "movement.coastSlope", label: "coast trigger slope", min: 0.02, max: 0.3, step: 0.01 },
+  { path: "movement.coastSlope", label: "coast trigger slope", min: 0.005, max: 0.3, step: 0.005 },
   { path: "movement.surfGrip", label: "surf carve grip", min: 0, max: 14, step: 0.1 },
   { path: "movement.surfDepth", label: "surf ride depth", min: 0, max: 1.5, step: 0.01 },
   { path: "movement.surfSpring", label: "surf hold", min: 10, max: 140, step: 1 },
@@ -481,8 +481,8 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
   { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf"] },
-  { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 24, step: 0.05 },
-  { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 400, step: 1 },
+  { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 50, step: 0.05 },
+  { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 1200, step: 1 },
   { path: "water.swellDirection", label: "swell direction", min: 0, max: 6.28, step: 0.01 },
   { path: "water.swellDirectionSpread", label: "swell spread", min: 0.02, max: 0.9, step: 0.01 },
   { path: "water.swellWavelengthSpread", label: "swell bandwidth", min: 0.04, max: 0.5, step: 0.01 },

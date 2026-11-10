@@ -150,8 +150,8 @@ export function applyPreset(water, name) {
       foamAmount: 0.8,
     },
     surf: {
-      swellHeight: 13.5,
-      swellWavelength: 360,
+      swellHeight: 40.5,
+      swellWavelength: 1080,
       windSeaHeight: 0.35,
       windSeaWavelength: 64,
       swellDirection: 0.61,

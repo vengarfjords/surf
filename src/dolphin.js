@@ -658,7 +658,7 @@ export class Dolphin {
     // when the face runs out.
     const adx = this.position.x - TUNING.water.surfZoneX;
     const adz = this.position.z - TUNING.water.surfZoneZ;
-    const nearArena = adx * adx + adz * adz < 460 * 460;
+    const nearArena = adx * adx + adz * adz < 1000 * 1000;
     const faceSlope = water.slope;
     const surfaceDist = this.position.y - surfaceHeight;
     const surfDepth = TUNING.movement.surfDepth;
@@ -832,15 +832,15 @@ export class Dolphin {
       this.right.copy(RIGHT).applyQuaternion(this.orientation);
     }
 
-    // Active porpoising vs passive wave coasting. Base this on the actual
-    // velocity along the slope, not the blended ride line: climbing the face
-    // keeps the tail driving; a descending run lets the face carry the body.
+    // Active porpoising vs passive wave coasting. Base this on the horizontal
+    // velocity along the slope: on a long-period face the orbital lift can be
+    // positive while the body is still running downhill.
     const alongSlopeSpeed =
       faceSlope > 0.02
         ? (water.slopeX * this.velocity.x + water.slopeZ * this.velocity.z) / faceSlope
         : 0;
-    const climbing = alongSlopeSpeed > 0.4 || this.velocity.y > 0.25;
-    const coastDescending = alongSlopeSpeed < -0.2 || this.velocity.y < -0.1;
+    const climbing = alongSlopeSpeed > 0.4;
+    const coastDescending = alongSlopeSpeed < -0.1;
     const coasting =
       faceSlope > TUNING.movement.coastSlope &&
       coastDescending &&

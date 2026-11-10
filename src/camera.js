@@ -91,13 +91,13 @@ export class CameraRig {
       const wz = Math.sin(cfg.swellDirection);
       const px = -wz;
       const pz = wx;
-      const drift = Math.sin(this.time * 0.05) * 35;
+      const drift = Math.sin(this.time * 0.05) * 100;
       targetPos.set(
-        cfg.surfZoneX - 135 * wx + drift * px,
-        34,
-        cfg.surfZoneZ - 135 * wz + drift * pz
+        cfg.surfZoneX - 300 * wx + drift * px,
+        95,
+        cfg.surfZoneZ - 300 * wz + drift * pz
       );
-      targetLook.set(cfg.surfZoneX + 10 * wx, 2, cfg.surfZoneZ + 10 * wz);
+      targetLook.set(cfg.surfZoneX + 30 * wx, 12, cfg.surfZoneZ + 30 * wz);
     }
 
     // Handheld drift / fluid camera noise.
