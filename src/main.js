@@ -30,6 +30,10 @@ async function boot() {
   renderer.toneMappingExposure = TUNING.visuals.exposure;
   renderer.shadowMap.enabled = false;
   renderer.setClearColor(PALETTE.fogDeep, 1);
+  // The composer renders the scene and then several fullscreen passes. Keep
+  // the renderer's counters accumulated across those passes so the perf
+  // readout reports the whole frame, not just the last pass.
+  renderer.info.autoReset = false;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(PALETTE.fogDeep);
@@ -212,9 +216,15 @@ async function boot() {
   const timerExt = gl.getExtension("EXT_disjoint_timer_query_webgl2");
   let pendingGpuQuery = null;
   let gpuFrameMs = 0;
-  let lastOceanMs = 0;
   let perfAccum = 0;
   let perfFrames = 0;
+  let perfOcean = 0;
+  let perfSeabed = 0;
+  let perfDolphin = 0;
+  let perfEffects = 0;
+  let perfWave = 0;
+  let perfGpu = 0;
+  let perfGpuSamples = 0;
   let frameMsAvg = 16.7;
   let slowQualityTime = 0;
   let qualityCooldown = 0;
@@ -502,6 +512,7 @@ async function boot() {
       post.setEnabled(postEnabled);
     }
 
+    renderer.info.reset();
     const startGpuQuery = timerExt && !pendingGpuQuery;
     if (startGpuQuery) {
       pendingGpuQuery = gl.createQuery();
@@ -519,29 +530,46 @@ async function boot() {
       const available = gl.getQueryParameter(pendingGpuQuery, gl.QUERY_RESULT_AVAILABLE);
       if (available) {
         const disjoint = gl.getParameter(timerExt.GPU_DISJOINT_EXT);
-        if (!disjoint) gpuFrameMs = gl.getQueryParameter(pendingGpuQuery, gl.QUERY_RESULT) / 1e6;
+        if (!disjoint) {
+          const ms = gl.getQueryParameter(pendingGpuQuery, gl.QUERY_RESULT) / 1e6;
+          gpuFrameMs = ms;
+          perfGpu += ms;
+          perfGpuSamples++;
+        }
         gl.deleteQuery(pendingGpuQuery);
         pendingGpuQuery = null;
       }
     }
 
-    lastOceanMs = oceanMs;
     perfAccum += dt;
     perfFrames++;
+    perfOcean += oceanMs;
+    perfSeabed += seabedMs;
+    perfDolphin += dolphinMs;
+    perfEffects += effectsMs;
+    perfWave += ocean.water.lastUniformMs || 0;
     if (perfAccum > 0.75) {
-      frameMsAvg = (perfAccum * 1000) / perfFrames;
+      const inv = 1 / perfFrames;
+      frameMsAvg = perfAccum * 1000 * inv;
       perf.frameMs = frameMsAvg;
-      perf.gpuMs = gpuFrameMs;
-      perf.oceanMs = lastOceanMs;
-      perf.seabedMs = seabedMs;
-      perf.dolphinMs = dolphinMs;
+      perf.gpuMs = perfGpuSamples ? perfGpu / perfGpuSamples : gpuFrameMs;
+      perf.oceanMs = perfOcean * inv;
+      perf.seabedMs = perfSeabed * inv;
+      perf.dolphinMs = perfDolphin * inv;
       perf.hullMs = dolphin.hullMs || 0;
-      perf.effectsMs = effectsMs;
-      perf.waveUpdateMs = ocean.water.lastUniformMs || 0;
+      perf.effectsMs = perfEffects * inv;
+      perf.waveUpdateMs = perfWave * inv;
       perf.drawCalls = renderer.info.render.calls;
       perf.triangles = renderer.info.render.triangles;
       perf.components = ocean.water.count;
       perf.waveField = ocean.water.stats.height;
+      perfOcean = 0;
+      perfSeabed = 0;
+      perfDolphin = 0;
+      perfEffects = 0;
+      perfWave = 0;
+      perfGpu = 0;
+      perfGpuSamples = 0;
       perfAccum = 0;
       perfFrames = 0;
     }
