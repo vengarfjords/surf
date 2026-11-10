@@ -658,7 +658,7 @@ export class Dolphin {
     // when the face runs out.
     const adx = this.position.x - TUNING.water.surfZoneX;
     const adz = this.position.z - TUNING.water.surfZoneZ;
-    const nearArena = adx * adx + adz * adz < 1000 * 1000;
+    const nearArena = adx * adx + adz * adz < 460 * 460;
     const faceSlope = water.slope;
     const surfaceDist = this.position.y - surfaceHeight;
     const surfDepth = TUNING.movement.surfDepth;

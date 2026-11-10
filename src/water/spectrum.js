@@ -151,7 +151,7 @@ export function applyPreset(water, name) {
     },
     surf: {
       swellHeight: 40.5,
-      swellWavelength: 1080,
+      swellWavelength: 360,
       windSeaHeight: 0.35,
       windSeaWavelength: 64,
       swellDirection: 0.61,
