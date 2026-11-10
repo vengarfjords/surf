@@ -94,6 +94,7 @@ async function boot() {
   let fishAccumulator = 0;
   let ventClock = 0;
   let cullClock = 0;
+  let surfSprayAccumulator = 0;
   let frozen = false;
   let freeView = null;
   let postEnabled = TUNING.debug.postProcessing;
@@ -234,6 +235,60 @@ async function boot() {
 
   let lastFrameTime = performance.now();
   let total = 0;
+
+  const surfSpraySample = {};
+  function emitSurfSpray(dt) {
+    if (!TUNING.water.surfSpray) return;
+    const rate = TUNING.water.surfSprayRate;
+    if (rate <= 0) return;
+    const field = ocean.foamField;
+    const dx = camera.position.x - field.centerX;
+    const dz = camera.position.z - field.centerZ;
+    if (dx * dx + dz * dz > 160 * 160) {
+      surfSprayAccumulator = 0;
+      return;
+    }
+    surfSprayAccumulator = Math.min(surfSprayAccumulator + dt, 0.2);
+    const period = 1 / rate;
+    let emitted = 0;
+    while (surfSprayAccumulator >= period && emitted < 4) {
+      surfSprayAccumulator -= period;
+      let x = 0;
+      let z = 0;
+      let strength = 0;
+      let found = false;
+      const active = field.enabled ? field.randomActive() : null;
+      if (active) {
+        x = active.x;
+        z = active.z;
+        strength = active.foam;
+        found = true;
+      } else {
+        for (let attempt = 0; attempt < 8; attempt++) {
+          x = field.centerX + (Math.random() - 0.5) * field.extent;
+          z = field.centerZ + (Math.random() - 0.5) * field.extent;
+          const s = ocean.water.sampleSurface(x, z, surfSpraySample);
+          if (s.breakMask > 0.35 && s.crest > 0.45) {
+            strength = s.breakMask;
+            found = true;
+            break;
+          }
+        }
+      }
+      if (!found) break;
+      const height = ocean.getWaterHeight(x, z);
+      const peak = ocean.water.peak;
+      effects.surfMist(
+        x,
+        height + 0.08,
+        z,
+        strength,
+        peak ? peak.dx : 1,
+        peak ? peak.dz : 0
+      );
+      emitted++;
+    }
+  }
   function animate(now = performance.now()) {
     const rawDt = (now - lastFrameTime) / 1000;
     lastFrameTime = now;
@@ -348,6 +403,7 @@ async function boot() {
       }
     }
     const effectsStart = performance.now();
+    emitSurfSpray(dt);
     effects.update(dt, camera, fogColor, fogDensity, current);
     snow.update(dt, camera, fogColor, fogDensity, camState.underwater);
     motes.update(dt, camera, fogColor, fogDensity, camState.underwater);
@@ -468,6 +524,7 @@ async function boot() {
     }
     if (captureParams.get("detail") === "0") TUNING.water.detailStrength = 0;
     if (captureParams.get("foamfield") === "0") TUNING.water.foamFieldEnabled = false;
+    if (captureParams.get("surfspray") === "0") TUNING.water.surfSpray = false;
     setTimeout(() => {
       const O = window.OCEAN;
       if (!O) return;

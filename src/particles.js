@@ -258,9 +258,14 @@ export class ParticleFX {
       additive: false,
       opacity: 0.55,
     });
+    this.surf = new CPUParticles(scene, 320, {
+      softness: 0.5,
+      additive: false,
+      opacity: 0.55,
+    });
     this.tmp = new THREE.Color();
     this.ocean = null;
-    this.stats = { spray: 0, foam: 0, bubbles: 0, crowns: 0, tails: 0 };
+    this.stats = { spray: 0, foam: 0, bubbles: 0, crowns: 0, tails: 0, surfSpray: 0 };
   }
 
   resetStats() {
@@ -269,6 +274,7 @@ export class ParticleFX {
     this.stats.bubbles = 0;
     this.stats.crowns = 0;
     this.stats.tails = 0;
+    this.stats.surfSpray = 0;
   }
 
   /** Local water velocity at a spawn point, used to advect droplets/foam. */
@@ -304,6 +310,42 @@ export class ParticleFX {
       b: 0.91,
     });
     this.stats.foam++;
+  }
+
+  /**
+   * Breaker mist at the surf line: a small puff carried onshore by the wave
+   * direction and the local surface velocity. Deliberately separate from the
+   * dolphin splash pool so a breach cannot starve the ambient surf.
+   */
+  surfMist(x, y, z, strength, dirX, dirZ) {
+    const water = this.waterVel(x, y, z, 0.25);
+    const n = strength > 0.55 ? 2 : 1;
+    for (let i = 0; i < n; i++) {
+      this.surf.spawn({
+        x: x + (Math.random() - 0.5) * 1.2,
+        y: y + Math.random() * 0.24,
+        z: z + (Math.random() - 0.5) * 1.2,
+        vx:
+          dirX * (0.5 + Math.random() * 1.1) +
+          (water ? water.x : 0) +
+          (Math.random() - 0.5) * 0.5,
+        vy: (1.6 + Math.random() * 2.2) * (0.6 + strength * 0.7) + (water ? water.y : 0),
+        vz:
+          dirZ * (0.5 + Math.random() * 1.1) +
+          (water ? water.z : 0) +
+          (Math.random() - 0.5) * 0.5,
+        life: 1.5 + Math.random() * 1.4,
+        size: 0.5 + Math.random() * 0.8,
+        drag: 0.5,
+        gravity: 1.6,
+        wobble: 0.06,
+        alpha: 0.12 + strength * 0.2,
+        r: 0.88,
+        g: 0.95,
+        b: 0.93,
+      });
+    }
+    this.stats.surfSpray += n;
   }
 
   wakeTrail(x, z, surfaceY, strength, dirX, dirZ, width = 1.0) {
@@ -638,6 +680,7 @@ export class ParticleFX {
     this.splash.update(dt, camera, fogColor, fogDensity, current);
     this.bubbles.update(dt, camera, fogColor, fogDensity, current);
     this.foam.update(dt, camera, fogColor, fogDensity, current);
+    this.surf.update(dt, camera, fogColor, fogDensity, current);
   }
 }
 

@@ -209,4 +209,23 @@ export class FoamField {
     out.mask = mask;
     return out;
   }
+
+  /** A random cell with significant foam, used to seed breaker spray. */
+  randomActive() {
+    const n = this.n;
+    const count = n * n;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const idx = (Math.random() * count) | 0;
+      const f = this.foam[idx];
+      if (f < 0.3) continue;
+      const i = idx % n;
+      const j = (idx / n) | 0;
+      return {
+        x: this.centerX - this.extent * 0.5 + (i + 0.5) * this.dx,
+        z: this.centerZ - this.extent * 0.5 + (j + 0.5) * this.dx,
+        foam: f,
+      };
+    }
+    return null;
+  }
 }
