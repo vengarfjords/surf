@@ -638,13 +638,26 @@ export class Ocean {
           float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));
           float bodyFoam = bodyRing * uBodyActive * clamp(uBodySpeed / 7.0, 0.2, 1.1);
           foam = max(foam, bodyFoam * 0.9);
+          // Foam running down the upper face. The 2D world-space noise is
+          // deliberately stretched along the crest and keyed to wave height,
+          // so it reads as streaks on the face rather than a flat wall.
+          float faceStreak = vnoise(
+            vec2(perpA * 0.18 + uTime * 0.035, vWaveHeight * 0.1 - uTime * 0.06)
+          );
+          float faceFoam =
+            broken *
+            smoothstep(0.18, 0.65, crest) *
+            smoothstep(0.58, 0.84, faceStreak) *
+            0.42;
+          foam = max(foam, faceFoam * (0.55 + 0.6 * fineFoam));
           foam = clamp(foam, 0.0, 1.0);
 
           // Color-only tube cue: a dark cavity under the plunging lip. The
           // heightfield cannot overhang, so this is shading, not geometry.
+          float tubePlunge = smoothstep(0.2, 1.4, vXi);
           float tubeMask =
             broken *
-            plunge *
+            tubePlunge *
             smoothstep(0.52, 0.9, vPeakCrest) *
             smoothstep(0.5, 0.85, crest) *
             (1.0 - smoothstep(0.94, 1.0, crest));
@@ -659,7 +672,7 @@ export class Ocean {
           vec3 shallow = uTopColor * 0.42 + vec3(0.0, 0.065, 0.085);
           vec3 body = mix(shallow, uDeepColor, shallowMix);
           body *= 0.82 + 0.24 * crest;
-          body = mix(body, vec3(0.55, 0.72, 0.66), aeration * 0.42);
+          body = mix(body, vec3(0.38, 0.62, 0.66), aeration * 0.3);
 
           // Wave-face legibility: faces tilted toward the sun collect more
           // direct light, faces tilted away sit in their own shadow. This is
@@ -677,7 +690,7 @@ export class Ocean {
           body += uTopColor * (0.02 + crest * 0.08) * 0.35;
 
           vec3 above = mix(body, sky, clamp(0.04 + fres * 0.82, 0.0, 0.94));
-          above = mix(above, vec3(0.004, 0.03, 0.05), tubeMask * 0.35);
+          above = mix(above, vec3(0.004, 0.03, 0.05), tubeMask * 0.45);
 
           float sunAlign = max(dot(refl, uSunDir), 0.0);
           float specPower = mix(1200.0, 70.0, smoothstep(80.0, 1800.0, vDistance));
@@ -689,7 +702,7 @@ export class Ocean {
           above += uSunColor * glint;
 
           vec3 foamColor = mix(vec3(0.6, 0.72, 0.7), vec3(0.96, 0.99, 0.96), smoothstep(0.1, 0.8, foamNoise + lace * 0.25));
-          above = mix(above, foamColor, foam * 0.88 * (1.0 - tubeMask * 0.45));
+          above = mix(above, foamColor, foam * 0.88 * (1.0 - tubeMask * 0.6));
 
           // ---- below the surface ----------------------------------------
           // Snell's window: refracted sky within the critical angle

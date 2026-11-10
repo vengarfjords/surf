@@ -155,6 +155,7 @@ export class WaterDebug {
       `α ${full.aeration.toFixed(2)} · brk ${(full.breakMask || 0).toFixed(2)} · GPU Δ ${gpuText}` +
       `<br><b>SURF</b> dolphin ${speed.toFixed(1)} m/s · phase ${phase.toFixed(1)} m/s · ` +
       `${ratio.toFixed(2)}×${ratio > 0.92 && ratio < 1.15 ? " — on the face" : ""}` +
+      `${this.dolphin.surfing ? " · locked" : ""}` +
       hydroLine;
   }
 }

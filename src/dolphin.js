@@ -278,6 +278,11 @@ export class Dolphin {
     this.verticalInput = 0;
     this.pitchInputTimer = 0;
     this.speed = 0;
+    this.surfing = false;
+    this.surfTime = 0;
+    this.surfNormal = new THREE.Vector3();
+    this.surfForward = new THREE.Vector3();
+    this.surfAhead = {};
     this.prevCenterAbove = false;
     this.airborne = false;
     this.wasAbove = false;
@@ -309,6 +314,7 @@ export class Dolphin {
       speed: 0,
       heading: 0,
       waveHeight: 0,
+      surfing: false,
       hydro: null,
     };
   }
@@ -729,6 +735,51 @@ export class Dolphin {
     this.hydro = hydro;
     this.hullMs = hullMs;
 
+    // --- Loose surf lock -------------------------------------------------
+    // Near a breaking crest, at speed, keep the animal planing on the face
+    // instead of letting the hull sink straight through. This is a soft
+    // spring plus a small face-tangent drive, not a scripted animation.
+    const aheadX = this.position.x + this.forward.x * 4;
+    const aheadZ = this.position.z + this.forward.z * 4;
+    const ahead = ocean.water.sampleSurface(aheadX, aheadZ, this.surfAhead);
+    const aheadSlope = Math.hypot(ahead.slopeX, ahead.slopeZ);
+    const faceAhead = aheadSlope > 0.14 || ahead.breakMask > 0.15;
+    const crestNear = water.height > 1.5 || ahead.height > 1.5;
+    const speedEnough = this.surfing ? this.speed > 4.0 : this.speed > 5.5;
+    const surfable =
+      (water.breakMask > 0.15 || faceAhead || crestNear) &&
+      water.depth > 6 &&
+      this.verticalInput === 0 &&
+      speedEnough &&
+      this.position.y > surfaceHeight - 2.2 &&
+      this.position.y < surfaceHeight + 2.5;
+    if (surfable) {
+      if (!this.surfing) this.surfTime = 0;
+      this.surfing = true;
+      this.surfTime += dt;
+      const targetY = surfaceHeight - 0.2;
+      const err = targetY - this.position.y;
+      this.velocity.y += clamp(err * 12 - this.velocity.y * 4.5, -12, 12) * dt;
+      if (this.position.y < surfaceHeight - 0.5) {
+        this.position.y = surfaceHeight - 0.5;
+        if (this.velocity.y < 0) this.velocity.y *= 0.2;
+      }
+      // Face tangent drive: keep enough speed to carve, directed by the
+      // player's current heading projected onto the local surface.
+      this.surfNormal.set(-water.slopeX, 1, -water.slopeZ).normalize();
+      const fdn = this.forward.dot(this.surfNormal);
+      this.surfForward.copy(this.forward).addScaledVector(this.surfNormal, -fdn);
+      const flen = this.surfForward.length();
+      if (flen > 1e-3) {
+        this.surfForward.multiplyScalar(1 / flen);
+        const targetSpeed = water.phaseSpeed * 0.72;
+        const drive = clamp(targetSpeed - this.speed, 0, 7) * 1.8;
+        this.velocity.addScaledVector(this.surfForward, drive * dt);
+      }
+    } else {
+      this.surfing = false;
+    }
+
     // Dry-hull flight: keep the snout-led ballistic glide and the small
     // speed-dependent body lift, but gravity has already been integrated by
     // the hull. Only add the aerodynamic terms while the hull is essentially
@@ -1140,6 +1191,7 @@ export class Dolphin {
     this.telemetry.depth = Math.max(0, surfaceNow - this.position.y);
     this.telemetry.altitude = Math.max(0, this.position.y - floorNow);
     this.telemetry.speed = this.speed;
+    this.telemetry.surfing = this.surfing;
     this.telemetry.waveHeight = surfaceNow;
     // The compass follows the snout target so the readout leads with the view
     // instead of lagging behind the physical body.
