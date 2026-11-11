@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { PALETTE, TUNING } from "./config.js";
+import { PALETTE } from "./config.js";
 
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
@@ -100,37 +100,11 @@ export function seabedHeight(x, z) {
     Math.exp(-((x - 2) * (x - 2) + (z - 26) * (z - 26)) / 4800) * 2.4 +
     Math.exp(-((x + 34) * (x + 34) + (z - 78) * (z - 78)) / 9500) * 1.35;
 
-  // A long, straight reef wall across the swell. The depth varies only with
-  // cross-shore distance: a deep seaward basin rises uniformly to an ~18 m
-  // crest, then deepens again on the lee side. A long wall (rather than a
-  // round shoal) avoids the lens-like ring of short, peaky crests.
-  const swellX = Math.cos(TUNING.water.swellDirection);
-  const swellZ = Math.sin(TUNING.water.swellDirection);
-  const dsx = x - TUNING.water.surfZoneX;
-  const dsz = z - TUNING.water.surfZoneZ;
-  const sCross = dsx * swellX + dsz * swellZ;
-  const sAlong = -dsx * swellZ + dsz * swellX;
-  // The arena is deepened 3x for the 3x wave height, but the horizontal
-  // geometry (peak, shoulder, break line, set spacing) stays at the original
-  // 360 m scale so the crests remain visible.
-  const DS = 3;
-  const ridgeAlong = 1 - smoothstep(240, 360, Math.abs(sAlong));
-  // Bow the break line into a point break instead of a straight wall.
-  const sCrossCurve = sCross + Math.sin((sAlong + 35) / 190) * 14;
-  const basinDepth = smoothstep(-40, -220, sCrossCurve) * (20 * DS);
-  const leeDepth = smoothstep(20, 120, sCrossCurve) * (10 * DS);
-  // A defined peak with a long, deeper shoulder to one side makes the wave
-  // peel and gives a rideable face instead of a uniform crest.
-  const peakAlong = -35;
-  const crestPeak =
-    Math.exp(-((sAlong - peakAlong) * (sAlong - peakAlong)) / (2 * 105 * 105)) *
-    (3.8 * DS);
-  const crestShoulder = smoothstep(0, 330, sAlong - peakAlong) * (2.2 * DS);
-  const crestRipple =
-    Math.sin(sAlong / 82) * (1.1 * DS) +
-    Math.sin(sAlong / 37 + 1.2) * (0.4 * DS);
-  const arenaDepth =
-    18 * DS + basinDepth + leeDepth - crestPeak + crestShoulder + crestRipple;
+  // A broad surf bank east of the opening reef. It rises from ~10 m to ~3 m
+  // over roughly 400 m, which is where the M3 swell shoals, steepens and
+  // breaks. Shared by the sand mesh, reef placement, wave field and physics.
+  const surfBank =
+    Math.exp(-((x - 260) * (x - 260) + (z - 140) * (z - 140)) / 28800) * 8.2;
 
   // Patchy reef shelf outcrops, slight raised humps.
   const shelf = Math.max(0, fbm(x * 0.0072 + 51.1, z * 0.0072 + 4.4, 2) - 0.5) * 2.7;
@@ -138,15 +112,8 @@ export function seabedHeight(x, z) {
   const radius = Math.max(Math.abs(x), Math.abs(z));
   const openWater = smoothstep(1120, 1510, radius) * 14;
 
-  const baseDepth =
-    7.15 + broad * 6.4 + mid * 2.1 + fine * 0.6 + channel - bar - shelf + openWater;
-
-  // Inside the big-wave arena, replace the noisy shelf depth with the long
-  // reef wall profile so the 20 m swell cannot expose shallow sand and the
-  // break line stays continuous.
-  const arenaMask =
-    (1 - smoothstep(280, 430, Math.hypot(dsx, dsz))) * ridgeAlong;
-  const depth = baseDepth + (arenaDepth - baseDepth) * arenaMask;
+  const depth =
+    7.15 + broad * 6.4 + mid * 2.1 + fine * 0.6 + channel - bar - shelf - surfBank + openWater;
   return -Math.max(2.55, depth);
 }
 

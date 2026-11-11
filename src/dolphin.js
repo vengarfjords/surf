@@ -278,20 +278,7 @@ export class Dolphin {
     this.verticalInput = 0;
     this.pitchInputTimer = 0;
     this.speed = 0;
-    this.surfing = false;
-    this.surfTime = 0;
-    this.surfFlatTime = 0;
-    this.surfFaceBank = 0;
-    this.surfPitch = 0;
-    this.poseBlend = 0;
-    this.surfDebug = {};
-    this.strokeAmount = 1;
-    this.propulsion = "active";
-    this.surfNormal = new THREE.Vector3();
-    this.surfTangent = new THREE.Vector3();
-    this.surfLine = new THREE.Vector3();
     this.prevCenterAbove = false;
-    this.wasClearAbove = false;
     this.airborne = false;
     this.wasAbove = false;
     this.surfaceCooldown = 0;
@@ -322,8 +309,6 @@ export class Dolphin {
       speed: 0,
       heading: 0,
       waveHeight: 0,
-      surfing: false,
-      propulsion: "active",
       hydro: null,
     };
   }
@@ -447,14 +432,8 @@ export class Dolphin {
 
   _buildTargetSpine() {
     const sp = this.spine;
-    // The visible snout normally leads the mouse target while the physical
-    // body trails. On a wave, the body must pitch with the face; otherwise the
-    // mesh stays upright while the simulated body drops down the slope.
-    const blend = this.poseBlend;
-    const viewYaw = this.targetYaw + wrapAngle(this.yaw - this.targetYaw) * blend;
-    const viewPitch = this.targetPitch + (this.pitch - this.targetPitch) * blend;
-    sp.qYaw.setFromAxisAngle(Y_AXIS, viewYaw);
-    sp.qPitch.setFromAxisAngle(X_AXIS, -(viewPitch + this.tumblePitch));
+    sp.qYaw.setFromAxisAngle(Y_AXIS, this.targetYaw);
+    sp.qPitch.setFromAxisAngle(X_AXIS, -(this.targetPitch + this.tumblePitch));
     sp.qRoll.setFromAxisAngle(Z_AXIS, this.roll + this.tumbleRoll);
     sp.targetQ.copy(sp.qYaw).multiply(sp.qPitch).multiply(sp.qRoll);
     sp.forwardTarget.set(0, 0, 1).applyQuaternion(sp.targetQ);
@@ -495,7 +474,7 @@ export class Dolphin {
     // Pitch authority tracks both steady speed and acceleration.
     const cfg = TUNING.dolphin;
     const flukePhase = this.tailPhase - (SPINE_Z.length - 1) * cfg.tailWaveTravel + Math.PI * 0.5;
-    const activity = clamp(0.45 + this.tailHeave * 6.0, 0.45, 2.2) * this.strokeAmount;
+    const activity = clamp(0.45 + this.tailHeave * 6.0, 0.45, 2.2);
     sp.qPitchLocal.setFromAxisAngle(X_AXIS, Math.sin(flukePhase) * cfg.flukePitch * activity);
     sp.quats[SPINE_Z.length - 1].multiply(sp.qPitchLocal);
 
@@ -594,7 +573,6 @@ export class Dolphin {
     dt = Math.min(dt, 1 / 30);
     const movement = TUNING.movement;
     const time = performance.now() * 0.001;
-    const prevTargetYaw = this.targetYaw;
 
     // --- Steering target -------------------------------------------------
     const mouse = input.consumeMouse();
@@ -614,11 +592,6 @@ export class Dolphin {
     );
     const keyTurn = (input.right ? 1 : 0) - (input.left ? 1 : 0);
     this.targetYaw = wrapAngle(this.targetYaw - keyTurn * movement.maxTurnRate * 1.15 * dt);
-    const inputYawRate = clamp(
-      wrapAngle(this.targetYaw - prevTargetYaw) / Math.max(dt, 0.0001),
-      -movement.maxTurnRate,
-      movement.maxTurnRate
-    );
     const pitchInput =
       Math.abs(mx) > 0 ||
       Math.abs(my) > 0 ||
@@ -639,133 +612,11 @@ export class Dolphin {
 
     this.verticalInput = (input.rise ? 1 : 0) - (input.dive ? 1 : 0);
     const posture = this.verticalInput > 0 ? movement.ascendPitch : this.verticalInput < 0 ? movement.descendPitch : 0;
-    let pitchTarget = clamp(this.targetPitch + posture, -movement.maxPitch, movement.maxPitch);
+    const pitchTarget = clamp(this.targetPitch + posture, -movement.maxPitch, movement.maxPitch);
 
     const prevYaw = this.yaw;
     this.yaw = wrapAngle(dampAngle(this.yaw, this.targetYaw, movement.turnResponsiveness, dt));
     this.yawRate = clamp(wrapAngle(this.yaw - prevYaw) / Math.max(dt, 0.0001), -movement.maxTurnRate, movement.maxTurnRate);
-
-    // Sample the local water before the attitude solve so the face can drive
-    // the body orientation instead of being applied after it.
-    const water = ocean.getWaterSample(this.position.x, this.position.z);
-    const surfaceHeight = water.height;
-    const underwater = this.position.y < surfaceHeight;
-
-    // --- Surf contact state ----------------------------------------------
-    // A soft attachment to a steep face, not a scripted surf mode. It holds
-    // the body at a planing depth while a steep face is under it and releases
-    // on a flat crest, a real launch, an explicit rise/dive, low speed, or
-    // when the face runs out.
-    const adx = this.position.x - TUNING.water.surfZoneX;
-    const adz = this.position.z - TUNING.water.surfZoneZ;
-    const nearArena = adx * adx + adz * adz < 460 * 460;
-    const faceSlope = water.slope;
-    const surfaceDist = this.position.y - surfaceHeight;
-    const surfDepth = TUNING.movement.surfDepth;
-    const steepFace =
-      faceSlope > TUNING.movement.surfMinSlope * (this.surfing ? 0.55 : 1.0);
-    const crestFlat = faceSlope < TUNING.movement.surfMinSlope * 0.55;
-    if (this.surfing) {
-      this.surfFlatTime = crestFlat ? this.surfFlatTime + dt : 0;
-    } else {
-      this.surfFlatTime = 0;
-    }
-    // Hold through a briefly flat crest instead of releasing and popping off
-    // the top. Keep holding while the body is still moving up or sitting above
-    // the waterline; release only after the crest has settled.
-    const crestHolds =
-      this.surfing &&
-      (this.surfFlatTime < 2.5 || this.velocity.y > 1.0 || surfaceDist > 0.4);
-    const speedEnough = this.surfing
-      ? this.speed > 3.5
-      : this.speed > TUNING.movement.surfMinSpeed;
-    const nearSurface = this.surfing
-      ? surfaceDist > -surfDepth - 4.0 && surfaceDist < 4.0
-      : surfaceDist > -surfDepth - 1.0 && surfaceDist < 0.9;
-    const launching =
-      input.boost &&
-      surfaceDist > 0.4 &&
-      this.velocity.y > TUNING.movement.surfReleaseRise;
-    const surfable =
-      nearArena &&
-      (steepFace || crestHolds) &&
-      speedEnough &&
-      nearSurface &&
-      !launching &&
-      this.verticalInput === 0;
-    if (surfable) {
-      if (!this.surfing) {
-        this.surfTime = 0;
-        this.surfPitch = this.pitch;
-      }
-      this.surfing = true;
-      this.surfTime += dt;
-    } else {
-      this.surfing = false;
-    }
-    this.poseBlend = damp(this.poseBlend, this.surfing ? 1 : 0, 5.0, dt);
-
-    // Wave-relative ride line. The player's yaw supplies the across-face
-    // component; the wave travel supplies the shoreward carry that keeps the
-    // face from sliding underneath. The nose follows this line, so the body
-    // does not crab against its own momentum.
-    if (this.surfing) {
-      const peak = ocean.water.peak;
-      const hx = Math.sin(this.yaw);
-      const hz = Math.cos(this.yaw);
-      // Only carry when the player is not deliberately running down the face.
-      // Pointing seaward (against the wave travel) releases the carry so the
-      // passive coast can actually descend.
-      const playerAlong = hx * peak.dx + hz * peak.dz;
-      const carryScale = smoothstep(-0.5, 0.2, playerAlong);
-      const carry = TUNING.movement.surfCarry * carryScale;
-      const lx = hx + (peak.dx - hx) * carry;
-      const lz = hz + (peak.dz - hz) * carry;
-      const ll = Math.hypot(lx, lz);
-      if (ll > 1e-4) {
-        this.surfLine.set(lx / ll, 0, lz / ll);
-        this.yaw = wrapAngle(
-          dampAngle(this.yaw, Math.atan2(this.surfLine.x, this.surfLine.z), 5.0, dt)
-        );
-      } else {
-        this.surfLine.set(hx, 0, hz);
-      }
-      this.surfDebug.carry = carry;
-      // The carry's yaw correction must not feed the carve bank: steering
-      // effort is the player's target change, not the body being swept around
-      // by the wave.
-      this.yawRate = inputYawRate;
-    }
-    const slopeAlong = water.slopeX * Math.sin(this.yaw) + water.slopeZ * Math.cos(this.yaw);
-    const slopeRight = water.slopeX * Math.cos(this.yaw) - water.slopeZ * Math.sin(this.yaw);
-    this.surfDebug = {
-      slope: faceSlope,
-      along: slopeAlong,
-      right: slopeRight,
-      dist: surfaceDist,
-      steep: steepFace,
-      speed: speedEnough,
-      near: nearSurface,
-      launch: launching,
-      depth: water.depth,
-      breakMask: water.breakMask,
-      phase: water.phaseSpeed,
-      carry: this.surfing ? TUNING.movement.surfCarry : 0,
-    };
-
-    // Align the body to the face: pitch down the slope it is riding and lean
-    // into a cross-face traverse. The player still trims the line.
-    if (this.surfing) {
-      const facePitch = Math.atan(slopeAlong);
-      const trim = clamp(this.targetPitch * 0.6, -0.55, 0.55);
-      this.surfPitch = damp(
-        this.surfPitch,
-        clamp(facePitch + trim, -movement.maxPitch, movement.maxPitch),
-        TUNING.movement.surfAttitude,
-        dt
-      );
-      pitchTarget = this.surfPitch;
-    }
     this.targetPitch = clamp(this.targetPitch, -movement.maxPitch, movement.maxPitch);
     this.pitch = damp(this.pitch, pitchTarget, movement.pitchResponsiveness, dt);
     this.pitch = clamp(this.pitch, -movement.maxPitch, movement.maxPitch);
@@ -777,28 +628,13 @@ export class Dolphin {
     if (this.tmpFlatRight.lengthSq() > 1e-5) this.tmpFlatRight.normalize();
     const slip = this.velocity.dot(this.tmpFlatRight);
     const driftLean = clamp(slip * movement.bankIntoDrift * 0.22, -0.2, 0.2);
-    let bankTarget = clamp(
+    const bankTarget = clamp(
       -this.yawRate * movement.banking + driftLean + this.turnLean * 0.08,
       -movement.maxBank,
       movement.maxBank
     );
-    let bankLimit = movement.maxRollVisual;
-    if (this.surfing) {
-      // The face normal's sideways component is the lean of the wall; the
-      // yaw rate adds the carve bank. Together they sell a bottom turn.
-      const ny = 1 / Math.sqrt(1 + faceSlope * faceSlope);
-      const nRight = -water.slopeX * Math.cos(this.yaw) + water.slopeZ * Math.sin(this.yaw);
-      const faceBank = -Math.atan2(nRight, ny);
-      this.surfFaceBank = damp(this.surfFaceBank, faceBank, 5.0, dt);
-      bankTarget =
-        clamp(-this.yawRate * movement.surfBank, -movement.surfMaxBank, movement.surfMaxBank) +
-        this.surfFaceBank * movement.surfFaceRoll;
-      bankLimit = movement.surfMaxBank + movement.surfFaceRoll;
-    } else {
-      this.surfFaceBank = damp(this.surfFaceBank, 0, 4.0, dt);
-    }
-    this.roll = damp(this.roll, bankTarget, this.surfing ? 9.0 : movement.bankResponsiveness, dt);
-    this.roll = clamp(this.roll, -bankLimit, bankLimit);
+    this.roll = damp(this.roll, bankTarget, movement.bankResponsiveness, dt);
+    this.roll = clamp(this.roll, -movement.maxRollVisual, movement.maxRollVisual);
 
     this.qYaw.setFromAxisAngle(Y_AXIS, this.yaw);
     this.qPitch.setFromAxisAngle(X_AXIS, -this.pitch);
@@ -808,21 +644,24 @@ export class Dolphin {
     this.up.copy(UP).applyQuaternion(this.orientation);
     this.right.copy(RIGHT).applyQuaternion(this.orientation);
 
+    const water = ocean.getWaterSample(this.position.x, this.position.z);
+    const surfaceHeight = water.height;
+    const underwater = this.position.y < surfaceHeight;
+
     // Passive surface trim: when the player is not actively pitching, the
     // body settles parallel to the local face. This is buoyancy stability, not
     // a surf mode; it is disabled as soon as the player pitches or changes
     // depth, and above a few metres it does nothing.
     const depthNow = surfaceHeight - this.position.y;
     if (
-      !this.surfing &&
       !pitchInput &&
       this.verticalInput === 0 &&
       depthNow > -0.1 &&
       depthNow < TUNING.hydro.surfaceTrimDepth &&
       this.speed < TUNING.hydro.surfaceTrimSpeed
     ) {
-      const trimSlope = water.slopeX * this.forward.x + water.slopeZ * this.forward.z;
-      this.pitch = damp(this.pitch, Math.atan(trimSlope), TUNING.hydro.surfaceTrimRate, dt);
+      const slopeAlong = water.slopeX * this.forward.x + water.slopeZ * this.forward.z;
+      this.pitch = damp(this.pitch, Math.atan(slopeAlong), TUNING.hydro.surfaceTrimRate, dt);
       this.qYaw.setFromAxisAngle(Y_AXIS, this.yaw);
       this.qPitch.setFromAxisAngle(X_AXIS, -this.pitch);
       this.qRoll.setFromAxisAngle(Z_AXIS, this.roll);
@@ -831,26 +670,6 @@ export class Dolphin {
       this.up.copy(UP).applyQuaternion(this.orientation);
       this.right.copy(RIGHT).applyQuaternion(this.orientation);
     }
-
-    // Active porpoising vs passive wave coasting. Base this on the horizontal
-    // velocity along the slope: on a long-period face the orbital lift can be
-    // positive while the body is still running downhill.
-    const alongSlopeSpeed =
-      faceSlope > 0.02
-        ? (water.slopeX * this.velocity.x + water.slopeZ * this.velocity.z) / faceSlope
-        : 0;
-    const climbing = alongSlopeSpeed > 0.4;
-    const coastDescending = alongSlopeSpeed < -0.1;
-    const coasting =
-      faceSlope > TUNING.movement.coastSlope &&
-      coastDescending &&
-      !climbing &&
-      !input.boost &&
-      !input.brake &&
-      this.verticalInput === 0 &&
-      this.speed > 4.0;
-    this.strokeAmount = damp(this.strokeAmount, coasting ? 0 : 1, 3.5, dt);
-    this.propulsion = this.strokeAmount < 0.5 ? "coast" : "porpoise";
 
     const forwardSpeed = this.velocity.dot(this.forward);
     const surge = input.boost && !input.brake;
@@ -869,7 +688,6 @@ export class Dolphin {
       // A slow, always-present tail scull keeps the creature alive at rest.
       thrustAccel = (movement.idleGlide - forwardSpeed) * 2.6;
     }
-    thrustAccel *= this.strokeAmount;
 
     let reverseAccel = 0;
     if (input.brake) {
@@ -910,127 +728,6 @@ export class Dolphin {
     }
     this.hydro = hydro;
     this.hullMs = hullMs;
-
-    // Near-surface settling. A light, fast body can skim dry above the face
-    // while the surface drops beneath it, which reads as hovering. If there is
-    // no upward intent and no surf contact, pull it back into the water.
-    if (
-      !this.surfing &&
-      hydro.wetFraction < 0.5 &&
-      this.position.y > surfaceHeight - 0.2 &&
-      surfaceHeight - this.position.y < 1.1 &&
-      this.velocity.y < 1.5 &&
-      this.verticalInput === 0
-    ) {
-      this.velocity.y -= 7.0 * dt;
-    }
-
-    // --- Surf contact -----------------------------------------------------
-    // Re-sample at the integrated position: the body follows the face, not a
-    // height cached before the hull moved. The normal spring holds the animal
-    // at a planing depth; the tangential solver carves the momentum toward the
-    // nose instead of letting it skate straight on.
-    if (this.surfing) {
-      const surfWater = ocean.getWaterSample(this.position.x, this.position.z);
-      const normal = this.surfNormal
-        .set(-surfWater.slopeX, 1, -surfWater.slopeZ)
-        .normalize();
-      const hSlope = Math.hypot(surfWater.slopeX, surfWater.slopeZ);
-      const dist = this.position.y - surfWater.height;
-      const targetDist = -TUNING.movement.surfDepth;
-      const vn = this.velocity.dot(normal);
-      // Feed-forward: the surface at the next position rises/falls at this
-      // rate, so the body tracks it without a deep spring lag.
-      const surfaceVy = surfWater.slopeX * this.velocity.x + surfWater.slopeZ * this.velocity.z;
-      const vnTarget = surfaceVy * normal.y;
-      const hold =
-        (targetDist - dist) * TUNING.movement.surfSpring +
-        (vnTarget - vn) * TUNING.movement.surfDamp;
-      this.velocity.addScaledVector(normal, clamp(hold, -90, 90) * dt);
-
-      // Soft depth correction. The force spring alone settles the body above
-      // the face when crest pressure lifts the hull; nudge it down to the
-      // planing depth. The state machine above still decides when it releases.
-      const depthErr = dist - targetDist;
-      if (depthErr > 0.02) {
-        const settle = 1 - Math.exp(-8 * dt);
-        this.position.y -= depthErr * settle;
-        if (this.velocity.y > 0) this.velocity.y *= 1 - 0.6 * settle;
-      } else if (depthErr < -0.55) {
-        const rise = 1 - Math.exp(-10 * dt);
-        this.position.y -= depthErr * rise;
-        if (this.velocity.y < 0) this.velocity.y *= 1 - 0.5 * rise;
-      }
-
-      // Soft ceiling. Crest pressure can throw a light, half-wet hull several
-      // metres into the air; unless the player is boosting or asking to rise,
-      // settle the back onto the waterline instead of letting it hover.
-      const capDist = targetDist + 0.5;
-      if (!input.boost && dist > capDist) {
-        const pull = 1 - Math.exp(-20 * dt);
-        this.position.y -= (dist - capDist) * pull;
-        if (this.velocity.y > 0) this.velocity.y *= 1 - 0.85 * pull;
-      }
-      if (!input.boost && this.position.y > surfWater.height + capDist + 0.2) {
-        this.position.y = surfWater.height + capDist + 0.2;
-        if (this.velocity.y > 0) this.velocity.y *= 0.2;
-      }
-
-      // Damped surface follow. The spring alone leaves a static offset when
-      // the face is rising or the hull is being pushed down; this keeps the
-      // body at a consistent waterline so the back stays readable in the
-      // chase view. It is not a pin: the state release above still applies.
-      const follow = 1 - Math.exp(-(input.boost ? 3.0 : 16.0) * dt);
-      this.position.y += (surfWater.height + targetDist - this.position.y) * follow;
-      this.velocity.y += (surfaceVy - this.velocity.y) * follow * 0.5;
-
-      // The face is the engine. Gravity's along-face component accelerates
-      // the body down the wave; the tail stays off.
-      if (hSlope > 0.02) {
-        const inv = 1 / Math.sqrt(1 + hSlope * hSlope);
-        const drive = 9.81 * inv * TUNING.movement.surfDrive;
-        this.velocity.x -= surfWater.slopeX * drive * dt;
-        this.velocity.z -= surfWater.slopeZ * drive * dt;
-      }
-
-      // Project the wave-relative ride line onto the local tangent plane.
-      const ldn = this.surfLine.dot(normal);
-      this.surfLine.addScaledVector(normal, -ldn);
-      const llen = this.surfLine.length();
-      if (llen > 1e-3) {
-        this.surfLine.multiplyScalar(1 / llen);
-        this.surfTangent.copy(this.velocity).addScaledVector(normal, -this.velocity.dot(normal));
-        const speedT = this.surfTangent.length();
-        if (speedT > 1.0) {
-          this.surfTangent.multiplyScalar(1 / speedT);
-          const align = this.surfTangent.dot(this.surfLine);
-          if (align > 0.0) {
-            const grip = 1 - Math.exp(-TUNING.movement.surfGrip * dt);
-            this.surfTangent.lerp(this.surfLine, grip).normalize();
-            const bite = 1 - align;
-            const carvedSpeed = speedT * (1 - bite * TUNING.movement.surfCarveDrag * dt * 6);
-            this.surfTangent.multiplyScalar(Math.max(0.2, carvedSpeed));
-            const keepNormal = this.velocity.dot(normal);
-            this.velocity.copy(this.surfTangent).addScaledVector(normal, keepNormal);
-          }
-        }
-        // The wave is the engine: while the rail is engaged, the face feeds
-        // speed along the ridden line toward the local phase speed.
-        if (!input.brake) {
-          const glideSpeed = clamp(
-            surfWater.phaseSpeed * TUNING.movement.surfGlide,
-            9,
-            24
-          );
-          const lineSpeed = this.velocity.dot(this.surfLine);
-          const pump = clamp(glideSpeed - lineSpeed, 0, 16) * TUNING.movement.surfPump;
-          this.velocity.addScaledVector(this.surfLine, pump * dt);
-          this.surfDebug.glide = glideSpeed;
-          this.surfDebug.line = lineSpeed;
-          this.surfDebug.pump = pump;
-        }
-      }
-    }
 
     // Dry-hull flight: keep the snout-led ballistic glide and the small
     // speed-dependent body lift, but gravity has already been integrated by
@@ -1190,20 +887,15 @@ export class Dolphin {
     const centerWater = ocean.getWaterSample(this.position.x, this.position.z);
     const centerHeight = centerWater.height;
     const centerAbove = this.position.y > centerHeight + 0.02;
-    // Breach/re-entry need a real crossing, not the centimetre bobbing of a
-    // body riding the waterline. Without this deadband every small bob fires a
-    // full splash and bubble burst, burying the animal in its own spray.
-    const clearAbove = this.position.y > centerHeight + 0.55;
-    const clearBelow = this.position.y < centerHeight - 0.55;
     const noseWorld = this.tmp.copy(this.forward).multiplyScalar(1.35).add(this.position);
     const noseWater = ocean.getWaterSample(noseWorld.x, noseWorld.z);
     const noseAbove = noseWorld.y > noseWater.height - 0.05;
     this.contact.surface = !centerAbove || !noseAbove;
     this.surfaceCooldown -= dt;
     this.surfaceFxCooldown -= dt;
-    const surfaceSpeed = Math.abs(this.velocity.y) + Math.max(0, this.speed - 8) * 0.03;
+    const surfaceSpeed = Math.abs(this.velocity.y) + this.speed * 0.25;
 
-    if (!this.wasClearAbove && clearAbove && !this.surfing && this.velocity.y > 0.8) {
+    if (!this.wasAbove && centerAbove) {
       // A clean breach, driven by real upward momentum. A high-speed exit gets
       // one last tail kick so the animal can properly clear the surface.
       const exitSpeed = this.velocity.length();
@@ -1234,7 +926,7 @@ export class Dolphin {
       this.wetness = 1;
       this.breachCount++;
       this.lastBreachTime = time;
-    } else if (this.wasClearAbove && clearBelow && !this.surfing && this.velocity.y < -0.8) {
+    } else if (this.wasAbove && !centerAbove) {
       // Re-entry.
       const entry = clamp(Math.abs(this.velocity.y) * 0.33 + this.speed * 0.03, 0.2, 1.5);
       this.surfaceImpulseAll(ocean, centerWater, entry);
@@ -1264,8 +956,6 @@ export class Dolphin {
       this.wetness = 1;
     }
     this.wasAbove = centerAbove;
-    if (clearAbove) this.wasClearAbove = true;
-    else if (clearBelow) this.wasClearAbove = false;
 
     if (!centerAbove) {
       // Water parts continuously around the submerged body near the surface.
@@ -1280,18 +970,10 @@ export class Dolphin {
         }
       }
       if (surfaceSpeed > TUNING.waves.splashThreshold && this.position.y > centerHeight - 0.65 && this.surfaceCooldown <= 0) {
-        const power =
-          clamp(surfaceSpeed * 0.1, 0.05, 0.4) *
-          (0.8 + Math.min(this.speed, 12) * 0.04) *
-          (this.surfing ? 0.45 : 1.0);
+        const power = clamp(surfaceSpeed * 0.08, 0.08, 0.5) * (0.6 + this.speed * 0.12);
         ocean.surfaceImpulse(this.position.x, this.position.z, power, 1.2);
-        // While surfing, the bow wave, wake and tail boil carry the spray. A
-        // centre burst every few frames would sit right on the body and hide
-        // the animal from the chase camera.
-        if (!this.surfing) {
-          effects.splashBurst(this.position.x, centerHeight + 0.03, this.position.z, power * 1.4, this.velocity.x, this.velocity.z);
-        }
-        this.surfaceCooldown = this.surfing ? 0.22 : 0.09;
+        effects.splashBurst(this.position.x, centerHeight + 0.03, this.position.z, power * 1.4, this.velocity.x, this.velocity.z);
+        this.surfaceCooldown = 0.09;
         this.wetness = Math.max(this.wetness, 0.22);
       }
     }
@@ -1428,7 +1110,7 @@ export class Dolphin {
           (surge ? tailCfg.tailSurgeHeave : 0)) *
           strokeScale,
         tailCfg.tailHeaveMax * strokeScale
-      ) * (underwater ? 1 : movement.airTailScale) * this.strokeAmount;
+      ) * (underwater ? 1 : movement.airTailScale);
 
     const beatRate =
       tailCfg.tailBeatBase +
@@ -1436,7 +1118,7 @@ export class Dolphin {
       Math.max(0, this.swimAccel) * tailCfg.tailBeatAccel +
       (thrusting ? tailCfg.tailThrustBeat : 0) +
       (surge ? tailCfg.tailSurgeBeat : 0);
-    this.tailPhase += dt * Math.min(beatRate, tailCfg.tailBeatMax) * this.strokeAmount;
+    this.tailPhase += dt * Math.min(beatRate, tailCfg.tailBeatMax);
     this.tailUniforms.causticTime.value = ocean.time;
     this.wetness = Math.max(0, this.wetness - dt * 0.13);
     this.impact *= Math.exp(-TUNING.movement.cameraShakeDecay * dt);
@@ -1452,32 +1134,12 @@ export class Dolphin {
       this.root.quaternion.copy(this.orientation);
     }
 
-    // Final surf ceiling. The hull can receive a large crest lift after the
-    // contact's single-point sample; clamp against the same analytic height
-    // the HUD uses so a normal ride cannot be thrown into a hover. Space/C or
-    // boost releases the contact before this applies.
-    if (this.surfing && !input.boost) {
-      const wh = ocean.getWaterHeight(this.position.x, this.position.z);
-      const capY = wh - TUNING.movement.surfDepth + 0.25;
-      const floorY = wh - TUNING.movement.surfDepth - 0.2;
-      if (this.position.y > capY) {
-        this.position.y = capY;
-        if (this.velocity.y > 0) this.velocity.y *= 0.2;
-      } else if (this.position.y < floorY) {
-        this.position.y = floorY;
-        if (this.velocity.y < 0) this.velocity.y *= 0.2;
-      }
-    }
-
     // Telemetry for HUD / camera.
     const surfaceNow = ocean.getWaterHeight(this.position.x, this.position.z);
     const floorNow = seabed.getSurfaceHeight(this.position.x, this.position.z);
     this.telemetry.depth = Math.max(0, surfaceNow - this.position.y);
     this.telemetry.altitude = Math.max(0, this.position.y - floorNow);
     this.telemetry.speed = this.speed;
-    this.telemetry.surfing = this.surfing;
-    this.telemetry.propulsion = this.propulsion;
-    this.telemetry.surf = this.surfDebug;
     this.telemetry.waveHeight = surfaceNow;
     // The compass follows the snout target so the readout leads with the view
     // instead of lagging behind the physical body.

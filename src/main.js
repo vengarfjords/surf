@@ -50,8 +50,6 @@ async function boot() {
 
   const lights = createLights(scene);
   const ocean = new Ocean(renderer, scene);
-  ocean.time = TUNING.water.startTime;
-  ocean.water.setTime(ocean.time);
   const loadingText = document.getElementById("loadingText");
   loadingText.textContent = "reading the swell";
   await frame();
@@ -84,11 +82,6 @@ async function boot() {
   await frame();
 
   const dolphin = await Dolphin.create(scene);
-  // Start at the surface in the seaward lineup. The big-wave swell moves the
-  // local surface by many metres, so the fixed config altitude is replaced by
-  // the current water height; the player can then paddle onto the ridge.
-  dolphin.position.y =
-    ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) + 1.0;
   const cameraRig = new CameraRig(camera, ocean);
   const post = new Post(renderer, scene, camera);
   const waterDebug = new WaterDebug(scene, ocean, dolphin);
@@ -137,13 +130,6 @@ async function boot() {
       started = true;
       elapsed = 0;
       input.enabled = true;
-      // The pre-start attract shot can run for a while and the big swell can
-      // carry the idle animal below the surface; start the player at the
-      // current lineup surface instead of underwater.
-      dolphin.position.y =
-        ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) + 0.5;
-      dolphin.velocity.set(0, 0, 0);
-      dolphin.pitch = dolphin.targetPitch = 0.04;
       audio.start();
       input.requestPointerLock();
     },
@@ -298,11 +284,6 @@ async function boot() {
         }
       }
       if (!found) break;
-      // Keep the immediate area around the animal clear. Ambient breaker mist
-      // is atmosphere, but a column on the chase sightline hides the dolphin.
-      const ddx = x - dolphin.position.x;
-      const ddz = z - dolphin.position.z;
-      if (ddx * ddx + ddz * ddz < 22 * 22) continue;
       const height = ocean.getWaterHeight(x, z);
       const peak = ocean.water.peak;
       effects.surfMist(
@@ -509,20 +490,11 @@ async function boot() {
       const sdz = camera.position.z - ocean.foamField.centerZ;
       const surfDist = Math.hypot(sdx, sdz) || 1;
       const surf = 1 - smoothstep(70, 320, surfDist);
-      camera.updateMatrixWorld();
-      const rx = camera.matrixWorld.elements[0];
-      const rz = camera.matrixWorld.elements[2];
-      const rlen = Math.hypot(rx, rz);
-      const surfPan =
-        rlen > 1e-4
-          ? clamp(((-sdx * rx - sdz * rz) / (surfDist * rlen)) * 0.7, -0.7, 0.7)
-          : 0;
       audio.update(dt, {
         underwater: camState.underwater,
         depth: telemetry.depth,
         speed: dolphin.speed,
         surf,
-        surfPan,
       });
     }
 
@@ -663,8 +635,8 @@ async function boot() {
         O.setFreeView([112, h + 18.5, 32], [120, h + 15.2, 40], 56);
       } else if (shotMode === "solver") {
         O.freeze(false);
-        O.water.setPreset("surf");
-        O.setFreeView([300, 22, 200], [405, 8, 270], 62);
+        O.water.setPreset("moderate");
+        O.setFreeView([260, 16, 140], [260 - 0.46 * 140, 2, 140 + 0.55 * 140], 62);
       }
     }, 2800);
   }

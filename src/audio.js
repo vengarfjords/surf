@@ -16,7 +16,6 @@ export class OceanAudio {
     this.flowGain = null;
     this.surfGain = null;
     this.surfFilter = null;
-    this.surfPan = null;
     this.crashBuffer = null;
     this.reverb = null;
     this.chirpTimer = 6 + Math.random() * 8;
@@ -143,16 +142,13 @@ export class OceanAudio {
       surfFilter.Q.value = 0.4;
       const surfGain = ctx.createGain();
       surfGain.gain.value = 0;
-      const surfPan = ctx.createStereoPanner();
       surfSrc.connect(surfFilter);
       surfFilter.connect(surfGain);
-      surfGain.connect(surfPan);
-      surfPan.connect(this.bus);
-      surfPan.connect(this.reverb);
+      surfGain.connect(this.bus);
+      surfGain.connect(this.reverb);
       surfSrc.start();
       this.surfFilter = surfFilter;
       this.surfGain = surfGain;
-      this.surfPan = surfPan;
 
       gain.gain.setTargetAtTime(0.2, ctx.currentTime, 1.8);
   }
@@ -203,16 +199,6 @@ export class OceanAudio {
     this.surfFilter.frequency.setTargetAtTime(surfCutoff, now, 0.7);
     const surfLevel = surf * TUNING.audio.surf * live * (0.1 + under * 0.06) * set;
     this.surfGain.gain.setTargetAtTime(surfLevel, now, 0.7);
-    if (this.surfPan) {
-      this.surfPan.pan.setTargetAtTime(
-        Math.max(-1, Math.min(1, state.surfPan ?? 0)),
-        now,
-        0.5
-      );
-    }
-    if (this.master) {
-      this.master.gain.setTargetAtTime(TUNING.audio.master * live, now, 0.2);
-    }
 
     this.surfCrashTimer -= dt;
     if (this.surfCrashTimer <= 0 && surf > 0.12) {

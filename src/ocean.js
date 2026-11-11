@@ -280,7 +280,6 @@ export class Ocean {
     this._solverSurface = {};
     this._solver3D = {};
     this._foamSample = {};
-    this._probeSample = {};
     this._underwater = 1;
     this._wetness = 0;
     this._tempColor = new THREE.Color();
@@ -564,10 +563,6 @@ export class Ocean {
           vec3 view = normalize(uCameraPos - vWorld);
           vec2 detail = detailSlope(vWorld.xz, vDistance);
           float microHeight = detailHeight(vWorld.xz, vDistance);
-          // Fade the horizontal ripple detail on steep big-wave faces; a 2D
-          // normal cascade stretched across a near-vertical face reads as
-          // vertical curtains, especially from underwater.
-          detail *= smoothstep(0.12, 0.55, abs(n.y));
           vec3 microN = normalize(vec3(n.x + detail.x * 0.28, n.y, n.z + detail.y * 0.28));
           if (microN.y < 0.0) microN = -microN;
 
@@ -600,11 +595,7 @@ export class Ocean {
           // thrust loss and the breaker jet.
           float broken = smoothstep(0.15, 0.7, vBreak);
           float aeration = clamp(
-            broken *
-              (0.35 + 0.5 * foamNoise) *
-              (0.35 + 0.65 * vPeakCrest) *
-              smoothstep(0.35, 0.85, crest) *
-              uAerationAmount,
+            broken * (0.35 + 0.5 * foamNoise) * (0.35 + 0.65 * vPeakCrest) * uAerationAmount,
             0.0,
             0.85
           );
@@ -633,40 +624,12 @@ export class Ocean {
           float fieldLace = 0.55 * foamNoise + 0.45 * lace;
           float fieldMask = smoothstep(0.28, 0.72, fieldLace);
           foam = max(foam, vFoamField * fieldMask * 1.15);
-          // Broken meniscus collar hugging the dolphin at the waterline. Keep
-          // it lacy and rare: a solid ring reads as a glowing halo and makes
-          // the animal look like it is hovering on top of the surface.
+          // Meniscus/foam collar hugging the dolphin at the waterline.
           float bodyDist = length(vWorld.xz - uBodyPos.xz);
-          float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.18, 2.0));
-          float bodyFoam =
-            bodyRing *
-            uBodyActive *
-            clamp(uBodySpeed / 12.0, 0.04, 0.28) *
-            smoothstep(0.35, 0.72, lace);
-          foam = max(foam, bodyFoam * 0.3);
-          // Foam running down the upper face. The 2D world-space noise is
-          // deliberately stretched along the crest and keyed to wave height,
-          // so it reads as streaks on the face rather than a flat wall.
-          float faceStreak = vnoise(
-            vec2(perpA * 0.18 + uTime * 0.035, vWaveHeight * 0.1 - uTime * 0.06)
-          );
-          float faceFoam =
-            broken *
-            smoothstep(0.18, 0.65, crest) *
-            smoothstep(0.58, 0.84, faceStreak) *
-            0.42;
-          foam = max(foam, faceFoam * (0.55 + 0.6 * fineFoam));
+          float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));
+          float bodyFoam = bodyRing * uBodyActive * clamp(uBodySpeed / 7.0, 0.2, 1.1);
+          foam = max(foam, bodyFoam * 0.9);
           foam = clamp(foam, 0.0, 1.0);
-
-          // Color-only tube cue: a dark cavity under the plunging lip. The
-          // heightfield cannot overhang, so this is shading, not geometry.
-          float tubePlunge = smoothstep(0.2, 1.4, vXi);
-          float tubeMask =
-            broken *
-            tubePlunge *
-            smoothstep(0.52, 0.9, vPeakCrest) *
-            smoothstep(0.5, 0.85, crest) *
-            (1.0 - smoothstep(0.94, 1.0, crest));
 
           // ---- above the surface ----------------------------------------
           float cosView = clamp(dot(view, microN), 0.0, 1.0);
@@ -678,7 +641,7 @@ export class Ocean {
           vec3 shallow = uTopColor * 0.42 + vec3(0.0, 0.065, 0.085);
           vec3 body = mix(shallow, uDeepColor, shallowMix);
           body *= 0.82 + 0.24 * crest;
-          body = mix(body, vec3(0.38, 0.62, 0.66), aeration * 0.3);
+          body = mix(body, vec3(0.55, 0.72, 0.66), aeration * 0.42);
 
           // Wave-face legibility: faces tilted toward the sun collect more
           // direct light, faces tilted away sit in their own shadow. This is
@@ -696,25 +659,18 @@ export class Ocean {
           body += uTopColor * (0.02 + crest * 0.08) * 0.35;
 
           vec3 above = mix(body, sky, clamp(0.04 + fres * 0.82, 0.0, 0.94));
-          above = mix(above, vec3(0.004, 0.03, 0.05), tubeMask * 0.45);
 
           float sunAlign = max(dot(refl, uSunDir), 0.0);
           float specPower = mix(1200.0, 70.0, smoothstep(80.0, 1800.0, vDistance));
           float glint = pow(sunAlign, specPower) * mix(2.6, 0.3, smoothstep(100.0, 2200.0, vDistance));
           glint += pow(sunAlign, 55.0) * 0.075;
-          // Keep the immediate water around the animal from turning into a
-          // field of white sun-glitter; the body must stay readable.
-          float bodyClear =
-            1.0 -
-            0.9 * uBodyActive * exp(-pow(length(vWorld.xz - uBodyPos.xz) / 6.0, 2.0));
-          glint *= bodyClear;
           float sparkle = smoothstep(0.52, 0.92, vnoise(p * 3.4 + vec2(uTime * 0.22, -uTime * 0.19)));
           glint += pow(sunAlign, 22.0) * (0.012 + 0.025 * sparkle);
           glint *= 0.55 + sparkle * 0.9;
           above += uSunColor * glint;
 
           vec3 foamColor = mix(vec3(0.6, 0.72, 0.7), vec3(0.96, 0.99, 0.96), smoothstep(0.1, 0.8, foamNoise + lace * 0.25));
-          above = mix(above, foamColor, foam * 0.88 * (1.0 - tubeMask * 0.6));
+          above = mix(above, foamColor, foam * 0.88);
 
           // ---- below the surface ----------------------------------------
           // Snell's window: refracted sky within the critical angle
@@ -764,7 +720,7 @@ export class Ocean {
           float meniscus = exp(-pow(camGap / 0.05, 2.0)) * nearSurface;
           vec3 color = mix(below, aboveFog, aboveWeight);
           color = mix(color, vec3(0.92, 0.99, 0.97), meniscus * 0.22);
-
+          color = mix(color, vec3(0.9, 0.99, 0.95), bodyRing * uBodyActive * 0.22);
 
           // ---- debug overlays ------------------------------------------
           if (uDebugCrest > 0.5) {
@@ -1106,8 +1062,7 @@ export class Ocean {
     const oldCenterX = u.uCenter.value.x;
     const oldCenterZ = u.uCenter.value.y;
     const oldSim = u.uSimScale.value;
-    const sample = this.water.sampleSurface(x, z, this._probeSample);
-    u.uCenter.value.set(sample.parameterX, sample.parameterZ);
+    u.uCenter.value.set(x, z);
     u.uSimScale.value = 0;
 
     this.probeCamera.position.set(x, 60, z);
@@ -1130,7 +1085,7 @@ export class Ocean {
     u.uSimScale.value = oldSim;
 
     const q = this._probePixels[0] * 256 + this._probePixels[1];
-    return (q / 65535) * 96 - 48;
+    return (q / 65535) * 16 - 8;
   }
 
   shouldDrawSurface() {

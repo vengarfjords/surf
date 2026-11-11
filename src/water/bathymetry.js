@@ -10,7 +10,7 @@ import { seabedHeight } from "../utils.js";
  */
 export function makeBathymetry(size = 256) {
   const extent = TUNING.world.size;
-  const maxDepth = 60;
+  const maxDepth = 30;
   const data = new Float32Array(size * size);
   const pixels = new Uint8Array(size * size * 4);
   let p = 0;

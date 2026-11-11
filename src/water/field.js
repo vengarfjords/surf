@@ -294,7 +294,7 @@ export class WaveField {
     out.shoal = shoal;
     out.shoalRaw = state.shoalRaw;
     out.breakMask = breakMask;
-    out.aeration = clamp(aeration * smoothstep(0.35, 0.85, crest), 0, 0.85);
+    out.aeration = clamp(aeration, 0, 0.85);
     out.turbulence = breakMask * (0.5 + 0.5 * noise);
     out.phaseSpeed = this.stats.peakPhaseSpeed / ratio;
     out.wavelength = this.stats.peakWavelength / ratio;
@@ -357,16 +357,16 @@ export class WaveField {
       const w = omega[i];
       const a = amp[i] * shoal;
       const kh = Math.max(1e-4, kL * depth);
-      // Stable finite-depth factors. The naive cosh/sinh form with a clamped
-      // exp(-kh) blows up for long-period big-wave fields; this form stays
-      // bounded at the surface and decays with depth.
-      const e2 = Math.exp(-2 * kh);
-      const up = Math.exp(kL * depthBelowSurface);
-      const deep = Math.exp(-kL * (depthBelowSurface + 2 * depth));
-      const denom = Math.max(1e-6, 1 - e2);
-      const uF = (up + deep) / denom;
-      const wF = (up - deep) / denom;
-      const pF = (up + deep) / (1 + e2);
+      const ekh = Math.max(1e-6, Math.exp(-kh));
+      const sinhKh = (1 - ekh * ekh) / (2 * ekh);
+      const coshKh = (1 + ekh * ekh) / (2 * ekh);
+      const xArg = Math.min(50, kL * (depthBelowSurface + depth));
+      const ex = Math.exp(xArg);
+      const coshX = 0.5 * (ex + 1 / ex);
+      const sinhX = 0.5 * (ex - 1 / ex);
+      const uF = coshX / sinhKh;
+      const wF = sinhX / sinhKh;
+      const pF = coshX / coshKh;
       // eta = a sin(theta): u = omega a sin(theta), w = -omega a cos(theta).
       const horizontal = w * a * uF * s;
       vx += horizontal * this.dirX[i];
@@ -389,7 +389,6 @@ export class WaveField {
         surf.breakMask *
         TUNING.water.breakerJet *
         jetType *
-        smoothstep(0.35, 0.85, surf.crest) *
         Math.exp(depthBelowSurface / 1.5);
       vx += this.peak.dx * jet;
       vz += this.peak.dz * jet;

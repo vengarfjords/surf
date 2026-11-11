@@ -10,8 +10,8 @@ export const TUNING = {
   world: {
     size: 3000,
     boundary: 1425,
-    start: { x: 380, y: -2.0, z: 240 },
-    startYaw: 0.96,
+    start: { x: -2.5, y: -5.8, z: 8.0 },
+    startYaw: 0.06,
     startPitch: -0.04,
   },
 
@@ -56,10 +56,10 @@ export const TUNING = {
   movement: {
     // Forward propulsion and terminal velocity. These are deliberately lively:
     // the animal should leap off the line and carry deep momentum into a breach.
-    cruiseSpeed: 10.5,
-    boostSpeed: 25.0,
-    acceleration: 10.5,
-    boostAcceleration: 18.0,
+    cruiseSpeed: 9.5,
+    boostSpeed: 21.0,
+    acceleration: 8.5,
+    boostAcceleration: 15.0,
     braking: 6.0,
     reverseSpeed: 1.7,
     reverseAcceleration: 1.1,
@@ -104,44 +104,22 @@ export const TUNING = {
     gravity: 9.81,
     floorClearance: 0.52,
     floorBounce: 0.3,
-    breachImpulse: 1.5,
+    breachImpulse: 1.6,
     boundaryPush: 1.8,
 
     // Airborne translation. The animal is ballistic, but the body still
     // glides: low drag, reduced gravity, a little speed-dependent lift and
     // real velocity steering from the snout.
-    airGravity: 12.5,
-    airLift: 0.002,
-    airSteer: 1.0,
-    airForwardDrag: 0.008,
-    airForwardQuadraticDrag: 0.002,
-    airLateralDrag: 0.12,
-    airVerticalDrag: 0.05,
-    airThrustScale: 0.16,
-    airVerticalScale: 0.2,
+    airGravity: 9.81,
+    airLift: 0.0065,
+    airSteer: 0.72,
+    airForwardDrag: 0.01,
+    airForwardQuadraticDrag: 0.0025,
+    airLateralDrag: 0.08,
+    airVerticalDrag: 0.02,
+    airThrustScale: 0.1,
+    airVerticalScale: 0.15,
     airTailScale: 0.35,
-    // Passive wave riding: a steep descending/along-face run fades the tail
-    // stroke out and lets the local surface slope drive the body.
-    coastSlope: 0.01,
-    // Surf contact: a soft attachment to a steep face. The body is held at the
-    // planing waterline, aligned to the face, and the tangential velocity is
-    // carved toward the heading instead of skating straight on.
-    surfGrip: 10.0,
-    surfDepth: 0.1,
-    surfMinSlope: 0.05,
-    surfMinSpeed: 5.0,
-    surfSpring: 60,
-    surfDamp: 16,
-    surfDrive: 0.9,
-    surfPump: 4.0,
-    surfCarry: 0.55,
-    surfGlide: 1.1,
-    surfAttitude: 5.5,
-    surfFaceRoll: 1.0,
-    surfBank: 1.7,
-    surfMaxBank: 1.15,
-    surfCarveDrag: 0.25,
-    surfReleaseRise: 4.5,
 
     // A quiet, always-present current keeps world and camera alive.
     currentX: 0.2,
@@ -202,21 +180,21 @@ export const TUNING = {
   },
 
   camera: {
-    chaseDistance: 9.5,
-    chaseHeight: 5.5,
+    chaseDistance: 3.35,
+    chaseHeight: 1.15,
     // A small shoulder offset keeps the shot alive without making the view
     // point across the dolphin instead of along its snout.
     shoulder: 0.7,
-    targetAhead: 5.5,
-    lookUp: 0.5,
+    targetAhead: 2.95,
+    lookUp: 0.1,
     // The camera orbits the snout target, not the lagging physical heading.
     lookResponsiveness: 14.0,
-    positionLag: 12.0,
-    rotationLag: 18.0,
+    positionLag: 10.0,
+    rotationLag: 16.0,
     waterlineLag: 6.0,
-    speedPullback: 1.5,
-    speedFov: 16,
-    baseFov: 64,
+    speedPullback: 1.15,
+    speedFov: 13,
+    baseFov: 62,
     rollFollow: 0.27,
     handheld: 1.0,
     shake: 0.85,
@@ -239,40 +217,39 @@ export const TUNING = {
    */
   water: {
     seed: 20261109,
-    preset: "surf",
-    surfZoneX: 450,
-    surfZoneZ: 300,
-    swellHeight: 40.5,
-    swellWavelength: 360,
-    swellWavelengthSpread: 0.09,
+    preset: "moderate",
+    surfZoneX: 260,
+    surfZoneZ: 140,
+    swellHeight: 2.15,
+    swellWavelength: 58,
+    swellWavelengthSpread: 0.17,
     swellDirection: 0.61,
-    swellDirectionSpread: 0.1,
+    swellDirectionSpread: 0.24,
     swellComponents: 96,
-    windSeaHeight: 0.35,
-    windSeaWavelength: 64,
-    windSeaWavelengthSpread: 0.3,
-    windSeaDirection: 1.2,
-    windSeaDirectionSpread: 0.5,
+    windSeaHeight: 0.55,
+    windSeaWavelength: 11.5,
+    windSeaWavelengthSpread: 0.42,
+    windSeaDirection: 1.02,
+    windSeaDirectionSpread: 0.62,
     windSeaComponents: 32,
     // Gerstner horizontal displacement scale. The generator computes a safe
     // base value from the total steepness; this is an artistic multiplier.
-    chop: 0.38,
+    chop: 0.78,
     timeScale: 1.0,
-    startTime: 4.5,
     // Rendering / foam.
     foamThreshold: 0.56,
-    foamAmount: 0.9,
-    detailStrength: 0.3,
+    foamAmount: 0.8,
+    detailStrength: 0.55,
     // M3 depth response. The wave spectrum is evaluated with finite-depth
     // dispersion and Green's-law shoaling using the baked bathymetry; the
     // breaker is a saturated, aerated crest (a heightfield cannot overhang).
     depthResponse: true,
-    shoalReference: 14,
-    shoalStrength: 0.14,
-    breakRatio: 0.8,
+    shoalReference: 12,
+    shoalStrength: 0.25,
+    breakRatio: 0.85,
     breakSoftness: 0.12,
-    breakerJet: 0.3,
-    breakerLip: 0.05,
+    breakerJet: 0.65,
+    breakerLip: 0.12,
     aerationAmount: 0.85,
     foamPersistence: 0.6,
     // Local nonlinear shallow-water solver over the surf bank. The domain is
@@ -289,15 +266,15 @@ export const TUNING = {
     // Advected foam/aeration state for the analytic surf bank. This is shared
     // by the surface shader and the hull physics.
     foamFieldEnabled: true,
-    foamFieldExtent: 400,
-    foamFieldCells: 128,
+    foamFieldExtent: 192,
+    foamFieldCells: 96,
     foamFieldRate: 15,
     foamFieldDecay: 0.18,
     foamFieldSource: 0.7,
     // Ambient breaker mist above the surf line. Reuses the particle budget;
     // the rate is spawns per second near the bank.
     surfSpray: true,
-    surfSprayRate: 12,
+    surfSprayRate: 30,
     // Subsurface bubble plume under the break line, emitted only while the
     // camera is underwater.
     surfBubbles: true,
@@ -408,6 +385,12 @@ export const TUNING = {
     surfaceMist: 0.26,
   },
 
+  fish: {
+    schools: 12,
+    perSchool: 64,
+    startleRadius: 13.5,
+  },
+
   audio: {
     master: 0.24,
     ocean: 0.4,
@@ -444,7 +427,7 @@ export const SUN_DIRECTION = { x: -0.46, y: 0.7, z: 0.55 };
  */
 export const TUNE_CONTROLS = [
   { path: "movement.cruiseSpeed", label: "cruise speed", min: 2, max: 14, step: 0.1 },
-  { path: "movement.boostSpeed", label: "surge speed", min: 8, max: 30, step: 0.1 },
+  { path: "movement.boostSpeed", label: "surge speed", min: 8, max: 24, step: 0.1 },
   { path: "movement.acceleration", label: "acceleration", min: 1, max: 12, step: 0.1 },
   { path: "movement.turnResponsiveness", label: "turn response", min: 0.6, max: 14, step: 0.1 },
   { path: "movement.mouseSensitivity", label: "mouse look", min: 0.0008, max: 0.006, step: 0.00005 },
@@ -457,17 +440,6 @@ export const TUNE_CONTROLS = [
   { path: "movement.airSteer", label: "air control", min: 0, max: 4, step: 0.01 },
   { path: "movement.airLift", label: "air lift", min: 0, max: 0.05, step: 0.001 },
   { path: "movement.airGravity", label: "air gravity", min: 0, max: 14, step: 0.05 },
-  { path: "movement.coastSlope", label: "coast trigger slope", min: 0.005, max: 0.3, step: 0.005 },
-  { path: "movement.surfGrip", label: "surf carve grip", min: 0, max: 14, step: 0.1 },
-  { path: "movement.surfDepth", label: "surf ride depth", min: 0, max: 1.5, step: 0.01 },
-  { path: "movement.surfSpring", label: "surf hold", min: 10, max: 140, step: 1 },
-  { path: "movement.surfAttitude", label: "surf face attitude", min: 0, max: 12, step: 0.1 },
-  { path: "movement.surfFaceRoll", label: "surf face lean", min: 0, max: 1.2, step: 0.01 },
-  { path: "movement.surfBank", label: "surf carve bank", min: 0, max: 4, step: 0.05 },
-  { path: "movement.surfDrive", label: "surf wave drive", min: 0, max: 1.6, step: 0.01 },
-  { path: "movement.surfPump", label: "surf wave pump", min: 0, max: 5, step: 0.05 },
-  { path: "movement.surfCarry", label: "surf wave carry", min: 0, max: 1, step: 0.01 },
-  { path: "movement.surfGlide", label: "surf glide speed", min: 0.4, max: 1.6, step: 0.01 },
   { path: "movement.breachImpulse", label: "breach kick", min: 0, max: 6, step: 0.05 },
   { path: "dolphin.tailBeatSpeed", label: "tail beat", min: 0.15, max: 2.6, step: 0.01 },
   { path: "dolphin.tailBeatAccel", label: "accel beat", min: 0, max: 1.8, step: 0.01 },
@@ -481,18 +453,17 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
   { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf"] },
-  { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 50, step: 0.05 },
-  { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 400, step: 1 },
+  { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 4, step: 0.05 },
+  { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 110, step: 1 },
   { path: "water.swellDirection", label: "swell direction", min: 0, max: 6.28, step: 0.01 },
   { path: "water.swellDirectionSpread", label: "swell spread", min: 0.02, max: 0.9, step: 0.01 },
   { path: "water.swellWavelengthSpread", label: "swell bandwidth", min: 0.04, max: 0.5, step: 0.01 },
   { path: "water.windSeaHeight", label: "wind sea Hs", min: 0, max: 1.6, step: 0.02 },
-  { path: "water.windSeaWavelength", label: "wind sea λ", min: 4, max: 60, step: 0.5 },
+  { path: "water.windSeaWavelength", label: "wind sea λ", min: 4, max: 25, step: 0.5 },
   { path: "water.windSeaDirection", label: "wind direction", min: 0, max: 6.28, step: 0.01 },
   { path: "water.windSeaDirectionSpread", label: "wind spread", min: 0.05, max: 1.2, step: 0.01 },
   { path: "water.chop", label: "crest sharpness", min: 0, max: 1.4, step: 0.01 },
   { path: "water.timeScale", label: "wave time scale", min: 0, max: 2, step: 0.01 },
-  { path: "water.startTime", label: "wave start time", min: 0, max: 40, step: 0.5 },
   { path: "water.foamAmount", label: "whitecap amount", min: 0, max: 1.6, step: 0.01 },
   { path: "water.foamThreshold", label: "whitecap threshold", min: 0.15, max: 1, step: 0.01 },
   { path: "water.depthResponse", label: "depth response", type: "toggle" },
@@ -542,12 +513,10 @@ export const TUNE_CONTROLS = [
   { path: "visuals.volumetricCaustics", label: "caustic light", min: 0, max: 1.8, step: 0.01 },
   { path: "visuals.surfaceHaze", label: "surface haze", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.surfaceMist", label: "sea mist", min: 0, max: 1.5, step: 0.01 },
-  { path: "audio.master", label: "master volume", min: 0, max: 0.6, step: 0.01 },
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.dynamicQuality", label: "dynamic quality", type: "toggle" },
   { path: "visuals.dynamicQualityMinScale", label: "min render scale", min: 0.4, max: 0.8, step: 0.01 },
-  { path: "camera.chaseDistance", label: "camera distance", min: 2.5, max: 18, step: 0.1 },
-  { path: "camera.chaseHeight", label: "camera height", min: 1, max: 12, step: 0.1 },
+  { path: "camera.chaseDistance", label: "camera distance", min: 2.5, max: 12, step: 0.1 },
   { path: "camera.shoulder", label: "camera shoulder", min: 0, max: 2.2, step: 0.01 },
   { path: "camera.lookResponsiveness", label: "look response", min: 2, max: 28, step: 0.1 },
 ];
