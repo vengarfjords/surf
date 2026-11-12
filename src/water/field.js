@@ -357,16 +357,15 @@ export class WaveField {
       const w = omega[i];
       const a = amp[i] * shoal;
       const kh = Math.max(1e-4, kL * depth);
-      const ekh = Math.max(1e-6, Math.exp(-kh));
-      const sinhKh = (1 - ekh * ekh) / (2 * ekh);
-      const coshKh = (1 + ekh * ekh) / (2 * ekh);
-      const xArg = Math.min(50, kL * (depthBelowSurface + depth));
-      const ex = Math.exp(xArg);
-      const coshX = 0.5 * (ex + 1 / ex);
-      const sinhX = 0.5 * (ex - 1 / ex);
-      const uF = coshX / sinhKh;
-      const wF = sinhX / sinhKh;
-      const pF = coshX / coshKh;
+      // cosh(k(z+h))/sinh(kh) etc., written in decaying exponentials so deep
+      // water (kh >> 1) stays finite: both terms are <= 1 and the ratios tend
+      // to exp(k z) instead of overflowing when kh is large.
+      const e2kh = Math.exp(-2 * kh);
+      const eUp = Math.exp(kL * depthBelowSurface);
+      const eDown = Math.exp(-kL * (depthBelowSurface + 2 * depth));
+      const uF = (eUp + eDown) / (1 - e2kh);
+      const wF = (eUp - eDown) / (1 - e2kh);
+      const pF = (eUp + eDown) / (1 + e2kh);
       // eta = a sin(theta): u = omega a sin(theta), w = -omega a cos(theta).
       const horizontal = w * a * uF * s;
       vx += horizontal * this.dirX[i];
@@ -382,7 +381,7 @@ export class WaveField {
     // Breaker jet: near a breaking crest, water near the surface is thrown
     // forward at roughly the local phase speed. This is the force that can
     // overtake and throw the dolphin.
-    if (surf.breakMask > 0.01) {
+    if (surf.breakMask > 0.01 && this.peak) {
       const jetType = surf.breakerType === 0 ? 0.7 : surf.breakerType === 1 ? 1.0 : 0.55;
       const jet =
         surf.phaseSpeed *
