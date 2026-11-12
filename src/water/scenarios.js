@@ -156,6 +156,23 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     return out;
   }
 
+  // Depth hold for the scripted riders. It asks for a vertical rate (follow
+  // the surface under the body, plus a pull back to the target depth) and
+  // pitches to get it at the current speed, with a little damping on the
+  // vertical speed it already has. A fixed pitch-per-metre gain that is
+  // gentle at cruise over-corrects at surf speed and porpoises.
+  function ridePitch(rel, target, state, dt, lo = -1.1, hi = 0.8) {
+    const h = ocean.getWaterHeight(dolphin.position.x, dolphin.position.z);
+    const raw = state.h === undefined ? 0 : (h - state.h) / dt;
+    state.h = h;
+    state.dh = state.dh === undefined ? raw : state.dh + (raw - state.dh) * Math.min(1, dt * 12);
+    const v = Math.max(3, dolphin.velocity.length());
+    const wantVy = state.dh + Math.max(-4, Math.min(4, -(rel - target) * 1.6));
+    const lead = wantVy + (wantVy - dolphin.velocity.y) * 2.0;
+    const pitch = Math.asin(Math.max(-0.95, Math.min(0.95, lead / v)));
+    return Math.max(lo, Math.min(hi, pitch));
+  }
+
   function botInput() {
     return {
       forward: false,
@@ -178,6 +195,8 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
   const api = {
     // Optional async hook awaited after each faceDrop step (screenshots).
     onStep: null,
+    // Hull forces at a fixed pose (no stepping), for force breakdowns.
+    measureAt,
 
     /**
      * Scenario 7: catch and ride a wave like a player would. Starting `start`
@@ -227,6 +246,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let bestDrop = 0;
       let bestSpeed = 0;
       let carveDown = true;
+      const hold = {};
       for (let t = 0; t < seconds; t += dt) {
         const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
         const along = dolphin.velocity.x * dirX + dolphin.velocity.z * dirZ;
@@ -240,12 +260,16 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         const onFace = fp > -0.1 && fp < 1.5;
         control.brake = false;
         if (!go) control.forward = false;
-        else if (onFace) {
+        else if (c > TUNING.movement.cruiseSpeed * 1.3) {
+          // Waves faster than a cruising dolphin can only be caught at a
+          // sprint: be at full surge as the face arrives and stay on it.
+          // Wait in the trough, then go as the face starts to lift.
+          control.forward = fp > -0.5 && fp < 2.1 && along < c * 1.15;
+        } else if (onFace) {
           control.forward = fp < 0.25 && along < c;
           control.brake = fp > 1.2 && along > c;
         } else control.forward = along < c * 0.8;
-        const slope = q.slopeX * dirX + q.slopeZ * dirZ;
-        const wantPitch = Math.max(-0.45, Math.min(0.45, -(rel + 0.3) * 0.7 + Math.atan(slope)));
+        const wantPitch = ridePitch(rel, -0.3, hold, dt, -0.45, 0.45);
         control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
         control.mdx = 0;
         if (carve && go) {
@@ -271,6 +295,8 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
             control.brake = along > c * 1.25;
           }
         }
+        // Big waves outrun cruise speed: surge (Shift) to match them.
+        control.boost = control.forward && c > TUNING.movement.cruiseSpeed * 0.85;
         stepWorld(dt, control);
         maxSpeed = Math.max(maxSpeed, dolphin.speed);
         const s = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
@@ -278,7 +304,9 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         const alongNow = dolphin.velocity.x * dirX + dolphin.velocity.z * dirZ;
         const sNow = (dolphin.position.x - TUNING.water.surfZoneX) * dirX + (dolphin.position.z - TUNING.water.surfZoneZ) * dirZ;
         const fpNow = s.facePhase ?? 9;
-        const riding = fpNow > -0.3 && fpNow < 1.9 && Math.abs(relNow) < 0.9 && alongNow > 0.6 * s.phaseSpeed;
+        // Riding: on the face, carried at wave speed, at the surface or
+        // tucked into the face just under it (dolphins surf submerged too).
+        const riding = fpNow > -0.3 && fpNow < 1.9 && relNow > -1.8 && relNow < 0.9 && alongNow > 0.6 * s.phaseSpeed;
         if (riding) {
           if (ride === 0) {
             rideStart = sNow;
@@ -344,11 +372,11 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       // at face phase `takeoff` (0 = crest, pi/2 = mid-face).
       let t = time0;
       let found = false;
-      for (; t < time0 + 240; t += 0.1) {
+      for (; t < time0 + 600; t += 0.1) {
         water.setTime(t);
         const q = ocean.getWaterSample(x0, z0);
         const size = (2 * (q.envelope || 0)) / Math.max(0.1, water.stats.height * q.shoal);
-        if (size > 1.05 && Math.abs(q.facePhase - takeoff) < 0.15) {
+        if (size > 0.9 && Math.abs(q.facePhase - takeoff) < 0.15) {
           found = true;
           break;
         }
@@ -378,11 +406,12 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let yClimb = -Infinity;
       let phase = "drop";
       let elapsed = 0;
-      for (; elapsed < 9; elapsed += dt) {
+      const hold = {};
+      for (; elapsed < 13; elapsed += dt) {
         const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
         const rel = dolphin.position.y - q.height;
         const fp = q.facePhase ?? 9;
-        if (phase === "drop" && (fp > 2.0 || elapsed > 5)) {
+        if (phase === "drop" && (fp > 2.0 || elapsed > 8)) {
           phase = "climb";
           bottomAt = elapsed;
         }
@@ -391,11 +420,10 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         let err = target - dolphin.targetYaw;
         err = Math.atan2(Math.sin(err), Math.cos(err));
         control.mdx = (-err / sens) * 0.1;
-        const slope = (dolphin.forward.x * q.slopeX + dolphin.forward.z * q.slopeZ) /
-          Math.max(0.2, Math.hypot(dolphin.forward.x, dolphin.forward.z));
-        const wantPitch = Math.max(-0.6, Math.min(0.6, -(rel + 0.05) * 0.8 + Math.atan(slope)));
+        const wantPitch = ridePitch(rel, -0.05, hold, dt);
         control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
         control.forward = thrust;
+        control.boost = thrust && q.phaseSpeed > TUNING.movement.cruiseSpeed * 0.85;
         const waveSpeed = q.phaseSpeed;
         const breaking = q.breaking || 0;
         stepWorld(dt, control);
@@ -449,6 +477,71 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       };
     },
 
+    /**
+     * Scenario 9: flat-water swim speeds. In the calm preset, holds W (or
+     * W + Shift) at 2 m depth for `seconds` with offline stepping and reports
+     * the speed reached, then the coast-down after letting go. Used to keep
+     * the swim feel fixed while hull drag changes.
+     */
+    async flatSpeed(boost = false, seconds = 10, surface = false) {
+      const saved = saveState();
+      const savedPreset = TUNING.water.preset;
+      const savedTime = TUNING.water.timeScale;
+      water.setPreset("calm");
+      freeze(true);
+      TUNING.water.timeScale = 0;
+      const savedClock = ocean.time;
+      const x = -300;
+      const z = 400;
+      const yaw = 1.2;
+      setPose(x, ocean.getWaterHeight(x, z) - (surface ? 0.3 : 2), z, yaw, 0);
+      dolphin.velocity.set(0, 0, 0);
+      dolphin.targetYaw = dolphin.yaw = yaw;
+      dolphin.targetPitch = dolphin.pitch = 0;
+      const control = botInput();
+      const dt = 1 / 60;
+      const at = {};
+      control.forward = true;
+      control.boost = boost;
+      const sens = TUNING.movement.mouseSensitivity;
+      let relMin = Infinity;
+      let relMax = -Infinity;
+      const hold = {};
+      for (let t = 0; t < seconds; t += dt) {
+        if (surface) {
+          // Hold the body just under the surface, the way a player riding
+          // the surface would: the same pitch controller as faceDrop.
+          const rel = dolphin.position.y - ocean.getWaterHeight(dolphin.position.x, dolphin.position.z);
+          const wantPitch = ridePitch(rel, -0.3, hold, dt);
+          control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
+          if (t > seconds - 4) {
+            relMin = Math.min(relMin, rel);
+            relMax = Math.max(relMax, rel);
+          }
+        }
+        stepWorld(dt, control);
+        for (const mark of [1, 2, 4]) if (at[mark] === undefined && t >= mark) at[mark] = dolphin.velocity.length();
+      }
+      control.mdy = 0;
+      const top = dolphin.velocity.length();
+      control.forward = false;
+      control.boost = false;
+      let coast2 = 0;
+      for (let t = 0; t < 2; t += dt) stepWorld(dt, control);
+      coast2 = dolphin.velocity.length();
+      ocean.time = savedClock;
+      water.setTime(savedClock);
+      TUNING.water.timeScale = savedTime;
+      restoreState(saved);
+      for (const p of dolphin.hull.panels) p.prevWet = 0;
+      freeze(false);
+      water.setPreset(savedPreset);
+      cameraReport();
+      const out = { boost, at1: at[1], at2: at[2], at4: at[4], top, after2sCoast: coast2 };
+      if (surface) Object.assign(out, { relMin, relMax });
+      return out;
+    },
+
     /** Scenario 1: passive float/bob. */
     async passiveFloat(name = "calm", seconds = 6) {
       const saved = saveState();
@@ -488,7 +581,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     },
 
     /** Scenario 2: CPU height vs the rendered mesh, via the 1x1 GPU probe. */
-    probeParity(count = 20) {
+    probeParity(count = 20, cx = 0, cz = 0, span = 800) {
       // Make sure the uniform array matches the CPU field even if a scenario
       // just rebuilt the spectrum.
       ocean.updateWaveUniforms();
@@ -499,8 +592,8 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       };
       const errors = [];
       for (let i = 0; i < count; i++) {
-        const x = (rnd() - 0.5) * 800;
-        const z = (rnd() - 0.5) * 800;
+        const x = cx + (rnd() - 0.5) * span;
+        const z = cz + (rnd() - 0.5) * span;
         const cpu = ocean.getWaterHeight(x, z);
         const gpu = ocean.gpuProbeHeight(x, z);
         errors.push(Math.abs(cpu - gpu));

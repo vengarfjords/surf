@@ -336,6 +336,10 @@ export class Ocean {
       uPeakK: { value: this.water.peakK },
       uShoalRef: { value: TUNING.water.shoalReference },
       uShoalStrength: { value: TUNING.water.shoalStrength },
+      uFocusCenter: { value: new THREE.Vector2(TUNING.water.surfZoneX, TUNING.water.surfZoneZ) },
+      uFocusGain: { value: TUNING.water.reefFocus },
+      uFocusCross: { value: TUNING.water.reefFocusCross },
+      uFocusReach: { value: TUNING.water.reefFocusReach },
       uBreakRatio: { value: TUNING.water.breakRatio },
       uBreakSoftness: { value: TUNING.water.breakSoftness },
       uHs: { value: this.water.stats.height },
@@ -343,6 +347,7 @@ export class Ocean {
       uPeakKz: { value: this.water.peakKz },
       uPeakPhase: { value: this.water.peakPhaseNow || 0 },
       uBreakerLip: { value: TUNING.water.breakerLip },
+      uFaceSkew: { value: TUNING.water.faceSkew || 0 },
       uAerationAmount: { value: TUNING.water.aerationAmount },
       uFoamPersistence: { value: TUNING.water.foamPersistence },
       uPeakWavelength: { value: this.water.stats.peakWavelength },
@@ -865,6 +870,10 @@ export class Ocean {
     this.uniforms.uPeakK.value = this.water.peakK;
     this.uniforms.uShoalRef.value = TUNING.water.shoalReference;
     this.uniforms.uShoalStrength.value = TUNING.water.shoalStrength;
+    this.uniforms.uFocusCenter.value.set(TUNING.water.surfZoneX, TUNING.water.surfZoneZ);
+    this.uniforms.uFocusGain.value = TUNING.water.reefFocus;
+    this.uniforms.uFocusCross.value = TUNING.water.reefFocusCross;
+    this.uniforms.uFocusReach.value = TUNING.water.reefFocusReach;
     this.uniforms.uBreakRatio.value = TUNING.water.breakRatio;
     this.uniforms.uBreakSoftness.value = TUNING.water.breakSoftness;
     this.uniforms.uHs.value = this.water.stats.height;
@@ -872,6 +881,7 @@ export class Ocean {
     this.uniforms.uPeakKz.value = this.water.peakKz;
     this.uniforms.uPeakPhase.value = this.water.peakPhaseNow || 0;
     this.uniforms.uBreakerLip.value = TUNING.water.breakerLip;
+    this.uniforms.uFaceSkew.value = TUNING.water.faceSkew || 0;
     this.uniforms.uAerationAmount.value = TUNING.water.aerationAmount;
     this.uniforms.uFoamPersistence.value = TUNING.water.foamPersistence;
     this.uniforms.uPeakWavelength.value = this.water.stats.peakWavelength;

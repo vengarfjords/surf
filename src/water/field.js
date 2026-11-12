@@ -98,6 +98,27 @@ export class WaveField {
     );
   }
 
+  /**
+   * Refraction focusing over the big-wave reef canyon. Long-period swell
+   * bends over the canyon walls and converges on the reef, so wave height
+   * builds over the last few hundred metres up-swell of the reef and peaks
+   * on its centre line, falling off to the shoulders. A heightfield cannot
+   * refract, so this is applied as a smooth amplitude gain on top of Green's
+   * law (mirrored in the vertex shader and the foam field).
+   */
+  focusAt(x, z) {
+    const cfg = TUNING.water;
+    if (!cfg.depthResponse || !(cfg.reefFocus > 0)) return 1;
+    const ox = x - cfg.surfZoneX;
+    const oz = z - cfg.surfZoneZ;
+    const s = ox * this.peakDirX + oz * this.peakDirZ;
+    const c = -ox * this.peakDirZ + oz * this.peakDirX;
+    const along = smoothstep(-cfg.reefFocusReach, -30, s) * (1 - smoothstep(150, 360, s));
+    if (along <= 0) return 1;
+    const sigma = cfg.reefFocusCross;
+    return 1 + cfg.reefFocus * along * Math.exp(-(c * c) / (2 * sigma * sigma));
+  }
+
   /** Local depth, finite-depth wavenumber scale and Green's-law shoaling. */
   depthState(x, z, out = this._depthScratch) {
     const cfg = TUNING.water;
@@ -113,6 +134,7 @@ export class WaveField {
       out.gradX = 0;
       out.gradZ = 0;
       out.chopScale = 1;
+      out.skew = 0;
       return out;
     }
     const x0 = Math.max(1e-4, this.peakK * depth);
@@ -120,7 +142,9 @@ export class WaveField {
     // Exact in deep water and within a few percent of the finite-depth root
     // in the shoaling band used here.
     const ratio = clamp(1 / Math.sqrt(Math.tanh(x0)), 0.65, 4.5);
-    const shoalRaw = clamp(Math.pow(cfg.shoalReference / depth, cfg.shoalStrength), 0.5, 3.2);
+    const focus = this.focusAt(x, z);
+    const shoalRaw =
+      clamp(Math.pow(cfg.shoalReference / depth, cfg.shoalStrength), 0.5, 3.2) * focus;
     const hsLocal = this.stats.height * shoalRaw;
     const breakMask = smoothstep(
       cfg.breakRatio - cfg.breakSoftness,
@@ -135,6 +159,12 @@ export class WaveField {
     out.shoal = shoal;
     out.shoalRaw = shoalRaw;
     out.breakMask = breakMask;
+    // Front-face steepening. A shoaling wave pitches forward long before it
+    // breaks: the face shortens and steepens while the back stretches out.
+    // Grows from about a third of breaking depth to the break line.
+    out.skew =
+      (cfg.faceSkew || 0) *
+      smoothstep(cfg.breakRatio * 0.3, cfg.breakRatio * 0.95, hsLocal / depth);
     out.x0 = x0;
     // Shoaling phase delay and its gradient (along the travel direction).
     out.delay = this.bathy ? this.bathy.sampleDelay(x, z) : 0;
@@ -145,7 +175,7 @@ export class WaveField {
     // the local steepness grows by shoal*ratio. Ease Q back by its square
     // root: crests still sharpen as they shoal, but the surface stays single
     // valued under big groundswell. Mirrored in the vertex shader.
-    out.chopScale = 1 / Math.sqrt(Math.max(1, shoal * ratio));
+    out.chopScale = Math.pow(Math.max(1, shoal * ratio), -0.75);
     return out;
   }
 
@@ -173,8 +203,13 @@ export class WaveField {
     const k = this.k;
     const amp = this.amp;
     const phase = this.phase;
+    const windShoal = Math.min(1, shoal);
     for (let i = 0; i < this.count; i++) {
-      h += amp[i] * shoal * Math.sin(kx[i] * px + kz[i] * pz + k[i] * delay + phase[i]);
+      const swell = i < this.swellCount;
+      h +=
+        amp[i] *
+        (swell ? shoal : windShoal) *
+        Math.sin(kx[i] * px + kz[i] * pz + (swell ? k[i] * delay : 0) + phase[i]);
     }
     return h;
   }
@@ -196,14 +231,17 @@ export class WaveField {
     const amp = this.amp;
     const phase = this.phase;
     const q = this.chop * chopScale;
+    const windShoal = Math.min(1, shoal);
+    const swellCount = this.swellCount;
     for (let iter = 0; iter < 2; iter++) {
       let dx = 0;
       let dz = 0;
       for (let i = 0; i < this.count; i++) {
+        const swell = i < swellCount;
         const c =
-          Math.cos(kx[i] * px + kz[i] * pz + k[i] * delay + phase[i]) *
+          Math.cos(kx[i] * px + kz[i] * pz + (swell ? k[i] * delay : 0) + phase[i]) *
           amp[i] *
-          shoal *
+          (swell ? shoal : windShoal) *
           q;
         dx += c * this.dirX[i];
         dz += c * this.dirZ[i];
@@ -258,15 +296,20 @@ export class WaveField {
     let swellSx = 0;
     let swellSz = 0;
     const swellCount = this.swellCount;
+    // Only the swell feels the reef. The wind sea is short (kh >> 1 over the
+    // reef top), so it neither shoals nor slows: it rides the giant swell at
+    // its own height instead of being focused into steep whitecapped chop.
+    const windShoal = Math.min(1, shoal);
     for (let i = 0; i < this.count; i++) {
+      const swell = i < swellCount;
       // Local wavevector: the component's own, stretched along the travel
       // direction by the shoaling delay gradient.
-      const kxL = kx[i] + kk[i] * gX;
-      const kzL = kz[i] + kk[i] * gZ;
-      const arg = kx[i] * px + kz[i] * pz + kk[i] * delay + phase[i];
+      const kxL = swell ? kx[i] + kk[i] * gX : kx[i];
+      const kzL = swell ? kz[i] + kk[i] * gZ : kz[i];
+      const arg = kx[i] * px + kz[i] * pz + (swell ? kk[i] * delay : 0) + phase[i];
       const s = Math.sin(arg);
       const c = Math.cos(arg);
-      const a = amp[i] * shoal;
+      const a = amp[i] * (swell ? shoal : windShoal);
       h += a * s;
       dhdx += a * kxL * c;
       dhdz += a * kzL * c;
@@ -279,6 +322,28 @@ export class WaveField {
       dDxdx -= ha * kxL * kxL * s;
       dDzdz -= ha * kzL * kzL * s;
       dDxdz -= ha * kxL * kzL * s;
+    }
+
+    // Forward-pitched face: add the local swell's second harmonic,
+    // eta = A sin(t) - (skew/2) A sin(2t), from the same single-wave reading
+    // (A, t) as the breaking logic below: A sin(t) is the swell height and
+    // A cos(t) its slope over k. The front face (t near pi) steepens by
+    // 1 + skew, the back (t near 0) eases by 1 - skew, the crest leans
+    // forward and the surface stays single valued for skew < 1. Height-only,
+    // so the CPU inversion is unchanged. Mirrored in the vertex shader.
+    const skew = stateP.skew;
+    if (skew > 0 && this.peak) {
+      const kLocal = this.peakK * ratio;
+      const dirPX = this.peak.dx;
+      const dirPZ = this.peak.dz;
+      const C = (swellSx * dirPX + swellSz * dirPZ) / kLocal;
+      const A2 = Math.max(0.04, swellH * swellH + C * C);
+      const A = Math.sqrt(A2);
+      // -(skew/2) A sin(2t) = -skew * S * C / A, and d/dt = -skew (C^2 - S^2) / A.
+      h += (-skew * swellH * C) / A;
+      const dSkew = ((-skew * (C * C - swellH * swellH)) / A) * kLocal;
+      dhdx += dSkew * dirPX;
+      dhdz += dSkew * dirPZ;
     }
 
     // Peak-crest phase drives a small forward breaker lip and the whitewater
@@ -441,13 +506,17 @@ export class WaveField {
     let ay = 0;
     let az = 0;
     let pressure = 0;
+    const windShoal = Math.min(1, shoal);
+    const swellCount = this.swellCount;
     for (let i = 0; i < this.count; i++) {
-      const kL = k[i] * ratio;
-      const arg = kx[i] * surf.parameterX + kz[i] * surf.parameterZ + k[i] * surf.delay + phase[i];
+      const swell = i < swellCount;
+      const kL = swell ? k[i] * ratio : k[i];
+      const arg =
+        kx[i] * surf.parameterX + kz[i] * surf.parameterZ + (swell ? k[i] * surf.delay : 0) + phase[i];
       const s = Math.sin(arg);
       const c = Math.cos(arg);
       const w = omega[i];
-      const a = amp[i] * shoal;
+      const a = amp[i] * (swell ? shoal : windShoal);
       const kh = Math.max(1e-4, kL * depth);
       // cosh(k(z+h))/sinh(kh) etc., written in decaying exponentials so deep
       // water (kh >> 1) stays finite: both terms are <= 1 and the ratios tend

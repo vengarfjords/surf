@@ -34,6 +34,10 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     uniform float uPeakK;
     uniform float uShoalRef;
     uniform float uShoalStrength;
+    uniform vec2 uFocusCenter;
+    uniform float uFocusGain;
+    uniform float uFocusCross;
+    uniform float uFocusReach;
     uniform float uBreakRatio;
     uniform float uBreakSoftness;
     uniform float uHs;
@@ -41,6 +45,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     uniform float uPeakKz;
     uniform float uPeakPhase;
     uniform float uBreakerLip;
+    uniform float uFaceSkew;
     uniform float uPeakWavelength;
     uniform sampler2D uSolverTexture;
     uniform vec2 uSolverCenter;
@@ -102,12 +107,21 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       float ratio = 1.0;
       float shoal = 1.0;
       float breakMask = 0.0;
+      float skew = 0.0;
       if (uDepthResponse > 0.5) {
         float x0 = max(1e-4, uPeakK * depth);
         ratio = clamp(1.0 / sqrt(tanh(x0)), 0.65, 4.5);
-        float shoalRaw = clamp(pow(uShoalRef / depth, uShoalStrength), 0.5, 3.2);
+        // Reef canyon focusing (WaveField.focusAt).
+        vec2 fo = base.xz - uFocusCenter;
+        vec2 fDir = vec2(uPeakKx, uPeakKz) / max(1e-6, uPeakK);
+        float fs = dot(fo, fDir);
+        float fc = -fo.x * fDir.y + fo.y * fDir.x;
+        float fAlong = smoothstep(-uFocusReach, -30.0, fs) * (1.0 - smoothstep(150.0, 360.0, fs));
+        float focus = 1.0 + uFocusGain * fAlong * exp(-(fc * fc) / (2.0 * uFocusCross * uFocusCross));
+        float shoalRaw = clamp(pow(uShoalRef / depth, uShoalStrength), 0.5, 3.2) * focus;
         float hsLocal = uHs * shoalRaw;
         breakMask = smoothstep(uBreakRatio - uBreakSoftness, uBreakRatio + uBreakSoftness, hsLocal / depth);
+        skew = uFaceSkew * smoothstep(uBreakRatio * 0.3, uBreakRatio * 0.95, hsLocal / depth);
         float cap = (uBreakRatio * depth) / max(0.3, uHs);
         shoal = min(shoalRaw, max(0.55, cap * 1.05));
         delay = field.y;
@@ -116,7 +130,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       vec2 delayGrad = (ratio - 1.0) * peakDir;
       // Local Gerstner Q, eased by sqrt(shoal * ratio) so shoaled crests
       // never loop (WaveField.depthState chopScale).
-      float chopLocal = uChop / sqrt(max(1.0, shoal * ratio));
+      float chopLocal = uChop * pow(max(1.0, shoal * ratio), -0.75);
 
       float h = 0.0;
       float dhdx = 0.0;
@@ -133,12 +147,14 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         if (i >= uWaveCount) break;
         vec4 w = uWaves[i];
         float kMag = length(w.xy);
-        float kxL = w.x + kMag * delayGrad.x;
-        float kzL = w.y + kMag * delayGrad.y;
-        float arg = w.x * base.x + w.y * base.z + kMag * delay + w.w;
+        // Only the swell feels the reef (WaveField.sampleSurface).
+        float swellOn = i < uSwellCount ? 1.0 : 0.0;
+        float kxL = w.x + kMag * delayGrad.x * swellOn;
+        float kzL = w.y + kMag * delayGrad.y * swellOn;
+        float arg = w.x * base.x + w.y * base.z + kMag * delay * swellOn + w.w;
         float s = sin(arg);
         float c = cos(arg);
-        float amp = w.z * shoal;
+        float amp = w.z * mix(min(shoal, 1.0), shoal, swellOn);
         h += amp * s;
         dhdx += amp * kxL * c;
         dhdz += amp * kzL * c;
@@ -169,6 +185,16 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       float waveSize = smoothstep(0.32, 0.62, (2.0 * envelope) / hsLocal);
       float onFront = smoothstep(-0.45, 0.05, facePhase) * (1.0 - smoothstep(0.8, 1.5, facePhase));
       float waveBreak = breakMask * waveSize * onFront;
+
+      // Forward-pitched face (WaveField.sampleSurface): the swell's second
+      // harmonic from the same single-wave reading as the breaking above.
+      if (skew > 0.0) {
+        float A = sqrt(max(0.04, swellH * swellH + slopeAlong * slopeAlong));
+        h += -skew * swellH * slopeAlong / A;
+        float dSkew = (-skew * (slopeAlong * slopeAlong - swellH * swellH) / A) * kLocalPeak;
+        dhdx += dSkew * peakDir.x;
+        dhdz += dSkew * peakDir.y;
+      }
 
       float peakArg = uPeakKx * base.x + uPeakKz * base.z + uPeakK * delay + uPeakPhase;
       float lipPhase = peakArg - 0.55;

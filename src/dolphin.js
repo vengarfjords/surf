@@ -695,7 +695,11 @@ export class Dolphin {
       const targetSpeed = surge ? movement.boostSpeed : movement.cruiseSpeed;
       const accel = surge ? movement.boostAcceleration : movement.acceleration;
       const headroom = 1 - clamp(forwardSpeed / targetSpeed, 0, 1);
-      thrustAccel = accel * (0.38 + headroom * 0.62);
+      // Above the chosen pace the tail eases off rather than pushing on
+      // forever, so top speed comes from the stroke, not from drag alone.
+      // Speed a wave gives you beyond that is yours to keep.
+      const overrun = 1 - smoothstep(1, 1 + movement.thrustTaper, forwardSpeed / targetSpeed);
+      thrustAccel = accel * (0.38 + headroom * 0.62) * overrun;
     } else if (!input.brake && forwardSpeed < movement.idleGlide) {
       // A slow, always-present tail scull keeps the creature alive at rest.
       thrustAccel = (movement.idleGlide - forwardSpeed) * 2.6;

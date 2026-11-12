@@ -86,6 +86,15 @@ export function fbm(x, y, octaves = 4, lacunarity = 2.02, gain = 0.5) {
  * deeper tidal channels. Shared by the renderer, collision, sand sim and reef
  * placement, so the world stays coherent everywhere.
  */
+// Axis of the big-wave reef canyon: the default swell's dominant direction.
+// The reef sits well east of the opening reef so its canyon, which runs
+// up-swell, passes south of the spawn instead of under it. Mirrored by
+// TUNING.water.surfZoneX/Z.
+const REEF_DIR_X = Math.cos(0.41);
+const REEF_DIR_Z = Math.sin(0.41);
+const REEF_X = 700;
+const REEF_Z = -350;
+
 export function seabedHeight(x, z) {
   const broad = fbm(x * 0.00105 + 13.2, z * 0.00105 - 7.7, 4);
   const mid = fbm(x * 0.0042 - 4.1, z * 0.0042 + 9.3, 3);
@@ -100,13 +109,23 @@ export function seabedHeight(x, z) {
     Math.exp(-((x - 2) * (x - 2) + (z - 26) * (z - 26)) / 4800) * 2.4 +
     Math.exp(-((x + 34) * (x + 34) + (z - 78) * (z - 78)) / 9500) * 1.35;
 
-  // A broad surf bank east of the opening reef. It rises from ~11 m to ~5 m
-  // over roughly 300 m. The top is deep enough for groundswell sets of 5-7 m
-  // to stand up and break across it (the break limit is ~0.85 x depth), and
-  // the round shape makes each set peak in the middle and peel both ways.
-  // Shared by the sand mesh, reef placement, wave field and physics.
-  const surfBank =
-    Math.exp(-((x - 260) * (x - 260) + (z - 140) * (z - 140)) / 45000) * 6.0;
+  // Big-wave reef ~780 m east-south-east of the opening reef. A deep submarine canyon runs in
+  // from the open shelf along the swell direction and ends at a reef ridge
+  // ~24 m down, with a ~13 m lagoon behind it. The canyon lets long-period
+  // swell arrive unbroken; refraction over its walls focuses the sets onto
+  // the reef (WaveField.focusAt), where they stand up to 15-30 m faces and
+  // break. Off the canyon axis the shelf is untouched. Shared by the sand
+  // mesh, reef placement, wave field and physics.
+  const reefS = (x - REEF_X) * REEF_DIR_X + (z - REEF_Z) * REEF_DIR_Z;
+  const reefC = -(x - REEF_X) * REEF_DIR_Z + (z - REEF_Z) * REEF_DIR_X;
+  const canyon = Math.exp(-(reefC * reefC) / (2 * 190 * 190));
+  const spotDepth =
+    24 + 26 * smoothstep(-60, -380, reefS) * canyon + 3 * (1 - canyon) -
+    11 * smoothstep(40, 260, reefS);
+  const spotWeight =
+    Math.exp(-(reefC * reefC) / (2 * 240 * 240)) *
+    smoothstep(-1250, -1000, reefS) *
+    (1 - smoothstep(260, 480, reefS));
 
   // Patchy reef shelf outcrops, slight raised humps.
   const shelf = Math.max(0, fbm(x * 0.0072 + 51.1, z * 0.0072 + 4.4, 2) - 0.5) * 2.7;
@@ -114,8 +133,9 @@ export function seabedHeight(x, z) {
   const radius = Math.max(Math.abs(x), Math.abs(z));
   const openWater = smoothstep(1120, 1510, radius) * 14;
 
-  const depth =
-    7.15 + broad * 6.4 + mid * 2.1 + fine * 0.6 + channel - bar - shelf - surfBank + openWater;
+  const shelfDepth =
+    7.15 + broad * 6.4 + mid * 2.1 + fine * 0.6 + channel - bar - shelf + openWater;
+  const depth = shelfDepth + (spotDepth + fine * 0.6 - shelfDepth) * spotWeight;
   return -Math.max(2.55, depth);
 }
 

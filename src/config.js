@@ -60,6 +60,7 @@ export const TUNING = {
     boostSpeed: 21.0,
     acceleration: 8.5,
     boostAcceleration: 15.0,
+    thrustTaper: 0.1,
     braking: 6.0,
     reverseSpeed: 1.7,
     reverseAcceleration: 1.1,
@@ -157,6 +158,7 @@ export const TUNING = {
     addedMassVertical: 1.0,
     dragNormal: 0.65,
     dragTangential: 0.003,
+    axialDragScale: 0.15,
     airDragNormal: 0.05,
     airDragTangential: 0.004,
     slamDrag: 2.4,
@@ -246,15 +248,16 @@ export const TUNING = {
    */
   water: {
     seed: 20261109,
-    // Default sea state is the "groundswell" preset (see spectrum.js).
-    preset: "groundswell",
-    surfZoneX: 260,
-    surfZoneZ: 140,
-    swellHeight: 4.2,
-    swellWavelength: 180,
+    // Default sea state is the "bigwave" preset (see spectrum.js).
+    preset: "bigwave",
+    // Centre of the big-wave reef (mirrors REEF_X/Z in utils.seabedHeight).
+    surfZoneX: 700,
+    surfZoneZ: -350,
+    swellHeight: 4.4,
+    swellWavelength: 400,
     swellWavelengthSpread: 0.17,
     swellDirection: 0.61,
-    swellDirectionSpread: 0.16,
+    swellDirectionSpread: 0.12,
     swellComponents: 96,
     windSeaHeight: 0.4,
     windSeaWavelength: 9.5,
@@ -276,10 +279,17 @@ export const TUNING = {
     depthResponse: true,
     shoalReference: 12,
     shoalStrength: 0.25,
+    // Refraction focusing over the reef canyon: peak amplitude gain on the
+    // reef centre line, its cross-swell half-width (m) and how far up-swell
+    // (m) the focusing builds. Sets of 15-30 m stand up on the reef.
+    reefFocus: 5.0,
+    reefFocusCross: 95,
+    reefFocusReach: 450,
     breakRatio: 0.85,
     breakSoftness: 0.12,
     breakerJet: 0.65,
     breakerLip: 0.12,
+    faceSkew: 0.7,
     aerationAmount: 0.85,
     foamPersistence: 0.6,
     // Local nonlinear shallow-water solver over the surf bank. The domain is
@@ -482,7 +492,7 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.bodyFollow", label: "segment follow", min: 0.25, max: 2.5, step: 0.01 },
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
-  { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf", "groundswell"] },
+  { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf", "groundswell", "bigwave"] },
   { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 4, step: 0.05 },
   { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 110, step: 1 },
   { path: "water.swellDirection", label: "swell direction", min: 0, max: 6.28, step: 0.01 },
@@ -502,6 +512,7 @@ export const TUNE_CONTROLS = [
   { path: "water.breakRatio", label: "break H/h", min: 0.5, max: 1.2, step: 0.01 },
   { path: "water.breakSoftness", label: "break softness", min: 0.02, max: 0.3, step: 0.01 },
   { path: "water.breakerLip", label: "breaker lip", min: 0, max: 0.4, step: 0.01 },
+  { path: "water.faceSkew", label: "face steepening", min: 0, max: 0.9, step: 0.01 },
   { path: "water.breakerJet", label: "breaker jet", min: 0, max: 2, step: 0.05 },
   { path: "water.aerationAmount", label: "aeration", min: 0, max: 1, step: 0.01 },
   { path: "water.foamPersistence", label: "foam persistence", min: 0, max: 1, step: 0.01 },
@@ -523,6 +534,7 @@ export const TUNE_CONTROLS = [
   { path: "hydro.addedMassVertical", label: "added mass · vertical", min: 0, max: 2, step: 0.01 },
   { path: "hydro.dragNormal", label: "panel normal drag", min: 0.1, max: 2.5, step: 0.01 },
   { path: "hydro.dragTangential", label: "skin drag", min: 0.0005, max: 0.02, step: 0.0005 },
+  { path: "hydro.axialDragScale", label: "axial form drag", min: 0, max: 1, step: 0.01 },
   { path: "hydro.finLiftSlope", label: "fin lift", min: 0, max: 6, step: 0.05 },
   { path: "hydro.slamDrag", label: "slam drag", min: 0, max: 8, step: 0.1 },
   { path: "hydro.surfaceTrimRate", label: "surface trim", min: 0, max: 4, step: 0.05 },

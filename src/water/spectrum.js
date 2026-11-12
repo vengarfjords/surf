@@ -182,6 +182,20 @@ export function applyPreset(water, name) {
       timeScale: 1.0,
       foamAmount: 0.9,
     },
+    // Long-period big-wave swell (T ~ 16 s). 3-6 m on the open shelf; the
+    // reef canyon focuses the sets into 15-30 m faces on the big-wave reef.
+    bigwave: {
+      swellHeight: 4.4,
+      swellWavelength: 400,
+      windSeaHeight: 0.4,
+      windSeaWavelength: 9.5,
+      swellDirection: 0.61,
+      swellDirectionSpread: 0.12,
+      windSeaDirection: 1.02,
+      chop: 0.72,
+      timeScale: 1.0,
+      foamAmount: 0.9,
+    },
   };
   const p = presets[name];
   if (!p) return false;

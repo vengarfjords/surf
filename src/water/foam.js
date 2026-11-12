@@ -96,7 +96,8 @@ export class FoamField {
         const x = originX + (i + 0.5) * dx;
         const idx = j * n + i;
         const depth = bed[idx];
-        const shoal = clamp(Math.pow(cfg.shoalReference / depth, cfg.shoalStrength), 0.5, 3.2);
+        const shoal =
+          clamp(Math.pow(cfg.shoalReference / depth, cfg.shoalStrength), 0.5, 3.2) * wave.focusAt(x, z);
         const localH = wave.stats.height * shoal;
         const breaking = smoothstep(cfg.breakRatio - cfg.breakSoftness, cfg.breakRatio + cfg.breakSoftness, localH / depth);
         const delay = cfg.depthResponse ? this.bathy.sampleDelay(x, z) : 0;

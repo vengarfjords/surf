@@ -312,7 +312,20 @@ export class Hull {
       const tSpeed = Math.hypot(tx, ty, tz);
       const cdN = cfg.dragNormal;
       const cdT = cfg.dragTangential;
-      const normalDrag = 0.5 * rhoMix * cdN * p.area * wet * Math.abs(vn) * vn;
+      // Split the panel's normal flow into the part carried by motion along
+      // the body axis and the crossflow part. Crossflow (sideslip, heave,
+      // pitching) sees the full bluff-body coefficient. Flow along the axis
+      // of a streamlined body mostly slides round it, so it only sees a small
+      // fraction: a panel-by-panel Cd of 0.65 on axial flow made the dolphin
+      // a parachute at surf speed (12-30 kN at 16 m/s) and the water rushing
+      // up a big face simply carried it over the crest.
+      const fx = dolphin.forward.x, fy = dolphin.forward.y, fz = dolphin.forward.z;
+      const axial = rx * fx + ry * fy + rz * fz;
+      const vnAxial = axial * (p.worldNormal.x * fx + p.worldNormal.y * fy + p.worldNormal.z * fz);
+      const vnCross = vn - vnAxial;
+      const axialScale = cfg.axialDragScale ?? 1;
+      const normalDrag =
+        0.5 * rhoMix * cdN * p.area * wet * (Math.abs(vnCross) * vnCross + axialScale * Math.abs(vnAxial) * vnAxial);
       const tangentDrag = 0.5 * rhoMix * cdT * p.area * wet * tSpeed;
       dragForce += Math.abs(normalDrag) + Math.abs(tangentDrag) * tSpeed;
       p.force.addScaledVector(p.worldNormal, -normalDrag);
