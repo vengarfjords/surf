@@ -302,6 +302,7 @@ export class Ocean {
       uCenter: { value: new THREE.Vector2() },
       uWaves: { value: Array.from({ length: MAX_WAVES }, () => new THREE.Vector4()) },
       uWaveCount: { value: this.water.count },
+      uSwellCount: { value: this.water.swellCount },
       uChop: { value: this.water.chop },
       uMaxCrest: { value: Math.max(0.5, this.water.stats.height * 0.8) },
       uSimCenter: { value: this.sim.center },
@@ -504,6 +505,8 @@ export class Ocean {
         varying float vDistance;
         varying vec2 vSlope;
         varying float vBreak;
+        varying float vFacePhase;
+        varying vec2 vCapSlope;
         varying float vShoal;
         varying float vDepth;
         varying float vPeakCrest;
@@ -576,8 +579,10 @@ export class Ocean {
 
           vec2 p = vWorld.xz;
           float crest = clamp(vCrest, 0.0, 1.0);
-          float compression = 1.0 - smoothstep(0.08, 0.62, vJacobian);
-          float slopeEnergy = smoothstep(0.1, 0.25, length(vSlope));
+          // Only strong horizontal compression reads as a whitecap; a big
+          // swell squeezes every crest a little without breaking it.
+          float compression = 1.0 - smoothstep(0.0, 0.42, vJacobian);
+          float slopeEnergy = smoothstep(0.1, 0.25, length(vCapSlope));
           float foamNoise = fbm2(p * 0.31 + vec2(uTime * 0.014, -uTime * 0.009));
           float perpA = dot(p, uWindDir);
           float perpB = dot(p, vec2(-uWindDir.y, uWindDir.x));
@@ -593,25 +598,28 @@ export class Ocean {
           foam *= 0.55 + 0.6 * fineFoam;
 
           // ---- breaking and aeration ------------------------------------
-          // The CPU uses the same bathymetry and breaker mask for buoyancy,
-          // thrust loss and the breaker jet.
+          // vBreak is the per-wave bore (WaveField.sampleSurface breaking):
+          // the same signal drives buoyancy, thrust loss and the breaker jet.
+          // The roller is thickest at the crest and thins down the face.
           float broken = smoothstep(0.15, 0.7, vBreak);
+          float roller = 1.0 - smoothstep(0.1, 1.3, vFacePhase);
           float aeration = clamp(
-            broken * (0.35 + 0.5 * foamNoise) * (0.35 + 0.65 * vPeakCrest) * uAerationAmount,
+            broken * (0.35 + 0.5 * foamNoise) * (0.35 + 0.65 * roller) * uAerationAmount,
             0.0,
             0.85
           );
           aeration = max(aeration, vSolverFoam * 0.85);
           aeration = max(aeration, vFoamField * 0.5);
           float plunge = smoothstep(0.5, 2.8, vXi);
-          float crestFoam = smoothstep(0.52, 0.94, vPeakCrest);
+          float crestFoam = 0.45 + 0.55 * roller;
           float whitewater = broken * crestFoam * smoothstep(
-            0.35,
-            0.85,
-            foamNoise * 0.5 + lace * 0.25
+            0.3,
+            0.8,
+            foamNoise * 0.5 + lace * 0.25 + roller * 0.15
           );
           float lipTongue =
-            broken * plunge * smoothstep(0.45, 0.92, vPeakCrest) * smoothstep(0.45, 0.9, foamNoise);
+            broken * plunge * (1.0 - smoothstep(0.0, 0.7, abs(vFacePhase - 0.25))) *
+            smoothstep(0.45, 0.9, foamNoise);
           whitewater = clamp(whitewater * 0.58 + lipTongue * 0.22, 0.0, 1.0);
           // Keep the aerated whitewater distinct from wind whitecaps: fade the
           // generic whitecap field inside the break zone, then add the crest
@@ -843,6 +851,7 @@ export class Ocean {
       }
     }
     this.uniforms.uWaveCount.value = n;
+    this.uniforms.uSwellCount.value = this.water.swellCount;
     this.uniforms.uChop.value = this.water.chop;
     this.uniforms.uMaxCrest.value = Math.max(0.5, this.water.stats.height * 0.8);
     this.uniforms.uFoamAmount.value = TUNING.water.foamAmount;

@@ -100,11 +100,13 @@ export function seabedHeight(x, z) {
     Math.exp(-((x - 2) * (x - 2) + (z - 26) * (z - 26)) / 4800) * 2.4 +
     Math.exp(-((x + 34) * (x + 34) + (z - 78) * (z - 78)) / 9500) * 1.35;
 
-  // A broad surf bank east of the opening reef. It rises from ~10 m to ~3 m
-  // over roughly 400 m, which is where the M3 swell shoals, steepens and
-  // breaks. Shared by the sand mesh, reef placement, wave field and physics.
+  // A broad surf bank east of the opening reef. It rises from ~11 m to ~5 m
+  // over roughly 300 m. The top is deep enough for groundswell sets of 5-7 m
+  // to stand up and break across it (the break limit is ~0.85 x depth), and
+  // the round shape makes each set peak in the middle and peel both ways.
+  // Shared by the sand mesh, reef placement, wave field and physics.
   const surfBank =
-    Math.exp(-((x - 260) * (x - 260) + (z - 140) * (z - 140)) / 28800) * 8.2;
+    Math.exp(-((x - 260) * (x - 260) + (z - 140) * (z - 140)) / 45000) * 6.0;
 
   // Patchy reef shelf outcrops, slight raised humps.
   const shelf = Math.max(0, fbm(x * 0.0072 + 51.1, z * 0.0072 + 4.4, 2) - 0.5) * 2.7;

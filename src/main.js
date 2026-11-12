@@ -95,6 +95,7 @@ async function boot() {
     freeze: (value) => {
       frozen = value;
     },
+    cameraRig,
   });
   const hidden = new HiddenThings(scene, seabed.sim, (main, sub) => hud.toast(main, sub));
 

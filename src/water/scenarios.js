@@ -8,7 +8,7 @@ import { TUNING } from "../config.js";
  * All scenarios use the deterministic spectrum (TUNING.water.seed), so a reload
  * reproduces the same set/face positions for a given sim time.
  */
-export function createScenarios({ ocean, dolphin, input, water, effects, seabed, freeze }) {
+export function createScenarios({ ocean, dolphin, input, water, effects, seabed, freeze, cameraRig }) {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const dx = () => water.peak.dx;
   const dz = () => water.peak.dz;
@@ -115,6 +115,45 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     water.setTime(ocean.time);
     ocean.foamField.update(dt, ocean.time);
     dolphin.update(dt, control, ocean, seabed, effects);
+    if (cameraRig) trackCamera(dt);
+  }
+
+  // The camera rig is stepped with the world so the surf shot can be
+  // measured: how soon it engages, and whether the lens stays out of the
+  // water while it is engaged.
+  let cam = null;
+  function resetCamera() {
+    cam = { elapsed: 0, surfMax: 0, surfTime: 0, underTime: 0, clearMin: Infinity, engagedAt: -1 };
+    if (cameraRig) {
+      cameraRig.initialized = false;
+      cameraRig.surf = 0;
+      cameraRig.surfHold = 0;
+    }
+  }
+  function trackCamera(dt) {
+    if (!cam) resetCamera();
+    const cs = cameraRig.update(dt, dolphin, seabed, true);
+    cam.elapsed += dt;
+    cam.surfMax = Math.max(cam.surfMax, cs.surf);
+    if (cs.surf > 0.8) {
+      if (cam.engagedAt < 0) cam.engagedAt = cam.elapsed;
+      cam.surfTime += dt;
+      if (cs.underwaterTarget > 0.5) cam.underTime += dt;
+      cam.clearMin = Math.min(cam.clearMin, cameraRig.camera.position.y - cs.waterHeight);
+    }
+  }
+  function cameraReport() {
+    if (!cam) return null;
+    const out = {
+      surfMax: cam.surfMax,
+      surfTime: cam.surfTime,
+      engagedAt: cam.engagedAt,
+      underwaterWhileSurf: cam.underTime,
+      clearanceMin: Number.isFinite(cam.clearMin) ? cam.clearMin : null,
+    };
+    resetCamera();
+    cam = null;
+    return out;
   }
 
   function botInput() {
@@ -136,17 +175,23 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     };
   }
 
-  return {
+  const api = {
+    // Optional async hook awaited after each faceDrop step (screenshots).
+    onStep: null,
+
     /**
      * Scenario 7: catch and ride a wave like a player would. Starting `start`
      * metres up-wave of the bank centre, the bot floats until a set wave's
      * front face approaches, paddles to ~80% of the wave speed, then glides
      * on the face (paddling if it slips back, braking if it runs ahead),
      * holding its depth with mouse pitch. `angle` (rad) angles the heading
-     * along the face once riding. Returns the longest continuous ride: time
-     * spent on the front face, near the surface, moving with the wave.
+     * along the face once riding. With `carve`, the bot instead surfs like a
+     * player: it angles down the line to drop from the top of the face, then
+     * turns back up the face from the bottom, to the side of `angle`'s sign.
+     * Returns the longest continuous ride: time spent on the front face, near
+     * the surface, moving with the wave, plus how far it dropped and climbed.
      */
-    async surfCatch(start = -70, angle = 0, seconds = 30, time0 = 0) {
+    async surfCatch(start = -70, angle = 0, seconds = 30, time0 = 0, carve = false) {
       if (!seabed || !freeze) return { error: "scenario needs seabed and freeze hooks" };
       const saved = saveState();
       const savedTime = TUNING.water.timeScale;
@@ -167,12 +212,21 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       const control = botInput();
       const sens = TUNING.movement.mouseSensitivity;
       const dt = 1 / 60;
+      resetCamera();
       let go = false;
       let ride = 0;
       let rideStart = 0;
       let best = 0;
       let bestDistance = 0;
       let maxSpeed = 0;
+      // Vertical travel on the best ride: how far the animal dropped down
+      // and climbed back up the face, and its peak speed while riding.
+      let yMin = 0;
+      let yMax = 0;
+      let rideSpeed = 0;
+      let bestDrop = 0;
+      let bestSpeed = 0;
+      let carveDown = true;
       for (let t = 0; t < seconds; t += dt) {
         const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
         const along = dolphin.velocity.x * dirX + dolphin.velocity.z * dirZ;
@@ -194,7 +248,20 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         const wantPitch = Math.max(-0.45, Math.min(0.45, -(rel + 0.3) * 0.7 + Math.atan(slope)));
         control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
         control.mdx = 0;
-        if (angle && go) {
+        if (carve && go) {
+          const onWave = fp > -0.4 && fp < 2.0;
+          const side = Math.sign(angle) || 1;
+          if (fp < 0.35) carveDown = true;
+          else if (fp > 1.25) carveDown = false;
+          const target = onWave ? side * (carveDown ? 0.35 : 1.05) : 0;
+          let err = waveYaw + target - dolphin.targetYaw;
+          err = Math.atan2(Math.sin(err), Math.cos(err));
+          control.mdx = (-err / sens) * 0.1;
+          if (onWave) {
+            control.forward = carveDown ? along < c * 1.1 : fp > 1.6 || along < c * 0.7;
+            control.brake = false;
+          }
+        } else if (angle && go) {
           const onWave = fp > -0.3 && fp < 1.6;
           let err = waveYaw + (onWave ? angle : 0) - dolphin.targetYaw;
           err = Math.atan2(Math.sin(err), Math.cos(err));
@@ -213,11 +280,20 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         const fpNow = s.facePhase ?? 9;
         const riding = fpNow > -0.3 && fpNow < 1.9 && Math.abs(relNow) < 0.9 && alongNow > 0.6 * s.phaseSpeed;
         if (riding) {
-          if (ride === 0) rideStart = sNow;
+          if (ride === 0) {
+            rideStart = sNow;
+            yMin = yMax = dolphin.position.y;
+            rideSpeed = 0;
+          }
           ride += dt;
+          yMin = Math.min(yMin, dolphin.position.y);
+          yMax = Math.max(yMax, dolphin.position.y);
+          rideSpeed = Math.max(rideSpeed, dolphin.speed);
           if (ride > best) {
             best = ride;
             bestDistance = sNow - rideStart;
+            bestDrop = yMax - yMin;
+            bestSpeed = rideSpeed;
           }
         } else ride = 0;
       }
@@ -229,7 +305,148 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       dolphin.waterTilt.set(0, 0, 0);
       dolphin.waterTiltRate.set(0, 0, 0);
       freeze(false);
-      return { start, angle, time0, bestRide: best, rideDistance: bestDistance, maxSpeed };
+      return {
+        start,
+        angle,
+        time0,
+        bestRide: best,
+        rideDistance: bestDistance,
+        rideDrop: bestDrop,
+        rideSpeed: bestSpeed,
+        maxSpeed,
+        camera: cameraReport(),
+      };
+    },
+
+    /**
+     * Scenario 8: drop in and climb back up. Waits for a big set wave to
+     * reach `start` metres up-wave of the bank centre, places the animal at
+     * the top of its front face moving at the wave speed, then rides angled
+     * `angle` rad down the line, holding the surface with mouse pitch only.
+     * At the bottom of the face it turns back up the face and climbs it.
+     * Without `thrust` it coasts the whole way (no tail strokes); with it, W
+     * is held as a player would. Reports the vertical drop, the speed gained
+     * on the way down and how much height it climbed back.
+     */
+    async faceDrop(start = -90, angle = 0.35, time0 = 0, thrust = false, takeoff = 0.3) {
+      if (!seabed || !freeze) return { error: "scenario needs seabed and freeze hooks" };
+      const saved = saveState();
+      const savedTime = TUNING.water.timeScale;
+      freeze(true);
+      TUNING.water.timeScale = 0;
+      const savedClock = ocean.time;
+      const dirX = dx();
+      const dirZ = dz();
+      const waveYaw = yawAlong();
+      const x0 = TUNING.water.surfZoneX + dirX * start;
+      const z0 = TUNING.water.surfZoneZ + dirZ * start;
+      // Find the first set wave (about Hs or bigger) with the take-off point
+      // at face phase `takeoff` (0 = crest, pi/2 = mid-face).
+      let t = time0;
+      let found = false;
+      for (; t < time0 + 240; t += 0.1) {
+        water.setTime(t);
+        const q = ocean.getWaterSample(x0, z0);
+        const size = (2 * (q.envelope || 0)) / Math.max(0.1, water.stats.height * q.shoal);
+        if (size > 1.05 && Math.abs(q.facePhase - takeoff) < 0.15) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        water.setTime(savedClock);
+        freeze(false);
+        return { error: "no set wave found" };
+      }
+      ocean.time = t;
+      water.setTime(t);
+      const q0 = { ...ocean.getWaterSample(x0, z0) };
+      const yaw = waveYaw + angle;
+      setPose(x0, q0.height - 0.25, z0, yaw, -Math.atan(q0.slope) * 0.8);
+      dolphin.targetYaw = dolphin.yaw = yaw;
+      dolphin.velocity.copy(dolphin.forward).multiplyScalar(q0.phaseSpeed);
+      const control = botInput();
+      const sens = TUNING.movement.mouseSensitivity;
+      const dt = 1 / 60;
+      const y0 = dolphin.position.y;
+      const v0 = dolphin.velocity.length();
+      const trace = [];
+      resetCamera();
+      let yMin = y0;
+      let vMax = v0;
+      let bottomAt = -1;
+      let yClimb = -Infinity;
+      let phase = "drop";
+      let elapsed = 0;
+      for (; elapsed < 9; elapsed += dt) {
+        const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
+        const rel = dolphin.position.y - q.height;
+        const fp = q.facePhase ?? 9;
+        if (phase === "drop" && (fp > 2.0 || elapsed > 5)) {
+          phase = "climb";
+          bottomAt = elapsed;
+        }
+        const side = Math.sign(angle) || 1;
+        const target = waveYaw + (phase === "drop" ? angle : side * 1.2);
+        let err = target - dolphin.targetYaw;
+        err = Math.atan2(Math.sin(err), Math.cos(err));
+        control.mdx = (-err / sens) * 0.1;
+        const slope = (dolphin.forward.x * q.slopeX + dolphin.forward.z * q.slopeZ) /
+          Math.max(0.2, Math.hypot(dolphin.forward.x, dolphin.forward.z));
+        const wantPitch = Math.max(-0.6, Math.min(0.6, -(rel + 0.05) * 0.8 + Math.atan(slope)));
+        control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
+        control.forward = thrust;
+        const waveSpeed = q.phaseSpeed;
+        const breaking = q.breaking || 0;
+        stepWorld(dt, control);
+        const y = dolphin.position.y;
+        if (Math.round(elapsed * 60) % 15 === 0) {
+          trace.push([
+            +elapsed.toFixed(2),
+            phase,
+            +y.toFixed(2),
+            +rel.toFixed(2),
+            +fp.toFixed(2),
+            +dolphin.velocity.length().toFixed(2),
+            +(dolphin.velocity.x * dirX + dolphin.velocity.z * dirZ).toFixed(2),
+            +waveSpeed.toFixed(2),
+            +breaking.toFixed(2),
+            cameraRig ? +cameraRig.surf.toFixed(2) : 0,
+          ]);
+        }
+        if (api.onStep) await api.onStep({ elapsed, phase });
+        if (phase === "drop") {
+          yMin = Math.min(yMin, y);
+          vMax = Math.max(vMax, dolphin.velocity.length());
+        } else {
+          yClimb = Math.max(yClimb, y);
+          const sNow = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
+          // Over the crest and off the back: the climb is finished.
+          if (sNow.facePhase < -0.4 && elapsed - bottomAt > 0.5) break;
+        }
+      }
+      const waveH = 2 * (q0.envelope || 0);
+      TUNING.water.timeScale = savedTime;
+      ocean.time = savedClock;
+      water.setTime(savedClock);
+      restoreState(saved);
+      for (const p of dolphin.hull.panels) p.prevWet = 0;
+      dolphin.waterTilt.set(0, 0, 0);
+      dolphin.waterTiltRate.set(0, 0, 0);
+      freeze(false);
+      return {
+        time: t,
+        waveHeight: waveH,
+        waveSpeed: q0.phaseSpeed,
+        drop: y0 - yMin,
+        speedStart: v0,
+        speedMax: vMax,
+        dropTime: bottomAt,
+        climb: Number.isFinite(yClimb) ? yClimb - yMin : 0,
+        total: elapsed,
+        camera: cameraReport(),
+        trace,
+      };
     },
 
     /** Scenario 1: passive float/bob. */
@@ -349,7 +566,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
      * Scenario 4: drop into a shoaling, breaking face and hold W. Records
      * aeration, buoyancy, breaker-jet force and whether the animal is thrown.
      */
-    async shoalingBreak(name = "moderate", seconds = 6) {
+    async shoalingBreak(name = "groundswell", seconds = 6) {
       const saved = saveState();
       const savedPreset = TUNING.water.preset;
       await preset(name);
@@ -421,7 +638,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     },
 
     /** Scenario 3 live: find a face, hold W with a slight nose-up trim. */
-    async faceHold(name = "moderate", seconds = 4) {
+    async faceHold(name = "groundswell", seconds = 4) {
       const saved = saveState();
       const savedPreset = TUNING.water.preset;
       await preset(name);
@@ -471,7 +688,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     },
 
     /** Scenario 5: breach/re-entry on a face vs a trough. */
-    async breachCompare(name = "moderate") {
+    async breachCompare(name = "groundswell") {
       const saved = saveState();
       const savedPreset = TUNING.water.preset;
       await preset(name);
@@ -535,4 +752,5 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       input.keys.clear();
     },
   };
+  return api;
 }

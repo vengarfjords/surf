@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { TUNING } from "./config.js";
-import { clamp, glslFog, glslNoise } from "./utils.js";
+import { clamp, glslFog, glslNoise, seabedHeight, smoothstep } from "./utils.js";
 
 const POINT_VERT = /* glsl */ `
   precision highp float;
@@ -20,7 +20,9 @@ const POINT_VERT = /* glsl */ `
     gl_Position = projectionMatrix * mv;
     float perspective = uScale / max(0.1, -mv.z);
     gl_PointSize = clamp(aSize * perspective, 1.0, 110.0);
-    vAlpha = aAlpha;
+    // Fade sprites that drift right up to the lens instead of letting them
+    // fill the frame as soft white blobs (spray behind a surfing dolphin).
+    vAlpha = aAlpha * smoothstep(0.5, 2.2, -mv.z);
     vColor = aColor;
     vSeed = aSeed;
     vFogDepth = -mv.z;
@@ -705,7 +707,10 @@ export class ParticleFX {
         b: 0.88,
       });
     }
-    for (let i = 0; i < count * 0.4; i++) {
+    // Sand only clouds up where the splash is close to the bottom; a splash
+    // at the surface over open water should not trail a beige haze.
+    const sandReach = 1 - smoothstep(1.2, 3.0, y - seabedHeight(x, z));
+    for (let i = 0; i < count * 0.4 * sandReach; i++) {
       const c = colorTint(0xc6b68f, 0.08);
       this.sediment.spawn({
         x: x + (Math.random() - 0.5) * 2.2,

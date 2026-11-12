@@ -16,6 +16,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
 
     uniform vec2 uCenter;
     uniform int uWaveCount;
+    uniform int uSwellCount;
     uniform vec4 uWaves[MAX_WAVES];
     uniform float uChop;
     uniform float uMaxCrest;
@@ -60,6 +61,8 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     varying float vDistance;
     varying vec2 vSlope;
     varying float vBreak;
+    varying float vFacePhase;
+    varying vec2 vCapSlope;
     varying float vShoal;
     varying float vDepth;
     varying float vPeakCrest;
@@ -111,6 +114,9 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       }
       vec2 peakDir = vec2(uPeakKx, uPeakKz) / max(1e-6, uPeakK);
       vec2 delayGrad = (ratio - 1.0) * peakDir;
+      // Local Gerstner Q, eased by sqrt(shoal * ratio) so shoaled crests
+      // never loop (WaveField.depthState chopScale).
+      float chopLocal = uChop / sqrt(max(1.0, shoal * ratio));
 
       float h = 0.0;
       float dhdx = 0.0;
@@ -120,6 +126,8 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       float dxdz = 0.0;
       float horizX = 0.0;
       float horizZ = 0.0;
+      float swellH = 0.0;
+      vec2 swellSlope = vec2(0.0);
 
       for (int i = 0; i < MAX_WAVES; i++) {
         if (i >= uWaveCount) break;
@@ -134,7 +142,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         h += amp * s;
         dhdx += amp * kxL * c;
         dhdz += amp * kzL * c;
-        float ha = amp * uChop;
+        float ha = amp * chopLocal;
         // Horizontal displacement is Q*A*unitDirection*cos(theta). w.x/w.y
         // are kx/kz, so normalise them; using them directly adds a spurious
         // factor of k and makes the rendered surface disagree with the CPU.
@@ -144,7 +152,23 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         dxdx -= ha * kxL * kxL * s;
         dzdz -= ha * kzL * kzL * s;
         dxdz -= ha * kxL * kzL * s;
+        if (i < uSwellCount) {
+          swellH = h;
+          swellSlope = vec2(dhdx, dhdz);
+        }
       }
+
+      // Per-wave breaking, mirroring WaveField.sampleSurface: the swell's
+      // local envelope and face phase say whether this wave, here, now, is
+      // big enough to break, and the bore rides on its front face.
+      float kLocalPeak = uPeakK * ratio;
+      float slopeAlong = dot(swellSlope, peakDir) / max(1e-6, kLocalPeak);
+      float envelope = length(vec2(swellH, slopeAlong));
+      float facePhase = atan(-slopeAlong, swellH);
+      float hsLocal = max(0.05, uHs * shoal);
+      float waveSize = smoothstep(0.32, 0.62, (2.0 * envelope) / hsLocal);
+      float onFront = smoothstep(-0.45, 0.05, facePhase) * (1.0 - smoothstep(0.8, 1.5, facePhase));
+      float waveBreak = breakMask * waveSize * onFront;
 
       float peakArg = uPeakKx * base.x + uPeakKz * base.z + uPeakK * delay + uPeakPhase;
       float lipPhase = peakArg - 0.55;
@@ -220,6 +244,9 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       vJacobian = (1.0 + dxdx) * (1.0 + dzdz) - dxdz * dxdz;
       vDistance = length(world.xz - uCenter);
       vSlope = vec2(dhdx, dhdz);
+      // Whitecaps come from the short wind sea; a long swell's smooth face
+      // only contributes a third of its slope, so big groundswell stays glassy.
+      vCapSlope = vSlope - swellSlope * 0.65;
       // Iribarren number for breaker type. Doing this in the vertex shader
       // costs four bathymetry taps per vertex instead of per fragment.
       float be = 8.0;
@@ -230,7 +257,8 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       float tanBeta = length(vec2(bR - bL, bU - bD)) / (2.0 * be);
       vXi = tanBeta / sqrt(max(0.01, uHs / max(1.0, uPeakWavelength)));
 
-      vBreak = breakMask;
+      vBreak = waveBreak;
+      vFacePhase = facePhase;
       vShoal = shoal;
       vDepth = depth;
       vPeakCrest = 0.5 + 0.5 * sin(peakArg);

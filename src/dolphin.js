@@ -290,6 +290,7 @@ export class Dolphin {
     this.prevCenterAbove = false;
     this.airborne = false;
     this.wasAbove = false;
+    this.leaping = false;
     this.surfaceCooldown = 0;
     this.surfaceFxCooldown = 0;
     this.bubbleClock = 0;
@@ -914,6 +915,16 @@ export class Dolphin {
         this.velocity.y +=
           movement.breachImpulse * clamp(exitSpeed / movement.boostSpeed, 0, 1.15);
       }
+    }
+    // Breach and re-entry events use a hysteresis band: the body has to get
+    // clear of the water (centre 0.3 m up) to count as a breach. Skimming
+    // along the surface on a wave face crosses the waterline many times a
+    // second; those crossings are not leaps, so they must not each fire a
+    // splash fountain, a toast and a re-entry speed loss.
+    const clearOfWater = this.position.y > centerHeight + 0.3;
+    if (!this.leaping && clearOfWater) {
+      this.leaping = true;
+      const exitSpeed = this.velocity.length();
       const breachPower = clamp(Math.abs(this.velocity.y) * 0.38 + exitSpeed * 0.08, 0.2, 2.1);
       this.surfaceImpulseAll(ocean, centerWater, breachPower);
       effects.splashBurst(this.position.x, centerHeight + 0.12, this.position.z, breachPower, this.velocity.x, this.velocity.z);
@@ -937,8 +948,9 @@ export class Dolphin {
       this.wetness = 1;
       this.breachCount++;
       this.lastBreachTime = time;
-    } else if (this.wasAbove && !centerAbove) {
+    } else if (this.leaping && !centerAbove) {
       // Re-entry.
+      this.leaping = false;
       const entry = clamp(Math.abs(this.velocity.y) * 0.33 + this.speed * 0.03, 0.2, 1.5);
       this.surfaceImpulseAll(ocean, centerWater, entry);
       effects.splashBurst(this.position.x, centerHeight + 0.08, this.position.z, entry, this.velocity.x, this.velocity.z);
@@ -983,8 +995,14 @@ export class Dolphin {
       if (surfaceSpeed > TUNING.waves.splashThreshold && this.position.y > centerHeight - 0.65 && this.surfaceCooldown <= 0) {
         const power = clamp(surfaceSpeed * 0.08, 0.08, 0.5) * (0.6 + this.speed * 0.12);
         ocean.surfaceImpulse(this.position.x, this.position.z, power, 1.2);
-        effects.splashBurst(this.position.x, centerHeight + 0.03, this.position.z, power * 1.4, this.velocity.x, this.velocity.z);
-        this.surfaceCooldown = 0.09;
+        // Spray comes off the part of the back that is cutting the surface:
+        // a body running half a metre down only boils it, and a dolphin
+        // riding a face throws a thin sheet rather than a fountain.
+        const cutting = 1 - smoothstep(0.08, 0.6, centerHeight - this.position.y);
+        if (cutting > 0.05) {
+          effects.splashBurst(this.position.x, centerHeight + 0.03, this.position.z, power * cutting, this.velocity.x, this.velocity.z);
+        }
+        this.surfaceCooldown = 0.13;
         this.wetness = Math.max(this.wetness, 0.22);
       }
     }

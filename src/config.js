@@ -210,6 +210,25 @@ export const TUNING = {
     shake: 0.85,
     surgeBank: 0.15,
     firstPerson: false,
+    // Surf camera. While the dolphin rides at the surface (on a wave face or
+    // just running the top of the water) the chase camera eases out into a
+    // higher, wider follow shot that stays above the water, holds the horizon
+    // and looks down the line. It eases back under when the dolphin dives.
+    surfCam: true,
+    surfDistance: 5.4,
+    surfHeight: 1.45,
+    // Lift toward the up-wave side so the face and the crest stay in frame.
+    surfUpWave: 1.2,
+    surfClearance: 0.9,
+    surfLookAhead: 4.2,
+    surfLookUp: 0.05,
+    surfFov: 9,
+    surfPositionLag: 5.5,
+    surfLookResponsiveness: 7.0,
+    surfRollFollow: 0.06,
+    // Blend rates (1/s): in is unhurried, out is quicker so a dive reads.
+    surfBlendIn: 1.4,
+    surfBlendOut: 2.2,
   },
 
   /**
@@ -227,28 +246,29 @@ export const TUNING = {
    */
   water: {
     seed: 20261109,
-    preset: "moderate",
+    // Default sea state is the "groundswell" preset (see spectrum.js).
+    preset: "groundswell",
     surfZoneX: 260,
     surfZoneZ: 140,
-    swellHeight: 2.15,
-    swellWavelength: 58,
+    swellHeight: 4.2,
+    swellWavelength: 180,
     swellWavelengthSpread: 0.17,
     swellDirection: 0.61,
-    swellDirectionSpread: 0.24,
+    swellDirectionSpread: 0.16,
     swellComponents: 96,
-    windSeaHeight: 0.55,
-    windSeaWavelength: 11.5,
+    windSeaHeight: 0.4,
+    windSeaWavelength: 9.5,
     windSeaWavelengthSpread: 0.42,
     windSeaDirection: 1.02,
     windSeaDirectionSpread: 0.62,
     windSeaComponents: 32,
     // Gerstner horizontal displacement scale. The generator computes a safe
     // base value from the total steepness; this is an artistic multiplier.
-    chop: 0.78,
+    chop: 0.72,
     timeScale: 1.0,
     // Rendering / foam.
     foamThreshold: 0.56,
-    foamAmount: 0.8,
+    foamAmount: 0.9,
     detailStrength: 0.55,
     // M3 depth response. The wave spectrum is evaluated with finite-depth
     // dispersion and Green's-law shoaling using the baked bathymetry; the
@@ -276,8 +296,8 @@ export const TUNING = {
     // Advected foam/aeration state for the analytic surf bank. This is shared
     // by the surface shader and the hull physics.
     foamFieldEnabled: true,
-    foamFieldExtent: 192,
-    foamFieldCells: 96,
+    foamFieldExtent: 320,
+    foamFieldCells: 128,
     foamFieldRate: 15,
     foamFieldDecay: 0.18,
     foamFieldSource: 0.7,
@@ -462,7 +482,7 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.bodyFollow", label: "segment follow", min: 0.25, max: 2.5, step: 0.01 },
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
-  { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf"] },
+  { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf", "groundswell"] },
   { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 4, step: 0.05 },
   { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 110, step: 1 },
   { path: "water.swellDirection", label: "swell direction", min: 0, max: 6.28, step: 0.01 },
@@ -532,4 +552,7 @@ export const TUNE_CONTROLS = [
   { path: "camera.chaseDistance", label: "camera distance", min: 2.5, max: 12, step: 0.1 },
   { path: "camera.shoulder", label: "camera shoulder", min: 0, max: 2.2, step: 0.01 },
   { path: "camera.lookResponsiveness", label: "look response", min: 2, max: 28, step: 0.1 },
+  { path: "camera.surfCam", label: "surf camera", type: "toggle" },
+  { path: "camera.surfDistance", label: "surf cam distance", min: 3, max: 16, step: 0.1 },
+  { path: "camera.surfHeight", label: "surf cam height", min: 0.5, max: 6, step: 0.1 },
 ];

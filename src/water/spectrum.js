@@ -137,6 +137,7 @@ export function applyPreset(water, name) {
       windSeaHeight: 0.28,
       windSeaWavelength: 8.5,
       swellDirection: 0.61,
+      swellDirectionSpread: 0.24,
       windSeaDirection: 1.02,
       chop: 0.62,
       timeScale: 1.0,
@@ -148,6 +149,7 @@ export function applyPreset(water, name) {
       windSeaHeight: 0.55,
       windSeaWavelength: 11.5,
       swellDirection: 0.61,
+      swellDirectionSpread: 0.24,
       windSeaDirection: 1.02,
       chop: 0.78,
       timeScale: 1.0,
@@ -159,10 +161,26 @@ export function applyPreset(water, name) {
       windSeaHeight: 0.85,
       windSeaWavelength: 13.5,
       swellDirection: 0.61,
+      swellDirectionSpread: 0.24,
       windSeaDirection: 1.12,
       chop: 1.0,
       timeScale: 1.0,
       foamAmount: 1.05,
+    },
+    // Long-period groundswell (T ~ 10.7 s) with light wind. Sets stand up to
+    // 5-7 m faces over the surf bank and roll through the shelf as 3-6 m
+    // swells, big enough to drop down a face and climb back up it.
+    groundswell: {
+      swellHeight: 4.2,
+      swellWavelength: 180,
+      windSeaHeight: 0.4,
+      windSeaWavelength: 9.5,
+      swellDirection: 0.61,
+      swellDirectionSpread: 0.16,
+      windSeaDirection: 1.02,
+      chop: 0.72,
+      timeScale: 1.0,
+      foamAmount: 0.9,
     },
   };
   const p = presets[name];

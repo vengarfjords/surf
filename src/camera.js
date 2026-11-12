@@ -8,6 +8,13 @@ const WORLD_UP = new THREE.Vector3(0, 1, 0);
  * Snout-led chase camera with a little waterline cowardice and a handheld
  * operator. It orbits the mouse look target rather than the lagging physical
  * heading, so the head leads while the body trail, current and roll stay alive.
+ *
+ * While the dolphin rides at the surface (on a wave face, or running the top
+ * of the water) it eases out into a surf follow shot: further back, higher,
+ * above the water with the horizon held level, looking down the line. There
+ * is no mode switch; `surf` is a continuous 0-1 blend driven by what the body
+ * is actually doing, so the shot drifts out as a ride builds and sinks back
+ * under the surface when the dolphin dives.
  */
 export class CameraRig {
   constructor(camera, ocean) {
@@ -33,6 +40,48 @@ export class CameraRig {
     this.lastY = 0;
     this.surfaceCrossCooldown = 0;
     this.impact = 0;
+    // Surf follow blend (0 = chase, 1 = surf shot) and the seconds of
+    // evidence that the dolphin is riding the surface, used as hysteresis.
+    this.surf = 0;
+    this.surfHold = 0;
+    this.surfFwd = new THREE.Vector3();
+    this.surfPos = new THREE.Vector3();
+    this.surfLook = new THREE.Vector3();
+  }
+
+  /**
+   * How much the dolphin is riding the surface right now. Riding a wave means
+   * near the surface, on the front face of a swell of some size and moving
+   * shoreward at a good fraction of the wave speed; running the top of the
+   * water fast also counts. Evidence builds a short hold so the shot does not
+   * flicker as each crest passes, and drains quickly once the body dives.
+   */
+  _updateSurf(dt, dolphin, rel, sample, started) {
+    const camCfg = TUNING.camera;
+    const wave = this.ocean.water;
+    // Fully counts down to ~0.9 m under the surface, gone by ~1.8 m.
+    const atSurface = 1 - smoothstep(0.9, 1.8, -rel);
+    const vx = dolphin.velocity.x;
+    const vz = dolphin.velocity.z;
+    let riding = 0;
+    if (wave.peak) {
+      const along = vx * wave.peak.dx + vz * wave.peak.dz;
+      const c = Math.max(0.5, sample.phaseSpeed || 0);
+      const size = smoothstep(0.7, 1.6, 2 * (sample.envelope || 0));
+      const fp = sample.facePhase ?? 0;
+      const onFace = smoothstep(-0.7, -0.15, fp) * (1 - smoothstep(2.3, 2.9, fp));
+      const withWave = smoothstep(0.35, 0.7, along / c);
+      riding = size * onFace * withWave;
+    }
+    const running = smoothstep(5.5, 8.5, Math.hypot(vx, vz));
+    const evidence = atSurface * Math.max(riding, running * 0.85);
+    if (evidence > 0.45) this.surfHold = Math.min(1.2, this.surfHold + dt);
+    else this.surfHold = Math.max(0, this.surfHold - dt * (atSurface < 0.3 ? 3.0 : 0.6));
+    const target = camCfg.surfCam && started ? smoothstep(0.25, 0.7, this.surfHold) : 0;
+    const rate = target > this.surf ? camCfg.surfBlendIn : camCfg.surfBlendOut;
+    this.surf = damp(this.surf, target, rate, dt);
+    if (this.surf < 1e-4) this.surf = 0;
+    return this.surf;
   }
 
   update(dt, dolphin, seabed, started) {
@@ -44,10 +93,14 @@ export class CameraRig {
     const speedNorm = clamp(speed / TUNING.movement.boostSpeed, 0, 1.15);
     const worldUp = WORLD_UP;
     const water = this.ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
+    const waterAtDolphin = water.height;
     const submerged = dolphin.position.y < water.height - 0.16;
     // Near the surface, let the camera sit in the waterline band so a true
     // half-in/half-out frame is possible instead of forcing it 18 cm down.
     const nearSurface = Math.abs(dolphin.position.y - water.height) < 0.55;
+    // `water` is a shared sample object; read the surf inputs before any
+    // other surface query reuses it.
+    const surf = this._updateSurf(dt, dolphin, dolphin.position.y - water.height, water, started);
 
     // The snout is the look handle. Orbit and aim from the mouse target rather
     // than waiting for the physical body to finish its turn; the spine and
@@ -57,10 +110,12 @@ export class CameraRig {
       this.orbitYaw = dolphin.targetYaw;
       this.orbitPitch = lookPitch;
     } else {
-      const lookAlpha = 1 - Math.exp(-camCfg.lookResponsiveness * dt);
+      // The surf shot swings round more lazily, like an operator panning.
+      const lookRate = lerp(camCfg.lookResponsiveness, camCfg.surfLookResponsiveness, surf);
+      const lookAlpha = 1 - Math.exp(-lookRate * dt);
       const yawDelta = wrapAngle(dolphin.targetYaw - this.orbitYaw);
       this.orbitYaw = wrapAngle(this.orbitYaw + yawDelta * lookAlpha);
-      this.orbitPitch = damp(this.orbitPitch, lookPitch, camCfg.lookResponsiveness, dt);
+      this.orbitPitch = damp(this.orbitPitch, lookPitch, lookRate, dt);
     }
     const cosPitch = Math.cos(this.orbitPitch);
     const fwd = this.orbitForward.set(
@@ -82,6 +137,29 @@ export class CameraRig {
     const targetLook = this.desiredLook.copy(dolphin.position);
     targetLook.addScaledVector(fwd, camCfg.targetAhead + speedNorm * 1.4);
     targetLook.addScaledVector(worldUp, camCfg.lookUp);
+
+    if (surf > 0) {
+      // Surf follow: behind along the steering heading, level, lifted toward
+      // the up-wave side and kept clear of the water under the lens (which
+      // may be the crest behind the dolphin), looking down the line.
+      const sf = this.surfFwd.set(Math.sin(this.orbitYaw), 0, Math.cos(this.orbitYaw));
+      const base = Math.max(dolphin.position.y, waterAtDolphin - 0.2);
+      const sp = this.surfPos.copy(dolphin.position);
+      sp.addScaledVector(sf, -(camCfg.surfDistance + speedNorm * 1.6));
+      const peak = this.ocean.water.peak;
+      if (peak) {
+        sp.x -= peak.dx * camCfg.surfUpWave;
+        sp.z -= peak.dz * camCfg.surfUpWave;
+      }
+      sp.y = base + camCfg.surfHeight + speedNorm * 0.6;
+      const lensWater = this.ocean.getWaterHeight(sp.x, sp.z);
+      sp.y = Math.max(sp.y, lensWater + camCfg.surfClearance);
+      const sl = this.surfLook.copy(dolphin.position);
+      sl.addScaledVector(sf, camCfg.surfLookAhead + speedNorm * 2.0);
+      sl.y = base + camCfg.surfLookUp;
+      targetPos.lerp(sp, surf);
+      targetLook.lerp(sl, surf);
+    }
 
     if (!started) {
       // An unhurried attract shot, just off the creature's flank. The reef is
@@ -108,7 +186,9 @@ export class CameraRig {
     // breach; when it does, the camera is allowed to break through with it.
     const camSurf = this.ocean.getWaterSample(targetPos.x, targetPos.z);
     if (submerged) {
-      const ceiling = camSurf.height + (nearSurface ? 0.12 : -0.32);
+      // The surf shot lifts the ceiling continuously, so the lens rises out
+      // through the surface as the blend builds instead of popping.
+      const ceiling = camSurf.height + (nearSurface ? 0.12 : -0.32) + surf * 10;
       if (targetPos.y > ceiling) targetPos.y = ceiling;
     } else {
       // When the dolphin is on or above the surface, let the camera break
@@ -128,7 +208,7 @@ export class CameraRig {
       this.look.copy(targetLook);
       this.initialized = true;
     } else {
-      const lag = camCfg.positionLag * (started ? 1 : 0.55);
+      const lag = lerp(camCfg.positionLag, camCfg.surfPositionLag, surf) * (started ? 1 : 0.55);
       dampVec3(this.position, targetPos, lag, dt);
       dampVec3(this.look, targetLook, camCfg.rotationLag, dt);
     }
@@ -137,14 +217,21 @@ export class CameraRig {
     // through a steep bank or a crest.
     const smoothedSurf = this.ocean.getWaterSample(this.position.x, this.position.z);
     const smoothedFloor = seabed.getSurfaceHeight(this.position.x, this.position.z);
+    // The underwater bands hand over to the surf shot's clearance.
+    const under = 1 - smoothstep(0.05, 0.4, surf);
     if (submerged && !nearSurface && this.position.y > smoothedSurf.height - 0.18) {
-      this.position.y = lerp(this.position.y, smoothedSurf.height - 0.18, 0.3);
+      this.position.y = lerp(this.position.y, smoothedSurf.height - 0.18, 0.3 * under);
     } else if (submerged && nearSurface) {
       // Keep the camera inside a narrow band around the local surface.
       const lo = smoothedSurf.height - 0.22;
       const hi = smoothedSurf.height + 0.12;
-      if (this.position.y < lo) this.position.y = lerp(this.position.y, lo, 0.3);
-      if (this.position.y > hi) this.position.y = lerp(this.position.y, hi, 0.3);
+      if (this.position.y < lo) this.position.y = lerp(this.position.y, lo, 0.3 * under);
+      if (this.position.y > hi) this.position.y = lerp(this.position.y, hi, 0.3 * under);
+    }
+    if (surf > 0.6) {
+      // A crest rolling under the lens lifts the camera rather than burying it.
+      const lo = smoothedSurf.height + camCfg.surfClearance * 0.6;
+      if (this.position.y < lo) this.position.y = lerp(this.position.y, lo, 0.35 * surf);
     }
     if (this.position.y < smoothedFloor + 0.48) {
       this.position.y = lerp(this.position.y, smoothedFloor + 0.48, 0.4);
@@ -162,12 +249,16 @@ export class CameraRig {
     this.camera.up.copy(worldUp);
     this.camera.lookAt(this.look);
 
-    const rollAmount = dolphin.roll * camCfg.rollFollow * 0.38 + rollNoise + shake * 0.012;
+    const rollFollow = lerp(camCfg.rollFollow, camCfg.surfRollFollow, surf);
+    const rollAmount = dolphin.roll * rollFollow * 0.38 + rollNoise + shake * 0.012;
     this.camera.rotateZ(rollAmount);
 
     // FOV and subtle underwater breathing.
     const targetFov =
-      camCfg.baseFov + speedNorm * camCfg.speedFov + Math.sin(this.time * 0.18) * 0.18;
+      camCfg.baseFov +
+      speedNorm * camCfg.speedFov +
+      surf * camCfg.surfFov +
+      Math.sin(this.time * 0.18) * 0.18;
     this.fov = damp(this.fov, targetFov, 2.8, dt);
     this.camera.fov = this.fov;
     this.camera.updateProjectionMatrix();
@@ -191,6 +282,7 @@ export class CameraRig {
       speedNorm,
       wetness: this.wetness,
       roll: rollAmount,
+      surf,
     };
   }
 }

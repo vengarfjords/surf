@@ -112,6 +112,7 @@ export class WaveField {
       out.delay = 0;
       out.gradX = 0;
       out.gradZ = 0;
+      out.chopScale = 1;
       return out;
     }
     const x0 = Math.max(1e-4, this.peakK * depth);
@@ -139,6 +140,12 @@ export class WaveField {
     out.delay = this.bathy ? this.bathy.sampleDelay(x, z) : 0;
     out.gradX = (ratio - 1) * this.peakDirX;
     out.gradZ = (ratio - 1) * this.peakDirZ;
+    // Gerstner crests may not loop. The global Q is sized for deep water;
+    // over the bank each component is `shoal` taller and `ratio` shorter, so
+    // the local steepness grows by shoal*ratio. Ease Q back by its square
+    // root: crests still sharpen as they shoal, but the surface stays single
+    // valued under big groundswell. Mirrored in the vertex shader.
+    out.chopScale = 1 / Math.sqrt(Math.max(1, shoal * ratio));
     return out;
   }
 
@@ -177,7 +184,7 @@ export class WaveField {
    * sub-centimetre for the steepness range used here; the shader never needs
    * this because it starts from parameter space.
    */
-  invert(x, z, out, delay = 0, shoal = 1) {
+  invert(x, z, out, delay = 0, shoal = 1, chopScale = 1) {
     // Two fixed-point iterations of p = world - D(p). With the shader using
     // the same horizontal displacement this converges to millimetre parity
     // for the wave steepness range here, and is ~4x cheaper than Newton.
@@ -188,7 +195,7 @@ export class WaveField {
     const k = this.k;
     const amp = this.amp;
     const phase = this.phase;
-    const q = this.chop;
+    const q = this.chop * chopScale;
     for (let iter = 0; iter < 2; iter++) {
       let dx = 0;
       let dz = 0;
@@ -221,11 +228,11 @@ export class WaveField {
   sampleSurface(x, z, out = {}) {
     const state = this.depthState(x, z, _depth);
     const inv = _inv;
-    this.invert(x, z, inv, state.delay, state.shoal);
+    this.invert(x, z, inv, state.delay, state.shoal, state.chopScale);
     // The renderer samples bathymetry at the undisplaced parameter position,
     // so resolve the inversion once more with the depth at that position.
     const state1 = this.depthState(inv.px, inv.pz, _depthP);
-    this.invert(x, z, inv, state1.delay, state1.shoal);
+    this.invert(x, z, inv, state1.delay, state1.shoal, state1.chopScale);
     const px = inv.px;
     const pz = inv.pz;
     const stateP = this.depthState(px, pz, _depthP);
@@ -240,7 +247,7 @@ export class WaveField {
     const kk = this.k;
     const amp = this.amp;
     const phase = this.phase;
-    const q = this.chop;
+    const q = this.chop * stateP.chopScale;
     let h = 0;
     let dhdx = 0;
     let dhdz = 0;
@@ -300,18 +307,24 @@ export class WaveField {
     // Bigger waves in a set break first, smaller ones roll through, and the
     // whitewater bore rides on each crest's front face instead of covering the
     // whole bank as a steady current.
+    // The envelope and face phase are defined everywhere (the camera and the
+    // scenarios read them on open-water swell too); breaking needs the mask.
     let breaking = 0;
     let facePhase = 0;
     let envelope = 0;
-    if (breakMask > 0.001 && this.peak) {
+    if (this.peak) {
       const kLocal = this.peakK * ratio;
       const slopeAlong = (swellSx * this.peak.dx + swellSz * this.peak.dz) / kLocal;
       envelope = Math.hypot(swellH, slopeAlong);
       // 0 at the crest, +pi/2 halfway down the front face, -pi/2 on the back.
       facePhase = Math.atan2(-slopeAlong, swellH);
+    }
+    if (breakMask > 0.001 && this.peak) {
       const hsLocal = Math.max(0.05, this.stats.height * shoal);
       const waveSize = smoothstep(0.32, 0.62, (2 * envelope) / hsLocal);
-      const onFront = smoothstep(-0.45, 0.05, facePhase) * (1 - smoothstep(1.35, 2.1, facePhase));
+      // The roller sits on the upper face; the lower face ahead of it stays
+      // green water, which is where a wave is actually surfed.
+      const onFront = smoothstep(-0.45, 0.05, facePhase) * (1 - smoothstep(0.8, 1.5, facePhase));
       breaking = breakMask * waveSize * onFront;
     }
     const noise =
@@ -488,7 +501,11 @@ export class WaveField {
     out.accelY = ay;
     out.accelZ = az;
     out.dynamicPressure = pressure;
-    out.aeration = surf.aeration;
+    // The bubble plume under a bore is densest at the surface and thins out
+    // over roughly a third of the local wave height, so whitewater holds an
+    // animal down near the top without letting it sink through the column.
+    const plumeDepth = Math.max(0.6, 0.3 * this.stats.height * shoal);
+    out.aeration = surf.aeration * Math.exp(depthBelowSurface / plumeDepth);
     out.turbulence = surf.turbulence;
     out.breakMask = surf.breakMask;
     out.breaking = surf.breaking;
