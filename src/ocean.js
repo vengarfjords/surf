@@ -327,6 +327,8 @@ export class Ocean {
       uDetail1: { value: makeWaterNormalTexture(256, 2) },
       uDetail2: { value: makeWaterNormalTexture(256, 3) },
       uBathy: { value: bathy.texture },
+      uPhaseField: { value: bathy.phaseTexture },
+      uPhaseFieldSize: { value: bathy.size },
       uBathyExtent: { value: bathy.extent },
       uBathyMaxDepth: { value: bathy.maxDepth },
       uDepthResponse: { value: TUNING.water.depthResponse ? 1 : 0 },
@@ -827,6 +829,8 @@ export class Ocean {
 
   updateWaveUniforms() {
     if (this._needsRebuild()) this.water.rebuild(TUNING.water);
+    // Cheap key check; re-integrates only when the peak or depth mode changes.
+    this.water.bakeDelay();
     this.water.setTime(this.time);
     const waves = this.uniforms.uWaves.value;
     const n = this.water.count;
@@ -920,7 +924,7 @@ export class Ocean {
     if (!this.solver.enabled) {
       if (this.foamField.enabled) {
         const f = this.foamField.sample(x, z, this._foamSample);
-        out.aeration = Math.max(out.aeration, f.foam * 0.5);
+        out.aeration = Math.max(out.aeration, f.foam * 0.5 * Math.exp(-Math.max(0, out.height - y) / 0.6));
         out.foamField = f.foam;
       }
       return a;
@@ -955,7 +959,7 @@ export class Ocean {
     out.solverActive = s.solverMask > 0.5;
     if (this.foamField.enabled) {
       const f = this.foamField.sample(x, z, this._foamSample);
-      out.aeration = Math.max(out.aeration, f.foam * 0.5);
+      out.aeration = Math.max(out.aeration, f.foam * 0.5 * Math.exp(-Math.max(0, out.height - y) / 0.6));
       out.foamField = f.foam;
     }
     return out;
@@ -969,7 +973,11 @@ export class Ocean {
         for (let i = 0; i < count; i++) {
           const p = i * stride;
           const f = this.foamField.sample(positions[p], positions[p + 2], this._foamSample);
-          if (f.mask > 0.001) out.aeration[i] = Math.max(out.aeration[i], f.foam * 0.5);
+          if (f.mask > 0.001) {
+            // Residual foam is a surface layer, not the whole water column.
+            const below = Math.max(0, out.height[i] - positions[p + 1]);
+            out.aeration[i] = Math.max(out.aeration[i], f.foam * 0.5 * Math.exp(-below / 0.6));
+          }
         }
       }
       return out;
@@ -998,7 +1006,11 @@ export class Ocean {
       for (let i = 0; i < count; i++) {
         const p = i * stride;
         const f = this.foamField.sample(positions[p], positions[p + 2], this._foamSample);
-        if (f.mask > 0.001) out.aeration[i] = Math.max(out.aeration[i], f.foam * 0.5);
+        if (f.mask > 0.001) {
+          // Residual foam is a surface layer, not the whole water column.
+          const below = Math.max(0, out.height[i] - positions[p + 1]);
+          out.aeration[i] = Math.max(out.aeration[i], f.foam * 0.5 * Math.exp(-below / 0.6));
+        }
       }
     }
     return out;

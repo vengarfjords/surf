@@ -96,12 +96,11 @@ export class FoamField {
         const x = originX + (i + 0.5) * dx;
         const idx = j * n + i;
         const depth = bed[idx];
-        const x0 = Math.max(1e-4, wave.peakK * depth);
-        const ratio = clamp(1 / Math.sqrt(Math.tanh(x0)), 0.65, 4.5);
         const shoal = clamp(Math.pow(cfg.shoalReference / depth, cfg.shoalStrength), 0.5, 3.2);
         const localH = wave.stats.height * shoal;
         const breaking = smoothstep(cfg.breakRatio - cfg.breakSoftness, cfg.breakRatio + cfg.breakSoftness, localH / depth);
-        const arg = kx * ratio * x + kz * ratio * z + phase;
+        const delay = cfg.depthResponse ? this.bathy.sampleDelay(x, z) : 0;
+        const arg = kx * x + kz * z + wave.peakK * delay + phase;
         const crest = 0.5 + 0.5 * Math.sin(arg);
         // Source only across the break onset, not the saturated shallow bank:
         // the analytic field already paints broad whitewater there. The band

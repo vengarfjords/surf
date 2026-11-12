@@ -275,6 +275,15 @@ export class Dolphin {
     this.tumbleRollVel = 0;
     this.tumblePitchVel = 0;
     this.tumbleClock = 0;
+    // Water-driven attitude: a small body-frame rotation vector (x pitch,
+    // y yaw, z roll, radians) on top of the steered attitude, its angular
+    // velocity, and that velocity in world space for the hull's panel drag.
+    this.waterTilt = new THREE.Vector3();
+    this.waterTiltRate = new THREE.Vector3();
+    this.waterSpin = new THREE.Vector3();
+    this.qWater = new THREE.Quaternion();
+    this.qWaterInv = new THREE.Quaternion();
+    this.tmpTorque = new THREE.Vector3();
     this.verticalInput = 0;
     this.pitchInputTimer = 0;
     this.speed = 0;
@@ -435,7 +444,7 @@ export class Dolphin {
     sp.qYaw.setFromAxisAngle(Y_AXIS, this.targetYaw);
     sp.qPitch.setFromAxisAngle(X_AXIS, -(this.targetPitch + this.tumblePitch));
     sp.qRoll.setFromAxisAngle(Z_AXIS, this.roll + this.tumbleRoll);
-    sp.targetQ.copy(sp.qYaw).multiply(sp.qPitch).multiply(sp.qRoll);
+    sp.targetQ.copy(sp.qYaw).multiply(sp.qPitch).multiply(sp.qRoll).multiply(this.qWater);
     sp.forwardTarget.set(0, 0, 1).applyQuaternion(sp.targetQ);
     sp.backTarget.copy(sp.forwardTarget).multiplyScalar(-1);
     sp.upTarget.set(0, 1, 0).applyQuaternion(sp.targetQ);
@@ -670,6 +679,8 @@ export class Dolphin {
       this.up.copy(UP).applyQuaternion(this.orientation);
       this.right.copy(RIGHT).applyQuaternion(this.orientation);
     }
+
+    this._applyWaterAttitude(dt, pitchInput, keyTurn !== 0 || Math.abs(mx) > 0);
 
     const forwardSpeed = this.velocity.dot(this.forward);
     const surge = input.boost && !input.brake;
@@ -1149,6 +1160,88 @@ export class Dolphin {
     this.telemetry.hydro = this.hydro;
 
     return this.telemetry;
+  }
+
+  /**
+   * Couple the body attitude to the water. The hull's panel torque (buoyancy
+   * at the waterline, wave pressure, bore drag) rotates the body against a
+   * muscular spring that holds the steered attitude. When the player is not
+   * actively steering an axis, the animal yields to the water and the tilt is
+   * absorbed into the steered heading/pitch: the nose drops down a face, a
+   * crest lifts it, and whitewater twists the whole body.
+   */
+  _applyWaterAttitude(dt, steeringPitch, steeringYaw) {
+    const cfg = TUNING.hydro;
+    const tilt = this.waterTilt;
+    const rate = this.waterTiltRate;
+    if (!cfg.waterTorque) {
+      tilt.set(0, 0, 0);
+      rate.set(0, 0, 0);
+      this.waterSpin.set(0, 0, 0);
+      this.qWater.identity();
+      return;
+    }
+    const m = this.mass;
+    const length = 2.96 * cfg.hullScale;
+    const radius = 0.43 * cfg.hullScale;
+    // Slender body of revolution plus added inertia (large in pitch/yaw).
+    const iPitch = ((m * length * length) / 14) * (1 + cfg.addedInertia);
+    const iRoll = m * radius * radius * 0.5 * (1 + cfg.addedInertia * 0.25);
+
+    // Torque from the last hull pass, into the steered body frame.
+    this.qWaterInv.copy(this.orientation).invert();
+    const tq = this.tmpTorque.copy(this.hydro.torque || this.tmpTorque.set(0, 0, 0)).applyQuaternion(this.qWaterInv);
+    const limit = cfg.waterTorqueLimit;
+    tq.x = clamp(tq.x * cfg.waterTorque, -limit, limit);
+    tq.y = clamp(tq.y * cfg.waterTorque, -limit, limit);
+    tq.z = clamp(tq.z * cfg.waterTorque, -limit, limit);
+
+    // Muscle: stiffer while the player is steering that axis.
+    const wP = steeringPitch ? cfg.muscleSteerFreq : cfg.muscleFreq;
+    const wY = steeringYaw ? cfg.muscleSteerFreq : cfg.muscleFreq;
+    const wR = cfg.muscleRollFreq;
+    const z = cfg.muscleDamping;
+    rate.x += (tq.x / iPitch - wP * wP * tilt.x - 2 * z * wP * rate.x) * dt;
+    rate.y += (tq.y / iPitch - wY * wY * tilt.y - 2 * z * wY * rate.y) * dt;
+    rate.z += (tq.z / iRoll - wR * wR * tilt.z - 2 * z * wR * rate.z) * dt;
+    const maxRate = 6;
+    rate.x = clamp(rate.x, -maxRate, maxRate);
+    rate.y = clamp(rate.y, -maxRate, maxRate);
+    rate.z = clamp(rate.z, -maxRate * 1.5, maxRate * 1.5);
+    tilt.addScaledVector(rate, dt);
+    tilt.x = clamp(tilt.x, -0.9, 0.9);
+    tilt.y = clamp(tilt.y, -0.7, 0.7);
+    tilt.z = clamp(tilt.z, -1.2, 1.2);
+
+    // Yield: an unsteered axis hands its tilt to the steered attitude, so the
+    // animal keeps the attitude the water gave it instead of springing back.
+    const accept = 1 - Math.exp(-cfg.waterYield * dt);
+    const acceptPitch = 1 - Math.exp(-cfg.waterYieldPitch * dt);
+    if (!steeringPitch && this.verticalInput === 0 && acceptPitch > 0) {
+      const t = tilt.x * acceptPitch;
+      tilt.x -= t;
+      this.pitch = clamp(this.pitch - t, -TUNING.movement.maxPitch, TUNING.movement.maxPitch);
+      this.targetPitch = clamp(this.targetPitch - t, -TUNING.movement.maxPitch, TUNING.movement.maxPitch);
+    }
+    if (!steeringYaw) {
+      const t = tilt.y * accept * 0.5;
+      tilt.y -= t;
+      this.yaw = wrapAngle(this.yaw + t);
+      this.targetYaw = wrapAngle(this.targetYaw + t);
+    }
+
+    // Rebuild the attitude: steered Euler, then the water tilt.
+    this.qYaw.setFromAxisAngle(Y_AXIS, this.yaw);
+    this.qPitch.setFromAxisAngle(X_AXIS, -this.pitch);
+    this.qRoll.setFromAxisAngle(Z_AXIS, this.roll);
+    const angle = tilt.length();
+    if (angle > 1e-6) this.qWater.setFromAxisAngle(this.tmpTorque.copy(tilt).divideScalar(angle), angle);
+    else this.qWater.identity();
+    this.orientation.copy(this.qYaw).multiply(this.qPitch).multiply(this.qRoll).multiply(this.qWater);
+    this.forward.copy(FORWARD).applyQuaternion(this.orientation);
+    this.up.copy(UP).applyQuaternion(this.orientation);
+    this.right.copy(RIGHT).applyQuaternion(this.orientation);
+    this.waterSpin.copy(rate).applyQuaternion(this.orientation);
   }
 
   surfaceImpulseAll(ocean, water, power) {

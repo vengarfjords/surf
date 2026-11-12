@@ -85,7 +85,17 @@ async function boot() {
   const cameraRig = new CameraRig(camera, ocean);
   const post = new Post(renderer, scene, camera);
   const waterDebug = new WaterDebug(scene, ocean, dolphin);
-  const scenarios = createScenarios({ ocean, dolphin, input, water: ocean.water, effects });
+  const scenarios = createScenarios({
+    ocean,
+    dolphin,
+    input,
+    water: ocean.water,
+    effects,
+    seabed,
+    freeze: (value) => {
+      frozen = value;
+    },
+  });
   const hidden = new HiddenThings(scene, seabed.sim, (main, sub) => hud.toast(main, sub));
 
   let started = false;

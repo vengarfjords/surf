@@ -25,6 +25,8 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     uniform float uSimScale;
 
     uniform sampler2D uBathy;
+    uniform sampler2D uPhaseField;
+    uniform float uPhaseFieldSize;
     uniform float uBathyExtent;
     uniform float uBathyMaxDepth;
     uniform float uDepthResponse;
@@ -71,11 +73,29 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       return texture2D(uSimState, uv).rg;
     }
 
+    // Manual bilinear over the float depth/phase-delay field, mirroring the
+    // CPU's sampleField() texel for texel (float textures are not filterable
+    // everywhere, and this keeps the two sides bit-for-bit comparable).
+    vec2 phaseFieldSample(vec2 world) {
+      float n = uPhaseFieldSize;
+      vec2 g = (world / uBathyExtent + 0.5) * n - 0.5;
+      g = clamp(g, vec2(0.0), vec2(n - 1.001));
+      vec2 g0 = floor(g);
+      vec2 f = g - g0;
+      ivec2 i0 = ivec2(g0);
+      vec2 a = texelFetch(uPhaseField, i0, 0).rg;
+      vec2 b = texelFetch(uPhaseField, i0 + ivec2(1, 0), 0).rg;
+      vec2 c = texelFetch(uPhaseField, i0 + ivec2(0, 1), 0).rg;
+      vec2 d = texelFetch(uPhaseField, i0 + ivec2(1, 1), 0).rg;
+      return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+
     void main() {
       vec3 base = vec3(position.x + uCenter.x, 0.0, position.z + uCenter.y);
 
-      float depth = texture2D(uBathy, base.xz / uBathyExtent + 0.5).r * uBathyMaxDepth;
-      depth = max(0.3, depth);
+      vec2 field = phaseFieldSample(base.xz);
+      float depth = max(0.3, field.x);
+      float delay = 0.0;
       float ratio = 1.0;
       float shoal = 1.0;
       float breakMask = 0.0;
@@ -87,7 +107,10 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         breakMask = smoothstep(uBreakRatio - uBreakSoftness, uBreakRatio + uBreakSoftness, hsLocal / depth);
         float cap = (uBreakRatio * depth) / max(0.3, uHs);
         shoal = min(shoalRaw, max(0.55, cap * 1.05));
+        delay = field.y;
       }
+      vec2 peakDir = vec2(uPeakKx, uPeakKz) / max(1e-6, uPeakK);
+      vec2 delayGrad = (ratio - 1.0) * peakDir;
 
       float h = 0.0;
       float dhdx = 0.0;
@@ -101,9 +124,10 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       for (int i = 0; i < MAX_WAVES; i++) {
         if (i >= uWaveCount) break;
         vec4 w = uWaves[i];
-        float kxL = w.x * ratio;
-        float kzL = w.y * ratio;
-        float arg = kxL * base.x + kzL * base.z + w.w;
+        float kMag = length(w.xy);
+        float kxL = w.x + kMag * delayGrad.x;
+        float kzL = w.y + kMag * delayGrad.y;
+        float arg = w.x * base.x + w.y * base.z + kMag * delay + w.w;
         float s = sin(arg);
         float c = cos(arg);
         float amp = w.z * shoal;
@@ -114,8 +138,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         // Horizontal displacement is Q*A*unitDirection*cos(theta). w.x/w.y
         // are kx/kz, so normalise them; using them directly adds a spurious
         // factor of k and makes the rendered surface disagree with the CPU.
-        vec2 kvec = vec2(kxL, kzL);
-        vec2 dir = kvec * inversesqrt(max(dot(kvec, kvec), 1e-8));
+        vec2 dir = w.xy / max(kMag, 1e-8);
         horizX += ha * dir.x * c;
         horizZ += ha * dir.y * c;
         dxdx -= ha * kxL * kxL * s;
@@ -123,15 +146,15 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         dxdz -= ha * kxL * kzL * s;
       }
 
-      float peakArg = uPeakKx * ratio * base.x + uPeakKz * ratio * base.z + uPeakPhase;
+      float peakArg = uPeakKx * base.x + uPeakKz * base.z + uPeakK * delay + uPeakPhase;
       float lipPhase = peakArg - 0.55;
       float lipSin = sin(lipPhase);
       float lipAmp = breakMask * uBreakerLip * uHs * shoal;
       float lip = lipAmp * max(0.0, lipSin) * max(0.0, lipSin);
       if (lipSin > 0.0) {
         float dLip = lipAmp * 2.0 * lipSin * cos(lipPhase);
-        dhdx += dLip * uPeakKx * ratio;
-        dhdz += dLip * uPeakKz * ratio;
+        dhdx += dLip * (uPeakKx + uPeakK * delayGrad.x);
+        dhdz += dLip * (uPeakKz + uPeakK * delayGrad.y);
       }
       h += lip;
 

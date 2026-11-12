@@ -94,6 +94,17 @@ Metal ANGLE, 1600×900, render scale 0.6, 0.75 s rolling averages. The host was 
 
 These counts predate the removal of fish, jellyfish and patch rocks. After the removal the surf view was measured at **24 draws / 568,976 triangles**; the full table has not been re-measured.
 
+## Surfing physics
+
+There is no surf mode. The dolphin rides waves only through the hull forces and torques:
+
+- **Per-wave breaking.** The static surf-zone mask only says where waves *can* break. Each wave breaks when its own swell envelope is big enough, and the whitewater bore and breaker jet ride on that crest's front face. Bigger waves in a set break first, and between bores the water is calm.
+- **Correct wave speed over the bank.** Crests advance at the local phase speed, about 5.5 m/s on the bank top. The shoaling phase delay is integrated along the travel direction and shared with the GPU through a float depth/phase texture.
+- **Hydrodynamic attitude.** Panel forces produce torque about the centre of buoyancy. Steering acts as a muscle against that torque, stiffer while you steer and softer when you let go. Near the surface, buoyancy lays the body along the face, a breaking bore twists it, and the visible spine follows. Tuning lives under `hydro.waterTorque`, `muscleFreq`, `muscleSteerFreq` and `waterYield`.
+- **Wave pressure.** Hydrostatic pressure is measured from the displaced surface, and only the depth decay below it is dynamic (Wheeler-stretched linear pressure), so a crest does not double-lift the body.
+
+To ride, wait for a set wave, paddle to about 80 % of the wave speed and let the face pick you up, then glide. Holding W at cruise (9.5 m/s) outruns waves that move at about 5.5 m/s. To stay on the wave at speed, angle along the face (about 45°).
+
 ## Project layout
 
 ```text

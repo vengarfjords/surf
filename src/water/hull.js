@@ -106,11 +106,21 @@ function buildPanels(cfg) {
 
   let volume = 0;
   let area = 0;
+  const moment = new THREE.Vector3();
   for (const p of panels) {
     volume += p.offset.dot(p.normal) * p.area;
     area += p.area;
+    // Divergence theorem: integral of x dV = 1/2 closed-integral of x^2 n_x dA.
+    moment.x += p.offset.x * p.offset.x * p.normal.x * p.area;
+    moment.y += p.offset.y * p.offset.y * p.normal.y * p.area;
+    moment.z += p.offset.z * p.offset.z * p.normal.z * p.area;
   }
-  return { panels, volume: Math.abs(volume) / 3, area };
+  volume = Math.abs(volume) / 3;
+  // Centre of buoyancy (volume centroid) in the body frame. The animal is
+  // treated as uniform, so this is also the centre of mass and the pivot for
+  // the water torque; a fully submerged body then feels no net pitch moment.
+  const centroid = moment.multiplyScalar(0.5 / Math.max(1e-6, volume));
+  return { panels, volume, area, centroid };
 }
 
 export class Hull {
@@ -119,11 +129,15 @@ export class Hull {
     this.panels = built.panels;
     this.volume = built.volume;
     this.area = built.area;
+    this.centroid = built.centroid;
+    this.centroidWorld = new THREE.Vector3();
     this.mass = RHO * this.volume * TUNING.hydro.buoyancyRatio;
     this._massRatio = TUNING.hydro.buoyancyRatio;
 
     this.force = new THREE.Vector3();
+    this.torque = new THREE.Vector3();
     this.accel = new THREE.Vector3();
+    this.lever = new THREE.Vector3();
     this.qInv = new THREE.Quaternion();
     this.fBody = new THREE.Vector3();
     this.aBody = new THREE.Vector3();
@@ -157,6 +171,8 @@ export class Hull {
     this.result = {
       accel: this.accel,
       force: this.force,
+      torque: this.torque,
+      breaking: 0,
       wettedArea: 0,
       wetFraction: 0,
       submergedVolume: 0,
@@ -198,6 +214,11 @@ export class Hull {
     const q = dolphin.orientation;
     this.qInv.copy(q).invert();
     this.force.set(0, 0, 0);
+    this.torque.set(0, 0, 0);
+    // Body rotation that is not the player's steering (the water-driven part
+    // of the attitude). Feeding it into the panel velocities gives the water's
+    // own rotational damping; steering stays a muscle-driven intent.
+    const omega = dolphin.waterSpin;
 
     let wettedArea = 0;
     let buoyancyForce = 0;
@@ -209,6 +230,7 @@ export class Hull {
     let wettedPanels = 0;
     const pos = dolphin.position;
     const vel = dolphin.velocity;
+    const cg = this.centroidWorld.copy(this.centroid).applyQuaternion(q).add(pos);
 
     // Batch query: all panel world positions are written once, then the wave
     // field fills typed arrays (no per-panel object allocation).
@@ -254,7 +276,15 @@ export class Hull {
       // Hydrostatic + Froude-Krylov pressure. Pressure pushes inward against
       // the outward panel normal.
       const depthPressure = rhoWater * movement.gravity * Math.max(0, depth);
-      const dynamicPressure = batch.dynamicPressure[i] * (rhoWater / RHO);
+      // The wave field's dynamic pressure is rho g sum(a pF sin). The
+      // hydrostatic term above already measures depth from the displaced
+      // surface (rho g (eta - y)), which carries the full wave elevation, so
+      // only the decay below it is dynamic: rho g sum(a (pF - 1) sin). This
+      // is the Wheeler-stretched linear pressure: zero at the surface and
+      // -rho g y far below it. Adding the raw term counted the wave twice,
+      // which threw the body up on every crest and sucked it into troughs.
+      const dynamicPressure =
+        (batch.dynamicPressure[i] - RHO * movement.gravity * batch.height[i]) * (rhoWater / RHO);
       const pressure = depthPressure + dynamicPressure;
       const pressureForce = pressure * p.area * wet;
       buoyancyForce += -p.worldNormal.y * depthPressure * p.area * wet;
@@ -262,10 +292,19 @@ export class Hull {
       p.force.addScaledVector(p.worldNormal, -pressureForce);
       pressureForwardForce -= pressureForce * p.worldNormal.dot(dolphin.forward);
 
-      // Panel-local relative velocity.
-      const rx = vel.x - wx;
-      const ry = vel.y - wy;
-      const rz = vel.z - wz;
+      // Panel-local relative velocity, including the panel's swing about the
+      // centre of mass.
+      const lx = p.world.x - cg.x;
+      const ly = p.world.y - cg.y;
+      const lz = p.world.z - cg.z;
+      let rx = vel.x - wx;
+      let ry = vel.y - wy;
+      let rz = vel.z - wz;
+      if (omega) {
+        rx += omega.y * lz - omega.z * ly;
+        ry += omega.z * lx - omega.x * lz;
+        rz += omega.x * ly - omega.y * lx;
+      }
       const vn = rx * p.worldNormal.x + ry * p.worldNormal.y + rz * p.worldNormal.z;
       const tx = rx - p.worldNormal.x * vn;
       const ty = ry - p.worldNormal.y * vn;
@@ -291,6 +330,10 @@ export class Hull {
       p.prevWet = wet;
 
       this.force.add(p.force);
+      // Torque about the centre of mass: r x F.
+      this.torque.x += ly * p.force.z - lz * p.force.y;
+      this.torque.y += lz * p.force.x - lx * p.force.z;
+      this.torque.z += lx * p.force.y - ly * p.force.x;
 
       const dp = i * 6;
       this.debugPositions[dp] = p.world.x;
@@ -407,6 +450,7 @@ export class Hull {
     this.result.forwardForce = this.force.dot(dolphin.forward);
     this.result.aeration = aeration;
     this.result.breakMask = c.breakMask || 0;
+    this.result.breaking = c.breaking || 0;
     this.result.waterVelocityX = this.waterVel.x;
     this.result.waterVelocityY = this.waterVel.y;
     this.result.waterVelocityZ = this.waterVel.z;
