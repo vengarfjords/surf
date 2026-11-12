@@ -19,6 +19,24 @@ const RHO = 1025;
  * has to invert D with a few fixed-point iterations. The shader receives the
  * same Q, so both sides agree.
  */
+/**
+ * Face phase of a skewed wave (WaveField.sampleSurface): the linear phase
+ * fp = t - pi/2 is remapped piecewise so the leaning crest
+ * (t = pi/2 + asin s) reads 0, the trough reads +-pi, and the short front
+ * face spans 0..pi. Mirrored in the vertex shader.
+ */
+export function skewPhase(fp, s) {
+  if (!(s > 0)) return fp;
+  const a = Math.asin(s);
+  const front = Math.PI - 2 * a;
+  // Phase after the crest, in [0, 2 pi).
+  let d = fp - a;
+  d -= 2 * Math.PI * Math.floor(d / (2 * Math.PI));
+  let mapped = d < front ? (d * Math.PI) / front : Math.PI + ((d - front) * Math.PI) / (2 * Math.PI - front);
+  if (mapped > Math.PI) mapped -= 2 * Math.PI;
+  return mapped;
+}
+
 export class WaveField {
   constructor(cfg = TUNING.water, bathy = null) {
     this.time = 0;
@@ -324,26 +342,37 @@ export class WaveField {
       dDxdz -= ha * kxL * kzL * s;
     }
 
-    // Forward-pitched face: add the local swell's second harmonic,
-    // eta = A sin(t) - (skew/2) A sin(2t), from the same single-wave reading
-    // (A, t) as the breaking logic below: A sin(t) is the swell height and
-    // A cos(t) its slope over k. The front face (t near pi) steepens by
-    // 1 + skew, the back (t near 0) eases by 1 - skew, the crest leans
-    // forward and the surface stays single valued for skew < 1. Height-only,
-    // so the CPU inversion is unchanged. Mirrored in the vertex shader.
-    const skew = stateP.skew;
-    if (skew > 0 && this.peak) {
-      const kLocal = this.peakK * ratio;
+    // Forward-pitched face. A shoaling wave pitches forward long before it
+    // breaks: the face shortens and stands up while the back stretches out.
+    // From the same single-wave reading (A, t) as the breaking logic below
+    // (A sin t is the swell height, A cos t its slope over k), the swell's
+    // sine is replaced by the skewed series
+    //   sin t - s sin 2t / 2 + s^2 sin 3t / 3 - ... = atan2(s sin t, 1 + s cos t) / s,
+    // which is a sine at s = 0 and tends to a sawtooth with a vertical front
+    // as s -> 1. The front face is 1 / (1 - s) times steeper than the sine,
+    // the crest leans forward to t = pi/2 + asin(s), and the surface stays
+    // single valued for s < 1. Height-only, so the CPU inversion is
+    // unchanged. `skewPhase` remaps the face phase so 0 is still the visible
+    // crest and pi/2 the middle of the (now shorter) front face. Mirrored in
+    // the vertex shader.
+    let skewS = 0;
+    const kLocalPeak = this.peakK * ratio;
+    if (stateP.skew > 0 && this.peak) {
       const dirPX = this.peak.dx;
       const dirPZ = this.peak.dz;
-      const C = (swellSx * dirPX + swellSz * dirPZ) / kLocal;
-      const A2 = Math.max(0.04, swellH * swellH + C * C);
-      const A = Math.sqrt(A2);
-      // -(skew/2) A sin(2t) = -skew * S * C / A, and d/dt = -skew (C^2 - S^2) / A.
-      h += (-skew * swellH * C) / A;
-      const dSkew = ((-skew * (C * C - swellH * swellH)) / A) * kLocal;
-      dhdx += dSkew * dirPX;
-      dhdz += dSkew * dirPZ;
+      const C = (swellSx * dirPX + swellSz * dirPZ) / kLocalPeak;
+      const A = Math.sqrt(Math.max(0.0004, swellH * swellH + C * C));
+      const hsLocal = Math.max(0.05, this.stats.height * shoal);
+      skewS = Math.min(0.95, stateP.skew * smoothstep(0.25, 0.7, (2 * A) / hsLocal));
+      if (skewS > 1e-3) {
+        const sn = swellH / A;
+        const cs = C / A;
+        const denom = 1 + 2 * skewS * cs + skewS * skewS;
+        h += (A / skewS) * Math.atan2(skewS * sn, 1 + skewS * cs) - swellH;
+        const dSkew = (A * (skewS + cs)) / denom - C;
+        dhdx += dSkew * kLocalPeak * dirPX;
+        dhdz += dSkew * kLocalPeak * dirPZ;
+      } else skewS = 0;
     }
 
     // Peak-crest phase drives a small forward breaker lip and the whitewater
@@ -353,7 +382,7 @@ export class WaveField {
     const peakKzL = this.peakKz + this.peakK * gZ;
     const lipPhase = peakArg - 0.55;
     const lipSin = Math.sin(lipPhase);
-    const lipAmp = breakMask * TUNING.water.breakerLip * this.stats.height * shoal;
+    const lipAmp = breakMask * TUNING.water.breakerLip * this.stats.height * shoal * (1 - skewS);
     const lip = lipAmp * Math.max(0, lipSin) ** 2;
     h += lip;
     if (lipSin > 0) {
@@ -382,7 +411,7 @@ export class WaveField {
       const slopeAlong = (swellSx * this.peak.dx + swellSz * this.peak.dz) / kLocal;
       envelope = Math.hypot(swellH, slopeAlong);
       // 0 at the crest, +pi/2 halfway down the front face, -pi/2 on the back.
-      facePhase = Math.atan2(-slopeAlong, swellH);
+      facePhase = skewPhase(Math.atan2(-slopeAlong, swellH), skewS);
     }
     if (breakMask > 0.001 && this.peak) {
       const hsLocal = Math.max(0.05, this.stats.height * shoal);

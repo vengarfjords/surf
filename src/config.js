@@ -178,6 +178,15 @@ export const TUNING = {
     surfaceTrimDepth: 1.2,
     surfaceTrimRate: 1.4,
     surfaceTrimSpeed: 4.5,
+    // Ride trim (dolphin.js _rideTrim): stay in the face at speed.
+    rideTrim: 1,
+    rideTrimDepth: 2.2,
+    rideTrimSpeed: 7,
+    rideDepth: 0.5,
+    rideDepthGain: 1.5,
+    rideDamping: 2.0,
+    rideRelease: 0.4,
+    rideOffsetReturn: 1.1,
     // Water-driven attitude (hull panel torque against a muscular hold).
     waterTorque: 1.0,
     waterTorqueLimit: 2500,
@@ -271,7 +280,7 @@ export const TUNING = {
     timeScale: 1.0,
     // Rendering / foam.
     foamThreshold: 0.56,
-    foamAmount: 0.9,
+    foamAmount: 0.3,
     detailStrength: 0.55,
     // M3 depth response. The wave spectrum is evaluated with finite-depth
     // dispersion and Green's-law shoaling using the baked bathymetry; the
@@ -289,7 +298,7 @@ export const TUNING = {
     breakSoftness: 0.12,
     breakerJet: 0.65,
     breakerLip: 0.12,
-    faceSkew: 0.7,
+    faceSkew: 0.9,
     aerationAmount: 0.85,
     foamPersistence: 0.6,
     // Local nonlinear shallow-water solver over the surf bank. The domain is
@@ -512,7 +521,7 @@ export const TUNE_CONTROLS = [
   { path: "water.breakRatio", label: "break H/h", min: 0.5, max: 1.2, step: 0.01 },
   { path: "water.breakSoftness", label: "break softness", min: 0.02, max: 0.3, step: 0.01 },
   { path: "water.breakerLip", label: "breaker lip", min: 0, max: 0.4, step: 0.01 },
-  { path: "water.faceSkew", label: "face steepening", min: 0, max: 0.9, step: 0.01 },
+  { path: "water.faceSkew", label: "face steepening", min: 0, max: 0.95, step: 0.01 },
   { path: "water.breakerJet", label: "breaker jet", min: 0, max: 2, step: 0.05 },
   { path: "water.aerationAmount", label: "aeration", min: 0, max: 1, step: 0.01 },
   { path: "water.foamPersistence", label: "foam persistence", min: 0, max: 1, step: 0.01 },
@@ -538,6 +547,9 @@ export const TUNE_CONTROLS = [
   { path: "hydro.finLiftSlope", label: "fin lift", min: 0, max: 6, step: 0.05 },
   { path: "hydro.slamDrag", label: "slam drag", min: 0, max: 8, step: 0.1 },
   { path: "hydro.surfaceTrimRate", label: "surface trim", min: 0, max: 4, step: 0.05 },
+  { path: "hydro.rideTrim", label: "ride trim", type: "toggle" },
+  { path: "hydro.rideDepth", label: "riding depth", min: 0, max: 1.2, step: 0.05 },
+  { path: "hydro.rideRelease", label: "ride release angle", min: 0.15, max: 0.9, step: 0.01 },
   { path: "debug.probe", label: "water probe", type: "toggle" },
   { path: "debug.gpuProbe", label: "GPU parity probe", type: "toggle" },
   { path: "debug.crestOverlay", label: "crest lines", type: "toggle" },

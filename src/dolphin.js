@@ -286,6 +286,12 @@ export class Dolphin {
     this.tmpTorque = new THREE.Vector3();
     this.verticalInput = 0;
     this.pitchInputTimer = 0;
+    // Ride trim state: the player's pitch relative to the surface-following
+    // attitude, and how strongly the trim is holding.
+    this.rideOffset = 0;
+    this.rideHold = 0;
+    this.rideIdle = 0;
+    this.lastRideTarget = null;
     this.speed = 0;
     this.prevCenterAbove = false;
     this.airborne = false;
@@ -621,6 +627,7 @@ export class Dolphin {
     }
 
     this.verticalInput = (input.rise ? 1 : 0) - (input.dive ? 1 : 0);
+    this._rideTrim(dt, ocean, pitchInput);
     const posture = this.verticalInput > 0 ? movement.ascendPitch : this.verticalInput < 0 ? movement.descendPitch : 0;
     const pitchTarget = clamp(this.targetPitch + posture, -movement.maxPitch, movement.maxPitch);
 
@@ -753,7 +760,11 @@ export class Dolphin {
       const airSpeed = this.velocity.length();
       const horizontalAirspeed = Math.hypot(this.velocity.x, this.velocity.z);
       const levelness = airSpeed > 0.01 ? clamp(horizontalAirspeed / airSpeed, 0, 1) : 0;
-      this.velocity.y += movement.airLift * airSpeed * airSpeed * levelness * dt;
+      // Body lift in air is small and saturates: at surf speed the old
+      // v^2 term cancelled a third of gravity and floated the animal off a
+      // crest instead of letting it drop back onto the face.
+      const liftSpeed = Math.min(airSpeed, 12);
+      this.velocity.y += movement.airLift * liftSpeed * liftSpeed * levelness * dt;
 
       let vf = this.velocity.dot(this.forward);
       let vr = this.velocity.dot(this.right);
@@ -911,11 +922,28 @@ export class Dolphin {
     this.surfaceFxCooldown -= dt;
     const surfaceSpeed = Math.abs(this.velocity.y) + this.speed * 0.25;
 
+    // How fast the surface under the animal is rising along its path. On a
+    // wave face the water itself climbs at several m/s; that motion is not
+    // the dolphin leaping.
+    const surfaceRateRaw =
+      this.lastSurfaceHeight === undefined || dt <= 0 ? 0 : (centerHeight - this.lastSurfaceHeight) / dt;
+    this.lastSurfaceHeight = centerHeight;
+    this.surfaceRate =
+      (this.surfaceRate || 0) + (clamp(surfaceRateRaw, -20, 20) - (this.surfaceRate || 0)) * Math.min(1, dt * 10);
+
     if (!this.wasAbove && centerAbove) {
-      // A clean breach, driven by real upward momentum. A high-speed exit gets
-      // one last tail kick so the animal can properly clear the surface.
+      // A clean breach, driven by real upward momentum through the surface
+      // and a nose aimed out of the water. A high-speed exit gets one last
+      // tail kick so the animal can properly clear the surface. Skimming a
+      // rising face does neither, so it is not kicked into the air.
       const exitSpeed = this.velocity.length();
-      if (this.velocity.y > 1.2 && exitSpeed > movement.cruiseSpeed * 0.45) {
+      const climbThrough = this.velocity.y - this.surfaceRate;
+      const faceSlope = Math.atan(
+        (this.forward.x * centerWater.slopeX + this.forward.z * centerWater.slopeZ) /
+          Math.max(0.2, Math.hypot(this.forward.x, this.forward.z))
+      );
+      const noseOut = Math.asin(clamp(this.forward.y, -1, 1)) - faceSlope;
+      if (climbThrough > 1.2 && noseOut > 0.25 && exitSpeed > movement.cruiseSpeed * 0.45) {
         this.velocity.y +=
           movement.breachImpulse * clamp(exitSpeed / movement.boostSpeed, 0, 1.15);
       }
@@ -1192,6 +1220,81 @@ export class Dolphin {
    * absorbed into the steered heading/pitch: the nose drops down a face, a
    * crest lifts it, and whitewater twists the whole body.
    */
+  /**
+   * Ride trim: the reflex a surfing dolphin uses to stay in the face. Near
+   * the surface at speed it pitches the body for the climb rate that keeps
+   * it just under the moving surface (the water's own rise along the path,
+   * plus a pull back to the riding depth). The player's mouse pitch is kept
+   * as an offset on top of that attitude, so a small nudge carves the line
+   * higher or deeper in the face, and a clear aim up or down (more than
+   * `hydro.rideRelease` rad) lets go: the animal leaps out or dives
+   * through. Rise/dive keys, depth below `rideTrimDepth` or low speed also
+   * release it. Only the steering target changes; every force on the body
+   * is still the hull, fins and thrust.
+   */
+  /** Forget ride-trim and surface history after a teleport or scripted pose. */
+  resetRide() {
+    this.rideOffset = 0;
+    this.rideHold = 0;
+    this.rideIdle = 0;
+    this.lastRideTarget = null;
+    this.lastSurfaceHeight = undefined;
+    this.surfaceRate = 0;
+  }
+
+  _rideTrim(dt, ocean, pitchInput) {
+    const cfg = TUNING.hydro;
+    const movement = TUNING.movement;
+    if (!(cfg.rideTrim > 0)) {
+      this.rideHold = 0;
+      this.rideOffset = 0;
+      this.lastRideTarget = null;
+      return;
+    }
+    // Anything that moved the target since the trim last wrote it is the
+    // player's own pitch input.
+    if (this.lastRideTarget !== null) this.rideOffset += this.targetPitch - this.lastRideTarget;
+    this.rideIdle = pitchInput ? 0 : this.rideIdle + dt;
+
+    const w = ocean.getWaterSample(this.position.x, this.position.z);
+    const depth = w.height - this.position.y;
+    const speed = this.velocity.length();
+    const near =
+      smoothstep(-0.7, -0.15, depth) * (1 - smoothstep(cfg.rideTrimDepth * 0.6, cfg.rideTrimDepth, depth));
+    const fast = smoothstep(cfg.rideTrimSpeed * 0.6, cfg.rideTrimSpeed, speed);
+    const keys = this.verticalInput === 0 ? 1 : 0;
+
+    // Climb rate that follows the surface at the riding depth.
+    const surfaceRate = this.surfaceRate || 0;
+    const wantVy = surfaceRate + clamp((depth - cfg.rideDepth) * cfg.rideDepthGain, -4, 4);
+    const lead = wantVy + (wantVy - this.velocity.y) * cfg.rideDamping;
+    const cmd = clamp(Math.asin(clamp(lead / Math.max(3, speed), -0.95, 0.95)), -0.9, 0.9);
+
+    const release = cfg.rideRelease;
+    const free = Math.abs(this.rideOffset) > release;
+    if (!free) {
+      // Let go of the mouse and the offset eases back to riding the face.
+      if (this.rideIdle > 0.15) this.rideOffset = damp(this.rideOffset, 0, cfg.rideOffsetReturn, dt);
+    } else if (this.rideIdle > 0.8 && (near > 0.5 || near * fast < 0.05)) {
+      // Released, but resting near the surface again: settle back in.
+      this.rideOffset = damp(this.rideOffset, 0, cfg.rideOffsetReturn * 0.5, dt);
+    }
+    const capture = 1 - smoothstep(release * 0.8, release, Math.abs(this.rideOffset));
+    const hold = near * fast * keys * capture;
+    // Smooth the engagement so it never snaps the attitude.
+    this.rideHold = damp(this.rideHold, hold, 6, dt);
+
+    if (this.rideHold > 0.001) {
+      const ride = clamp(cmd + this.rideOffset, -movement.maxPitch, movement.maxPitch);
+      this.targetPitch += (ride - this.targetPitch) * this.rideHold;
+    }
+    // The offset only ever comes from the player's own pitch input. A leap,
+    // a landing or a dive that leaves the trim band does not turn into an
+    // offset, so the trim picks the animal back up smoothly (`rideHold`
+    // eases in) as soon as it is back near the surface at speed.
+    this.lastRideTarget = this.targetPitch;
+  }
+
   _applyWaterAttitude(dt, steeringPitch, steeringYaw) {
     const cfg = TUNING.hydro;
     const tilt = this.waterTilt;

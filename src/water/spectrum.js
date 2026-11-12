@@ -194,7 +194,8 @@ export function applyPreset(water, name) {
       windSeaDirection: 1.02,
       chop: 0.72,
       timeScale: 1.0,
-      foamAmount: 0.9,
+      // Glassy big-wave day: light wind, few whitecaps.
+      foamAmount: 0.3,
     },
   };
   const p = presets[name];

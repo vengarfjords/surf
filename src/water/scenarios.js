@@ -41,6 +41,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     dolphin.forward.set(0, 0, 1).applyQuaternion(dolphin.orientation);
     dolphin.up.set(0, 1, 0).applyQuaternion(dolphin.orientation);
     dolphin.right.set(1, 0, 0).applyQuaternion(dolphin.orientation);
+    if (dolphin.resetRide) dolphin.resetRide();
   }
 
   function setPose(x, y, z, yaw, pitch, roll = 0) {
@@ -52,6 +53,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     dolphin.forward.set(0, 0, 1).applyQuaternion(dolphin.orientation);
     dolphin.up.set(0, 1, 0).applyQuaternion(dolphin.orientation);
     dolphin.right.set(1, 0, 0).applyQuaternion(dolphin.orientation);
+    if (dolphin.resetRide) dolphin.resetRide();
   }
 
   function measureAt(x, y, z, yaw, pitch, speed) {
@@ -246,6 +248,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let bestDrop = 0;
       let bestSpeed = 0;
       let carveDown = true;
+      let sprint = false;
       const hold = {};
       for (let t = 0; t < seconds; t += dt) {
         const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
@@ -258,19 +261,31 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
           go = size > 0.5 && fp > 1.5 && fp < 2.7;
         }
         const onFace = fp > -0.1 && fp < 1.5;
+        const big = c > TUNING.movement.cruiseSpeed * 1.3;
         control.brake = false;
         if (!go) control.forward = false;
-        else if (c > TUNING.movement.cruiseSpeed * 1.3) {
+        else if (big) {
           // Waves faster than a cruising dolphin can only be caught at a
-          // sprint: be at full surge as the face arrives and stay on it.
-          // Wait in the trough, then go as the face starts to lift.
-          control.forward = fp > -0.5 && fp < 2.1 && along < c * 1.15;
+          // sprint: start when the crest is about 45 m behind (2-3 s out),
+          // be at full surge as the face arrives and stay on it.
+          const ux = dolphin.position.x - dirX * 45;
+          const uz = dolphin.position.z - dirZ * 45;
+          const u = ocean.getWaterSample(ux, uz);
+          const uSize = (2 * (u.envelope || 0)) / Math.max(0.1, water.stats.height * u.shoal);
+          if (uSize > 0.5 && u.facePhase > -0.3 && u.facePhase < 1.6) sprint = true;
+          if (fp < -0.6 && fp > -2.5) sprint = false;
+          // On the face push past wave speed; still ahead of it, hold just
+          // under wave speed so the face can catch up.
+          control.forward = sprint && along < c * (fp < 1.4 ? 1.3 : 0.95);
+          // Pushed along ahead of the face: ease off so it can lift you.
+          control.brake = sprint && fp > 1.6 && along > c * 0.9;
         } else if (onFace) {
           control.forward = fp < 0.25 && along < c;
           control.brake = fp > 1.2 && along > c;
         } else control.forward = along < c * 0.8;
-        const wantPitch = ridePitch(rel, -0.3, hold, dt, -0.45, 0.45);
-        control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
+        // No pitch input: the dolphin's ride trim holds it in the face, as it
+        // would for a player steering only left and right.
+        control.mdy = 0;
         control.mdx = 0;
         if (carve && go) {
           const onWave = fp > -0.4 && fp < 2.0;
@@ -281,7 +296,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
           let err = waveYaw + target - dolphin.targetYaw;
           err = Math.atan2(Math.sin(err), Math.cos(err));
           control.mdx = (-err / sens) * 0.1;
-          if (onWave) {
+          if (onWave && !big) {
             control.forward = carveDown ? along < c * 1.1 : fp > 1.6 || along < c * 0.7;
             control.brake = false;
           }
@@ -290,7 +305,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
           let err = waveYaw + (onWave ? angle : 0) - dolphin.targetYaw;
           err = Math.atan2(Math.sin(err), Math.cos(err));
           control.mdx = (-err / sens) * 0.08;
-          if (onWave) {
+          if (onWave && !big) {
             control.forward = along < c * 0.98;
             control.brake = along > c * 1.25;
           }
@@ -306,7 +321,9 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         const fpNow = s.facePhase ?? 9;
         // Riding: on the face, carried at wave speed, at the surface or
         // tucked into the face just under it (dolphins surf submerged too).
-        const riding = fpNow > -0.3 && fpNow < 1.9 && relNow > -1.8 && relNow < 0.9 && alongNow > 0.6 * s.phaseSpeed;
+        const riding = fpNow > -0.3 && fpNow < (big ? 2.6 : 1.9) && relNow > -1.8 && relNow < 0.9 && alongNow > 0.6 * s.phaseSpeed;
+        if (api.trace && Math.round(t * 60) % 15 === 0)
+          api.trace.push([+t.toFixed(2), +fpNow.toFixed(2), +relNow.toFixed(2), +alongNow.toFixed(1), +s.phaseSpeed.toFixed(1), go ? 1 : 0, sprint ? 1 : 0, control.forward ? 1 : 0, riding ? 1 : 0]);
         if (riding) {
           if (ride === 0) {
             rideStart = sNow;
@@ -356,7 +373,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
      * is held as a player would. Reports the vertical drop, the speed gained
      * on the way down and how much height it climbed back.
      */
-    async faceDrop(start = -90, angle = 0.35, time0 = 0, thrust = false, takeoff = 0.3) {
+    async faceDrop(start = -90, angle = 0.35, time0 = 0, thrust = false, takeoff = 0.3, hands = true) {
       if (!seabed || !freeze) return { error: "scenario needs seabed and freeze hooks" };
       const saved = saveState();
       const savedTime = TUNING.water.timeScale;
@@ -420,8 +437,12 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         let err = target - dolphin.targetYaw;
         err = Math.atan2(Math.sin(err), Math.cos(err));
         control.mdx = (-err / sens) * 0.1;
-        const wantPitch = ridePitch(rel, -0.05, hold, dt);
-        control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
+        // hands: yaw only, no pitch input, so the water and the dolphin's
+        // own trim decide the depth.
+        if (!hands) {
+          const wantPitch = ridePitch(rel, -0.05, hold, dt);
+          control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
+        } else control.mdy = 0;
         control.forward = thrust;
         control.boost = thrust && q.phaseSpeed > TUNING.movement.cruiseSpeed * 0.85;
         const waveSpeed = q.phaseSpeed;
@@ -483,7 +504,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
      * the speed reached, then the coast-down after letting go. Used to keep
      * the swim feel fixed while hull drag changes.
      */
-    async flatSpeed(boost = false, seconds = 10, surface = false) {
+    async flatSpeed(boost = false, seconds = 10, surface = false, flick = 0) {
       const saved = saveState();
       const savedPreset = TUNING.water.preset;
       const savedTime = TUNING.water.timeScale;
@@ -507,13 +528,23 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let relMin = Infinity;
       let relMax = -Infinity;
       const hold = {};
+      const trace = [];
       for (let t = 0; t < seconds; t += dt) {
         if (surface) {
           // Hold the body just under the surface, the way a player riding
           // the surface would: the same pitch controller as faceDrop.
           const rel = dolphin.position.y - ocean.getWaterHeight(dolphin.position.x, dolphin.position.z);
-          const wantPitch = ridePitch(rel, -0.3, hold, dt);
-          control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
+          // surface === "hands": no pitch input at all, like a player who
+          // just holds W (+ Shift) at the surface.
+          if (surface !== "hands") {
+            const wantPitch = ridePitch(rel, -0.3, hold, dt);
+            control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
+          } else {
+            // Optional mouse flick (radians of pitch, + is nose up) 3 s
+            // before the end: a player aiming to leap out or dive through.
+            control.mdy = flick && Math.abs(t - (seconds - 3)) < dt / 2 ? -flick / (sens * 0.78) : 0;
+          }
+          if (Math.round(t * 60) % 15 === 0) trace.push([+t.toFixed(2), +rel.toFixed(2), +dolphin.velocity.y.toFixed(2), +dolphin.forward.y.toFixed(2), +dolphin.velocity.length().toFixed(1)]);
           if (t > seconds - 4) {
             relMin = Math.min(relMin, rel);
             relMax = Math.max(relMax, rel);
@@ -538,7 +569,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       water.setPreset(savedPreset);
       cameraReport();
       const out = { boost, at1: at[1], at2: at[2], at4: at[4], top, after2sCoast: coast2 };
-      if (surface) Object.assign(out, { relMin, relMax });
+      if (surface) Object.assign(out, { relMin, relMax, trace, breaches: dolphin.breachCount });
       return out;
     },
 

@@ -391,7 +391,14 @@ export class Hull {
       this.liftDir.crossVectors(this.flow, this.span);
       if (this.liftDir.lengthSq() < 1e-4) this.liftDir.copy(dolphin.up);
       else this.liftDir.normalize();
-      const alpha = clamp(this.flow.dot(dolphin.up) / speed, -0.9, 0.9);
+      // Angle of attack of the oncoming water. `flow` is the body's velocity
+      // through the water, so the water meets the fins along -flow: a body
+      // pitched nose-up (or sinking) has water striking the underside, which
+      // is positive incidence and lift toward `up`. This sign was inverted,
+      // which made the fins push a sinking dolphin further down, a rising
+      // one further up (porpoising and run-away sinking at surf speed), and
+      // push a banked turn outwards instead of carving it.
+      const alpha = clamp(-this.flow.dot(dolphin.up) / speed, -0.9, 0.9);
       const cl = clamp(alpha * cfg.finLiftSlope, -cfg.finLiftMax, cfg.finLiftMax);
       const rhoFin = underwater ? RHO * (1 - aeration) : RHO_AIR;
       let lift = 0.5 * rhoFin * cfg.pectoralArea * cl * speed * speed;

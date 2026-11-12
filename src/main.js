@@ -686,6 +686,7 @@ async function boot() {
       }
       dolphin.velocity.set(0, 0, 0);
       dolphin.resetVisualChain();
+      dolphin.resetRide();
       cameraRig.initialized = false;
     },
     // Debug / capture helpers. `freeze` stops dolphin physics only; waves and
@@ -702,6 +703,7 @@ async function boot() {
       dolphin.roll = 0;
       dolphin.targetRoll = 0;
       dolphin.velocity.set(0, 0, 0);
+      dolphin.resetRide();
       dolphin.update(0.0001, idleInput, ocean, seabed, effects);
       dolphin.root.position.copy(dolphin.position);
       cameraRig.initialized = false;

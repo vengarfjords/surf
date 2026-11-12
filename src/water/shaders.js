@@ -180,26 +180,52 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       float kLocalPeak = uPeakK * ratio;
       float slopeAlong = dot(swellSlope, peakDir) / max(1e-6, kLocalPeak);
       float envelope = length(vec2(swellH, slopeAlong));
-      float facePhase = atan(-slopeAlong, swellH);
       float hsLocal = max(0.05, uHs * shoal);
+
+      // Forward-pitched face (WaveField.sampleSurface): the swell's sine is
+      // replaced by the skewed series atan2(s sin t, 1 + s cos t) / s, which
+      // stands the front face up toward vertical as s -> 1.
+      float skewS = 0.0;
+      vec2 skewSlope = vec2(0.0);
+      if (skew > 0.0) {
+        float A = sqrt(max(0.0004, swellH * swellH + slopeAlong * slopeAlong));
+        skewS = min(0.95, skew * smoothstep(0.25, 0.7, (2.0 * A) / hsLocal));
+        if (skewS > 1e-3) {
+          float sn = swellH / A;
+          float cs = slopeAlong / A;
+          float denom = 1.0 + 2.0 * skewS * cs + skewS * skewS;
+          h += (A / skewS) * atan(skewS * sn, 1.0 + skewS * cs) - swellH;
+          float dSkew = (A * (skewS + cs)) / denom - slopeAlong;
+          skewSlope = dSkew * kLocalPeak * peakDir;
+          dhdx += skewSlope.x;
+          dhdz += skewSlope.y;
+        } else {
+          skewS = 0.0;
+        }
+      }
+
+      // Per-wave breaking, mirroring WaveField.sampleSurface: the swell's
+      // local envelope and face phase say whether this wave, here, now, is
+      // big enough to break, and the bore rides on its front face. The phase
+      // is remapped to the skewed face (skewPhase in field.js).
+      float facePhase = atan(-slopeAlong, swellH);
+      if (skewS > 0.0) {
+        float a = asin(skewS);
+        float front = 3.14159265 - 2.0 * a;
+        float d = facePhase - a;
+        d -= 6.28318531 * floor(d / 6.28318531);
+        float mapped = d < front ? d * 3.14159265 / front : 3.14159265 + (d - front) * 3.14159265 / (6.28318531 - front);
+        if (mapped > 3.14159265) mapped -= 6.28318531;
+        facePhase = mapped;
+      }
       float waveSize = smoothstep(0.32, 0.62, (2.0 * envelope) / hsLocal);
       float onFront = smoothstep(-0.45, 0.05, facePhase) * (1.0 - smoothstep(0.8, 1.5, facePhase));
       float waveBreak = breakMask * waveSize * onFront;
 
-      // Forward-pitched face (WaveField.sampleSurface): the swell's second
-      // harmonic from the same single-wave reading as the breaking above.
-      if (skew > 0.0) {
-        float A = sqrt(max(0.04, swellH * swellH + slopeAlong * slopeAlong));
-        h += -skew * swellH * slopeAlong / A;
-        float dSkew = (-skew * (slopeAlong * slopeAlong - swellH * swellH) / A) * kLocalPeak;
-        dhdx += dSkew * peakDir.x;
-        dhdz += dSkew * peakDir.y;
-      }
-
       float peakArg = uPeakKx * base.x + uPeakKz * base.z + uPeakK * delay + uPeakPhase;
       float lipPhase = peakArg - 0.55;
       float lipSin = sin(lipPhase);
-      float lipAmp = breakMask * uBreakerLip * uHs * shoal;
+      float lipAmp = breakMask * uBreakerLip * uHs * shoal * (1.0 - skewS);
       float lip = lipAmp * max(0.0, lipSin) * max(0.0, lipSin);
       if (lipSin > 0.0) {
         float dLip = lipAmp * 2.0 * lipSin * cos(lipPhase);
@@ -272,7 +298,9 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       vSlope = vec2(dhdx, dhdz);
       // Whitecaps come from the short wind sea; a long swell's smooth face
       // only contributes a third of its slope, so big groundswell stays glassy.
-      vCapSlope = vSlope - swellSlope * 0.65;
+      // Whitecaps key off the wind sea: the swell's own slope (and the
+      // steepened face it is reshaped into) is not a whitecap.
+      vCapSlope = vSlope - swellSlope * 0.65 - skewSlope;
       // Iribarren number for breaker type. Doing this in the vertex shader
       // costs four bathymetry taps per vertex instead of per fragment.
       float be = 8.0;
