@@ -184,6 +184,15 @@ export const TUNING = {
     surfaceTrimDepth: 1.2,
     surfaceTrimRate: 1.4,
     surfaceTrimSpeed: 4.5,
+    // Surface lock (dolphin.js _surfaceLockUpdate): hold Space to rise to
+    // the surface and travel or surf along it; release for free 3D swimming.
+    surfaceLock: 1,
+    surfaceLockDepth: 0.35,
+    surfaceLockEnter: 1.0,
+    surfaceLockExit: 3.5,
+    surfaceLockGain: 8,
+    surfaceLockRamp: 5,
+    surfaceLockPitchRate: 12,
     // Ride trim (dolphin.js _rideTrim): stay in the face at speed.
     rideTrim: 1,
     rideTrimDepth: 2.2,
@@ -569,6 +578,8 @@ export const TUNE_CONTROLS = [
   { path: "hydro.dragNormal", label: "panel normal drag", min: 0.1, max: 2.5, step: 0.01 },
   { path: "hydro.dragTangential", label: "skin drag", min: 0.0005, max: 0.02, step: 0.0005 },
   { path: "hydro.axialDragScale", label: "axial form drag", min: 0, max: 1, step: 0.01 },
+  { path: "hydro.surfaceLock", label: "surface lock (Space)", min: 0, max: 1, step: 1 },
+  { path: "hydro.surfaceLockDepth", label: "surface lock depth", min: 0, max: 1.2, step: 0.05 },
   { path: "hydro.planeDragCut", label: "planing drag cut", min: 0, max: 0.95, step: 0.01 },
   { path: "hydro.planeSpeed", label: "planing speed", min: 10, max: 40, step: 0.5 },
   { path: "hydro.finLiftSlope", label: "fin lift", min: 0, max: 6, step: 0.05 },

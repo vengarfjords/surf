@@ -84,6 +84,9 @@ export class CPUParticles {
         gravity: 0,
         wobble: 0,
         seed: Math.random(),
+        bx: 0,
+        by: 0,
+        bz: 0,
         r: 1,
         g: 1,
         b: 1,
@@ -146,6 +149,12 @@ export class CPUParticles {
     p.life = opts.life ?? 1;
     p.size = opts.size ?? 0.3;
     p.drag = opts.drag ?? 0.9;
+    // Drag acts relative to this base velocity: spray and foam thrown off
+    // a wave moving at 70 m/s keep moving with that water instead of
+    // hanging in the air for the camera to fly through.
+    p.bx = opts.bx ?? 0;
+    p.by = opts.by ?? 0;
+    p.bz = opts.bz ?? 0;
     p.gravity = opts.gravity ?? 0;
     p.wobble = opts.wobble ?? 0;
     p.alpha = opts.alpha ?? 1;
@@ -184,9 +193,9 @@ export class CPUParticles {
         continue;
       }
       const drag = Math.exp(-p.drag * dt);
-      p.vx *= drag;
-      p.vy *= drag;
-      p.vz *= drag;
+      p.vx = p.bx + (p.vx - p.bx) * drag;
+      p.vy = p.by + (p.vy - p.by) * drag;
+      p.vz = p.bz + (p.vz - p.bz) * drag;
       p.vy += p.gravity * dt;
       if (p.wobble > 0) {
         p.vx += Math.sin(this.time * 4.1 + p.seed * 18.0) * p.wobble * dt;
@@ -301,14 +310,21 @@ export class ParticleFX {
   }
 
   _foamParticle(x, y, z, vx, vy, vz, size, life, alpha) {
-    const water = this.waterVel(x, y, z, 0.5);
+    // Foam rides the water it sits on (on a mega face that is 60-70 m/s).
+    const water = this.waterVel(x, y, z, 1);
+    const wx = water ? water.x : 0;
+    const wy = water ? water.y : 0;
+    const wz = water ? water.z : 0;
     this.foam.spawn({
       x,
       y,
       z,
-      vx: vx + (water ? water.x : 0),
-      vy: vy + (water ? water.y : 0),
-      vz: vz + (water ? water.z : 0),
+      vx: vx + wx,
+      vy: vy + wy,
+      vz: vz + wz,
+      bx: wx,
+      by: wy,
+      bz: wz,
       life,
       size,
       drag: 0.55,
@@ -687,6 +703,12 @@ export class ParticleFX {
 
   splashBurst(x, y, z, intensity, directionX = 0, directionZ = 0) {
     const count = clamp(Math.floor(14 + intensity * 38), 8, 110);
+    // Droplets leave with the water they came from, plus half the body's
+    // speed through that water (directionX/Z is the body's velocity).
+    const water = this.waterVel(x, y - 0.2, z, 1);
+    const wx = water ? water.x : 0;
+    const wy = water ? water.y : 0;
+    const wz = water ? water.z : 0;
     for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
       const outward = (0.4 + Math.random() * 2.6) * (0.6 + intensity * 0.4);
@@ -694,9 +716,12 @@ export class ParticleFX {
         x: x + (Math.random() - 0.5) * 0.8,
         y: y + Math.random() * 0.35,
         z: z + (Math.random() - 0.5) * 0.8,
-        vx: Math.cos(a) * outward + directionX * 0.5,
-        vy: (1.2 + Math.random() * 3.8) * (0.6 + intensity * 0.32),
-        vz: Math.sin(a) * outward + directionZ * 0.5,
+        vx: wx + Math.cos(a) * outward + (directionX - wx) * 0.5,
+        vy: wy + (1.2 + Math.random() * 3.8) * (0.6 + intensity * 0.32),
+        vz: wz + Math.sin(a) * outward + (directionZ - wz) * 0.5,
+        bx: wx,
+        by: wy,
+        bz: wz,
         life: 0.6 + Math.random() * 1.25,
         size: 0.06 + Math.random() * 0.3,
         drag: 0.6,

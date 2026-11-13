@@ -211,10 +211,11 @@ export class HUD {
       const cZ = Math.round(telemetry.z || 0);
       this.el.coords.textContent = `X ${cX >= 0 ? "+" : "−"}${String(Math.abs(cX)).padStart(4, "0")} · Z ${cZ >= 0 ? "+" : "−"}${String(Math.abs(cZ)).padStart(4, "0")}`;
       if (this.started) {
-        this.el.surfaceLabel.textContent = telemetry.underwater ? "SURFACE" : "AIR";
+        const locked = (telemetry.surfLock || 0) > 0.5;
+        this.el.surfaceLabel.textContent = locked ? "ON THE SURFACE" : telemetry.underwater ? "SURFACE" : "AIR";
         this.el.surfaceIndicator.classList.toggle(
           "is-visible",
-          telemetry.depth < 1.35 || !telemetry.underwater
+          locked || telemetry.depth < 1.35 || !telemetry.underwater
         );
       }
     }

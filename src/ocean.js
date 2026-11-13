@@ -350,6 +350,7 @@ export class Ocean {
       uFaceSkew: { value: TUNING.water.faceSkew || 0 },
       uMegaOn: { value: 0 },
       uMegaA: { value: new THREE.Vector4() },
+      uProbeOffset: { value: 0 },
       uMegaB: { value: new THREE.Vector4() },
       uAerationAmount: { value: TUNING.water.aerationAmount },
       uFoamPersistence: { value: TUNING.water.foamPersistence },
@@ -1101,7 +1102,7 @@ export class Ocean {
    * readback is acceptable because this is a debug probe (2 Hz), never part of
    * the frame path.
    */
-  gpuProbeHeight(x, z) {
+  gpuProbeHeight(x, z, offset = 0) {
     const u = this.uniforms;
     const renderer = this.renderer;
     const oldCenterX = u.uCenter.value.x;
@@ -1110,9 +1111,10 @@ export class Ocean {
     u.uCenter.value.set(x, z);
     u.uSimScale.value = 0;
 
-    this.probeCamera.position.set(x, 60, z);
+    u.uProbeOffset.value = offset;
+    this.probeCamera.position.set(x, offset + 60, z);
     this.probeCamera.up.set(0, 0, -1);
-    this.probeCamera.lookAt(x, 0, z);
+    this.probeCamera.lookAt(x, offset, z);
     this.probeCamera.updateMatrixWorld();
 
     const oldTarget = renderer.getRenderTarget();
@@ -1129,8 +1131,9 @@ export class Ocean {
     u.uCenter.value.set(oldCenterX, oldCenterZ);
     u.uSimScale.value = oldSim;
 
+    u.uProbeOffset.value = 0;
     const q = this._probePixels[0] * 256 + this._probePixels[1];
-    return (q / 65535) * 16 - 8;
+    return (q / 65535) * 16 - 8 + offset;
   }
 
   shouldDrawSurface() {

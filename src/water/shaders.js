@@ -389,8 +389,11 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
 export const probeFragmentShader = /* glsl */ `
   precision highp float;
   varying float vWaveHeight;
+  // Heights are read back within +-8 m of this offset (the CPU height), so
+  // the probe also works on 500 m waves.
+  uniform float uProbeOffset;
   void main() {
-    float v = clamp((vWaveHeight + 8.0) / 16.0, 0.0, 1.0);
+    float v = clamp((vWaveHeight - uProbeOffset + 8.0) / 16.0, 0.0, 1.0);
     float q = floor(v * 65535.0 + 0.5);
     float hi = floor(q / 256.0);
     float lo = q - hi * 256.0;

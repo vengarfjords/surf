@@ -93,6 +93,8 @@ export class CameraRig {
     const speedNorm = clamp(speed / TUNING.movement.boostSpeed, 0, 1.15);
     const worldUp = WORLD_UP;
     const water = this.ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
+    // Where the surface will be when this frame is drawn (see Dolphin.surfaceLead).
+    water.height += dolphin.surfaceLead || 0;
     const waterAtDolphin = water.height;
     const submerged = dolphin.position.y < water.height - 0.16;
     // Near the surface, let the camera sit in the waterline band so a true
@@ -105,7 +107,7 @@ export class CameraRig {
     // The snout is the look handle. Orbit and aim from the mouse target rather
     // than waiting for the physical body to finish its turn; the spine and
     // velocity can trail behind without dragging the view with them.
-    const lookPitch = clamp(dolphin.targetPitch, -1.45, 1.45);
+    const lookPitch = clamp(dolphin.viewPitch ?? dolphin.targetPitch, -1.45, 1.45);
     if (!this.initialized) {
       this.orbitYaw = dolphin.targetYaw;
       this.orbitPitch = lookPitch;
@@ -157,6 +159,34 @@ export class CameraRig {
       const sl = this.surfLook.copy(dolphin.position);
       sl.addScaledVector(sf, camCfg.surfLookAhead + speedNorm * 2.0);
       sl.y = base + camCfg.surfLookUp;
+      const lock = dolphin.surfLock || 0;
+      if (lock > 0 && dolphin._sl) {
+        // Locked to the surface (Space): frame the shot in the surface's own
+        // plane, behind along the heading and lifted along its normal, so on
+        // a 60 degree face the dolphin stays in frame on the way down instead
+        // of dropping out of the bottom of a level shot.
+        const gx = dolphin._sl.sx;
+        const gz = dolphin._sl.sz;
+        const tn = this.tmpTan || (this.tmpTan = new THREE.Vector3());
+        const nn = this.tmpNorm || (this.tmpNorm = new THREE.Vector3());
+        tn.set(sf.x, gx * sf.x + gz * sf.z, sf.z).normalize();
+        nn.set(-gx, 1, -gz).normalize();
+        const at = this.tmpAt || (this.tmpAt = new THREE.Vector3());
+        at.copy(dolphin.position).addScaledVector(nn, Math.max(0, waterAtDolphin - dolphin.position.y));
+        const lp = this.tmpLockPos || (this.tmpLockPos = new THREE.Vector3());
+        lp.copy(at)
+          .addScaledVector(tn, -(camCfg.surfDistance + speedNorm * 1.6))
+          .addScaledVector(nn, camCfg.surfHeight + speedNorm * 0.6);
+        const lensLock = this.ocean.getWaterHeight(lp.x, lp.z) + (dolphin.surfaceLead || 0);
+        lp.y = Math.max(lp.y, lensLock + camCfg.surfClearance);
+        const ll = this.tmpLockLook || (this.tmpLockLook = new THREE.Vector3());
+        // Aim just ahead of the dolphin itself: at 70-90 m/s down a curving
+        // face a point metres ahead along the local plane is already off
+        // the real surface, and the dolphin slid out of frame.
+        ll.copy(at).addScaledVector(tn, 1.5).addScaledVector(nn, 0.3);
+        sp.lerp(lp, lock);
+        sl.lerp(ll, lock);
+      }
       targetPos.lerp(sp, surf);
       targetLook.lerp(sl, surf);
     }
@@ -185,6 +215,7 @@ export class CameraRig {
     // Avoid the seafloor and the underside of the surface. The dolphin may
     // breach; when it does, the camera is allowed to break through with it.
     const camSurf = this.ocean.getWaterSample(targetPos.x, targetPos.z);
+    camSurf.height += dolphin.surfaceLead || 0;
     if (submerged) {
       // The surf shot lifts the ceiling continuously, so the lens rises out
       // through the surface as the blend builds instead of popping.
@@ -224,6 +255,7 @@ export class CameraRig {
     // Re-check after damping; the smoothed camera can otherwise still pass
     // through a steep bank or a crest.
     const smoothedSurf = this.ocean.getWaterSample(this.position.x, this.position.z);
+    smoothedSurf.height += dolphin.surfaceLead || 0;
     const smoothedFloor = seabed.getSurfaceHeight(this.position.x, this.position.z);
     // The underwater bands hand over to the surf shot's clearance.
     const under = 1 - smoothstep(0.05, 0.4, surf);

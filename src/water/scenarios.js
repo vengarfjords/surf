@@ -113,6 +113,8 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
    * do not depend on the browser's frame rate.
    */
   function stepWorld(dt, control) {
+    // `S.lock = true`: every scenario holds Space (the surface lock).
+    if (api.lock) control.rise = true;
     ocean.time += dt;
     water.setTime(ocean.time);
     ocean.foamField.update(dt, ocean.time);
@@ -537,6 +539,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let vMax = 0;
       let aMax = 0;
       let aMaxAt = null;
+      let lockTime = 0;
       const spikes = [];
       const prevSpikeV = dolphin.velocity.clone();
       let finite = true;
@@ -552,7 +555,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let elapsed = 0;
       for (; elapsed < seconds; elapsed += dt) {
         const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
-        const rel = dolphin.position.y - q.height;
+        const rel = dolphin.position.y - q.height - (dolphin.surfaceLead || 0);
         water.megaAt(dolphin.position.x, dolphin.position.z, m);
         const faceUp = m.h > 25;
         // "carve": once on the face, turn down the line until low on the
@@ -589,7 +592,10 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
             control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
           } else control.mdy = 0;
         }
+        // api.lock: hold Space (surface lock) the whole run.
+        control.rise = !!api.lock;
         stepWorld(dt, control);
+        if (dolphin.surfLock > 0.9) lockTime += dt;
         const v = dolphin.velocity;
         if (![v.x, v.y, v.z, dolphin.position.y].every(Number.isFinite)) {
           finite = false;
@@ -666,6 +672,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         speedMax: vMax,
         accelMax: aMax,
         accelMaxAt: aMaxAt,
+        lockTime,
         spikes,
         finite,
         turns,
@@ -674,6 +681,64 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         camera: cameraReport(),
         trace,
       };
+    },
+
+    /**
+     * Surface lock: start `depth` m down in `presetName`, hold Space + W
+     * (+ Shift with `boost`) and report how long it takes to reach and lock
+     * to the surface and how closely it then follows it; then let go of
+     * Space and hold C for 2 s to check that free 3D swimming is back.
+     */
+    async surfaceLockTest(depth = 12, presetName = "calm", boost = false, seconds = 8) {
+      const saved = saveState();
+      const savedPreset = TUNING.water.preset;
+      const savedTime = TUNING.water.timeScale;
+      water.setPreset(presetName);
+      freeze(true);
+      TUNING.water.timeScale = 0;
+      const savedClock = ocean.time;
+      const x = -300;
+      const z = 400;
+      const yaw = 1.2;
+      setPose(x, ocean.getWaterHeight(x, z) - depth, z, yaw, 0);
+      dolphin.velocity.set(0, 0, 0);
+      dolphin.targetYaw = dolphin.yaw = yaw;
+      dolphin.targetPitch = dolphin.pitch = 0;
+      const control = botInput();
+      const dt = 1 / 60;
+      control.forward = true;
+      control.boost = boost;
+      control.rise = true;
+      let lockedAt = null;
+      let relMin = Infinity;
+      let relMax = -Infinity;
+      let breaches0 = dolphin.breachCount;
+      for (let t = 0; t < seconds; t += dt) {
+        stepWorld(dt, control);
+        if (lockedAt === null && dolphin.surfLock > 0.99) lockedAt = t;
+        if (lockedAt !== null && t > lockedAt + 1) {
+          const rel = dolphin.position.y - ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) - dolphin.surfaceLead;
+          relMin = Math.min(relMin, rel);
+          relMax = Math.max(relMax, rel);
+        }
+      }
+      const speedLocked = dolphin.velocity.length();
+      const breaches = dolphin.breachCount - breaches0;
+      control.rise = false;
+      control.dive = true;
+      const y0 = dolphin.position.y;
+      for (let t = 0; t < 2; t += dt) stepWorld(dt, control);
+      const diveDrop = y0 - dolphin.position.y;
+      const lockAfter = dolphin.surfLock;
+      ocean.time = savedClock;
+      water.setTime(savedClock);
+      TUNING.water.timeScale = savedTime;
+      restoreState(saved);
+      for (const p of dolphin.hull.panels) p.prevWet = 0;
+      freeze(false);
+      water.setPreset(savedPreset);
+      cameraReport();
+      return { lockedAt, relMin, relMax, speedLocked, breaches, diveDrop, lockAfter };
     },
 
     /**
@@ -804,7 +869,8 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         const x = cx + (rnd() - 0.5) * span;
         const z = cz + (rnd() - 0.5) * span;
         const cpu = ocean.getWaterHeight(x, z);
-        const gpu = ocean.gpuProbeHeight(x, z);
+        // Read back around the CPU height so 500 m crests stay in range.
+        const gpu = ocean.gpuProbeHeight(x, z, Math.round(cpu));
         errors.push(Math.abs(cpu - gpu));
       }
       errors.sort((a, b) => a - b);
