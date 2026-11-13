@@ -12,6 +12,7 @@ import { HUD } from "./hud.js";
 import { Post } from "./post.js";
 import { Spindrift } from "./spindrift.js";
 import { buildEnvironments } from "./environment.js";
+import { WaterRefraction, REFRACTION_LAYER } from "./refraction.js";
 import { WaterDebug } from "./water/debug.js";
 import { createScenarios } from "./water/scenarios.js";
 import { clamp, lerp, smoothstep } from "./utils.js";
@@ -95,6 +96,17 @@ async function boot() {
       o.material.envMapIntensity = 1;
       dolphinMaterials.push(o.material);
     }
+  });
+  // The dolphin (and the lights on it) also go into the pass that lets the
+  // water show what is under its surface.
+  const refraction = new WaterRefraction(renderer);
+  for (const part of [dolphin.model, dolphin.root]) {
+    part?.traverse((o) => {
+      if (o.isMesh) o.layers.enable(REFRACTION_LAYER);
+    });
+  }
+  scene.traverse((o) => {
+    if (o.isLight) o.layers.enable(REFRACTION_LAYER);
   });
   const cameraRig = new CameraRig(camera, ocean);
   const post = new Post(renderer, scene, camera);
@@ -555,6 +567,25 @@ async function boot() {
     // enough to the dolphin to be caught by its spray; a breach seen from a
     // few body lengths away leaves the lens dry, as it would a real camera.
     const lensSpray = 1 - THREE.MathUtils.smoothstep(camera.position.distanceTo(dolphin.position), 2.5, 6);
+    // Seen from the air, the water shows the dolphin under its surface
+    // until it is too deep to make out.
+    const dolphinDepth = dolphin.tailUniforms.waterLevel.value - dolphin.position.y;
+    const refractionOn = camState.underwater < 0.5 && dolphinDepth > -1.5 && dolphinDepth < 14;
+    if (refractionOn) {
+      const t = post.composer.renderTarget1;
+      refraction.setSize(t.width * 0.5, t.height * 0.5);
+      // Under the water the skin reflects the water around it, not the sky.
+      for (const m of dolphinMaterials) {
+        m.envMap = envMaps.below;
+        m.envMapIntensity = 0.12;
+      }
+      refraction.render(scene, camera);
+      for (const m of dolphinMaterials) {
+        m.envMap = envMaps.above;
+        m.envMapIntensity = 0.8;
+      }
+    }
+    ocean.setRefraction(refraction, refractionOn, camera);
     post.render(dt, {
       underwater: camState.underwater,
       wetness: Math.max(camState.wetness, dolphin.wetness * 0.6 * lensSpray),

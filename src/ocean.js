@@ -1,79 +1,13 @@
 import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import { clamp, glslCaustics, glslFog, glslNoise } from "./utils.js";
+import { OceanRipples, RIPPLE_CASCADES } from "./ripples.js";
 import { WaveField } from "./water/field.js";
 import { SurfSolver } from "./water/solver.js";
 import { FoamField } from "./water/foam.js";
 import { makeBathymetry } from "./water/bathymetry.js";
 import { MAX_WAVES, probeFragmentShader, waterVertexShader } from "./water/shaders.js";
 import { glslSky } from "./atmosphere.js";
-
-/**
- * Seamless procedural ripple maps. Three independent maps are sampled at
- * non-commensurate world scales in the shader, which is the visual stand-in
- * for three FFT cascades: high-frequency detail only, never physics.
- */
-function makeWaterNormalTexture(size = 256, seed = 1) {
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  const image = ctx.createImageData(size, size);
-  const data = image.data;
-  const tau = Math.PI * 2;
-  const waves = [
-    [3, 5, 0.42, 0.0],
-    [7, -2, 0.3, 1.7],
-    [-5, 9, 0.24, 3.1],
-    [11, 7, 0.16, 5.2],
-    [-13, 9, 0.12, 2.4],
-    [17, -5, 0.09, 4.6],
-    [-9, -17, 0.07, 0.8],
-    [23, 7, 0.05, 3.9],
-    [5, -11, 0.18, 1.0],
-    [-19, 13, 0.06, 2.9],
-    [29, 3, 0.04, 5.8],
-    [2, 19, 0.1, 4.2],
-  ];
-  const phaseShift = seed * 1.937;
-  let p = 0;
-  for (let y = 0; y < size; y++) {
-    const v = y / size;
-    for (let x = 0; x < size; x++) {
-      const u = x / size;
-      let h = 0;
-      let dhdu = 0;
-      let dhdv = 0;
-      for (let i = 0; i < waves.length; i++) {
-        const w = waves[i];
-        const a = tau * (w[0] * u + w[1] * v) + w[3] + phaseShift * (i + 1);
-        const s = Math.sin(a);
-        const c = Math.cos(a) * w[2] * tau;
-        h += s * w[2];
-        dhdu += c * w[0];
-        dhdv += c * w[1];
-      }
-      const scale = 0.0042;
-      let nx = -dhdu * scale;
-      let nz = -dhdv * scale;
-      const len = Math.hypot(nx, 1, nz);
-      nx /= len;
-      nz /= len;
-      data[p++] = (nx * 0.5 + 0.5) * 255;
-      data[p++] = (nz * 0.5 + 0.5) * 255;
-      data[p++] = Math.max(0, Math.min(255, (0.5 + h * 0.3) * 255));
-      data[p++] = 255;
-    }
-  }
-  ctx.putImageData(image, 0, 0);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
-  texture.magFilter = THREE.LinearFilter;
-  texture.generateMipmaps = true;
-  texture.anisotropy = 4;
-  texture.colorSpace = THREE.NoColorSpace;
-  return texture;
-}
 
 const FULLSCREEN_VERT = /* glsl */ `
   varying vec2 vUv;
@@ -322,6 +256,7 @@ export class Ocean {
     this.solver = new SurfSolver(this.water, this.bathy);
     this.foamField = new FoamField(this.water, this.bathy);
     this.sim = new SurfaceSimulation(renderer);
+    this.ripples = new OceanRipples(renderer);
     this.lastSample = {};
     this._surfaceSample = {};
     this._bodySample = {};
@@ -374,10 +309,10 @@ export class Ocean {
       uFoamThreshold: { value: TUNING.water.foamThreshold },
       uWindDir: { value: new THREE.Vector2(1, 0) },
       uDetailStrength: { value: TUNING.water.detailStrength },
-      uDetailScale: { value: new THREE.Vector3(53.0, 17.0, 5.7) },
-      uDetail0: { value: makeWaterNormalTexture(256, 1) },
-      uDetail1: { value: makeWaterNormalTexture(256, 2) },
-      uDetail2: { value: makeWaterNormalTexture(256, 3) },
+      uRipple0: { value: this.ripples.textures[0] },
+      uRipple1: { value: this.ripples.textures[1] },
+      uRipple2: { value: this.ripples.textures[2] },
+      uRippleL: { value: new THREE.Vector3(...RIPPLE_CASCADES.map((c) => c.L)) },
       uBathy: { value: bathy.texture },
       uPhaseField: { value: bathy.phaseTexture },
       uPhaseFieldSize: { value: bathy.size },
@@ -426,6 +361,11 @@ export class Ocean {
       uWhitecaps: { value: TUNING.visuals.whitecaps },
       uFoamStreaks: { value: TUNING.visuals.foamStreaks },
       uHorizonFog: { value: TUNING.visuals.horizonFog },
+      uRefrColor: { value: null },
+      uRefrDepth: { value: null },
+      uRefrOn: { value: 0 },
+      uViewport: { value: new THREE.Vector2(1, 1) },
+      uCamNF: { value: new THREE.Vector2(0.1, 1000) },
     };
 
     this.material = this._buildMaterial();
@@ -433,6 +373,13 @@ export class Ocean {
     this.mesh = new THREE.Mesh(this.geometry, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 1;
+    // The refraction lookup needs the size of the target being drawn into
+    // (the composer renders below screen resolution).
+    const viewport = new THREE.Vector4();
+    this.mesh.onBeforeRender = (renderer) => {
+      renderer.getCurrentViewport(viewport);
+      this.uniforms.uViewport.value.set(viewport.z, viewport.w);
+    };
     this.scene.add(this.mesh);
 
     this.probeTarget = new THREE.WebGLRenderTarget(1, 1, {
@@ -540,10 +487,10 @@ export class Ocean {
         uniform float uFoamThreshold;
         uniform vec2 uWindDir;
         uniform float uDetailStrength;
-        uniform vec3 uDetailScale;
-        uniform sampler2D uDetail0;
-        uniform sampler2D uDetail1;
-        uniform sampler2D uDetail2;
+        uniform sampler2D uRipple0;
+        uniform sampler2D uRipple1;
+        uniform sampler2D uRipple2;
+        uniform vec3 uRippleL;
         uniform sampler2D uBathy;
         uniform float uBathyExtent;
         uniform float uBathyMaxDepth;
@@ -567,6 +514,14 @@ export class Ocean {
         uniform float uWhitecaps;
         uniform float uFoamStreaks;
         uniform float uHorizonFog;
+        uniform sampler2D uRefrColor;
+        uniform sampler2D uRefrDepth;
+        uniform float uRefrOn;
+        uniform vec2 uViewport;
+        uniform vec2 uCamNF;
+        float perspDepthToViewZ(float d) {
+          return (uCamNF.x * uCamNF.y) / ((uCamNF.y - uCamNF.x) * d - uCamNF.y);
+        }
         uniform sampler2D uSimState;
         uniform vec2 uSimCenter;
         uniform float uSimExtent;
@@ -751,52 +706,63 @@ export class Ocean {
           return texture2D(uSimState, uv).ba * m * uSimScale;
         }
 
-        vec3 skyReflection(vec3 d) {
+        vec3 skyReflection(vec3 d, float detail) {
           // A ray reflected downward meets the next wave, not the sky: it
           // sees sea and haze, about the colour of the horizon.
           float down = smoothstep(0.0, -0.05, d.y);
           d.y = abs(d.y);
-          // A wind-roughened sea reflects a blurred, slightly darker sky.
-          vec3 c = skyColor(d, uSunDir, uTime, 0.4);
+          vec3 c = skyColor(d, uSunDir, uTime, detail);
           c = mix(c, skyHorizonColor(d, uSunDir) * 0.95, down);
-          return c * 0.82;
+          return c * 0.9;
         }
 
+        // Short-wave detail from the live spectrum (src/ripples.js): three
+        // cascades of real, dispersive wind waves in the wind's frame, holding
+        // slope x, slope z, height and curvature. Slopes are physical.
+        float gRippleVar = 0.0;
+        vec2 rippleFrame(vec2 p) {
+          return vec2(dot(p, uWindDir), dot(p, vec2(-uWindDir.y, uWindDir.x)));
+        }
+        vec2 rippleWorld(vec2 s) {
+          return s.x * uWindDir + s.y * vec2(-uWindDir.y, uWindDir.x);
+        }
+
+        // Returns minus the ripple slope (the tilt it adds to the normal).
+        // Each cascade fades once a pixel spans a good part of its waves,
+        // where mip filtering can no longer average them (a pixel at a
+        // grazing angle covers a long strip of sea). The variance it would
+        // have added is kept as roughness for the reflection.
         vec2 detailSlope(vec2 p, float dist, float foot) {
-          // Three non-commensurate cascades. The far fade is a cheap normal
-          // filter: sub-pixel ripple slopes are removed before they shimmer.
-          float fadeNear = 1.0 - smoothstep(120.0, 1100.0, dist);
-          float fadeFar = 1.0 - smoothstep(1800.0, 4200.0, dist);
-          // A pixel seen at a grazing angle covers a long strip of sea, far
-          // longer than the mip and anisotropic filter can average, so the
-          // ripples alias into dark dashes. Fade each cascade out once a
-          // pixel spans a good part of its ripple wavelength; what is left
-          // reflects the horizon, as the far sea does seen from low down.
-          vec3 fr = 1.0 - smoothstep(uDetailScale / 24.0, uDetailScale / 6.0, vec3(foot));
-          float fr3 = 1.0 - smoothstep(210.0 / 24.0, 210.0 / 6.0, foot);
-          float fr4 = 1.0 - smoothstep(640.0 / 24.0, 640.0 / 6.0, foot);
-          vec2 drift = uWindDir * uTime;
-          vec2 uv0 = p / uDetailScale.x + drift * 0.009;
-          vec2 uv1 = p / uDetailScale.y + vec2(-uWindDir.y, uWindDir.x) * uTime * 0.011;
-          vec2 uv2 = p / uDetailScale.z + drift * 0.017;
-          vec2 s0 = texture2D(uDetail0, uv0).rg * 2.0 - 1.0;
-          vec2 s1 = texture2D(uDetail1, uv1).rg * 2.0 - 1.0;
-          vec2 s2 = texture2D(uDetail2, uv2).rg * 2.0 - 1.0;
-          // A fourth, much larger cascade only fades in with distance, so a
-          // 500 m face seen from a kilometre away still carries chop.
-          vec2 s3 = texture2D(uDetail1, p / 210.0 + drift * 0.004).rg * 2.0 - 1.0;
-          vec2 s4 = texture2D(uDetail2, p / 640.0 - drift * 0.002).rg * 2.0 - 1.0;
+          vec2 pw = rippleFrame(p);
+          float gain = uDetailStrength / 0.55;
+          vec3 fr = 1.0 - smoothstep(uRippleL / 40.0, uRippleL / 8.0, vec3(foot));
+          vec4 c0 = texture2D(uRipple0, pw / uRippleL.x);
+          vec4 c1 = texture2D(uRipple1, pw / uRippleL.y + 0.37);
+          vec4 c2 = texture2D(uRipple2, pw / uRippleL.z + 0.71);
+          vec2 s = c0.xy * fr.x + c1.xy * fr.y + c2.xy * fr.z;
+          // Larger versions of the chop carry texture onto a 500 m face seen
+          // from a kilometre away. A self-similar sea keeps its slopes when
+          // scaled, so they reuse the first cascade's slopes as they are.
           float fadeBig = smoothstep(60.0, 600.0, dist);
-          vec2 s = s0 * 0.52 * fadeNear * fr.x + s1 * 0.32 * fadeNear * fr.y + s2 * 0.2 * fadeFar * fr.z;
-          s += (s3 * 0.42 * fr3 + s4 * 0.3 * fr4) * fadeBig;
-          return s * uDetailStrength;
+          float f3 = 1.0 - smoothstep(210.0 / 40.0, 210.0 / 8.0, foot);
+          float f4 = 1.0 - smoothstep(640.0 / 40.0, 640.0 / 8.0, foot);
+          vec2 s3 = texture2D(uRipple0, pw / 210.0 + 0.19).xy;
+          vec2 s4 = texture2D(uRipple0, pw / 640.0 + 0.53).xy;
+          s += (s3 * 0.7 * f3 + s4 * 0.5 * f4) * fadeBig;
+          // Mean square slope of what was filtered away (the bands' rms
+          // slopes are 0.075, 0.085 and 0.06 per axis).
+          vec3 lost = (1.0 - fr) * vec3(0.0113, 0.0145, 0.0072);
+          gRippleVar = (lost.x + lost.y + lost.z) * gain * gain;
+          return -rippleWorld(s) * gain;
         }
 
+        // Ripple height around 0.5 for the shading terms that want it.
         float detailHeight(vec2 p, float dist) {
           float fade = 1.0 - smoothstep(150.0, 900.0, dist);
-          float h0 = texture2D(uDetail0, p / uDetailScale.x + uWindDir * uTime * 0.009).b;
-          float h1 = texture2D(uDetail1, p / uDetailScale.y + vec2(-uWindDir.y, uWindDir.x) * uTime * 0.011).b;
-          return (h0 * 0.6 + h1 * 0.4) * fade;
+          vec2 pw = rippleFrame(p);
+          float h0 = texture2D(uRipple0, pw / uRippleL.x).z;
+          float h1 = texture2D(uRipple1, pw / uRippleL.y + 0.37).z;
+          return clamp(0.5 + h0 * 2.5 + h1 * 9.0, 0.0, 1.0) * fade;
         }
 
         void main() {
@@ -805,7 +771,7 @@ export class Ocean {
           float footW = length(fwidth(vWorld.xz));
           vec2 detail = detailSlope(vWorld.xz, vDistance, footW);
           float microHeight = detailHeight(vWorld.xz, vDistance);
-          vec3 microN = normalize(vec3(n.x + detail.x * 0.3, n.y, n.z + detail.y * 0.3));
+          vec3 microN = normalize(vec3(n.x + detail.x, n.y, n.z + detail.y));
           if (microN.y < 0.0) microN = -microN;
 
           float distFilter = smoothstep(900.0, 5200.0, vDistance);
@@ -906,6 +872,23 @@ export class Ocean {
           vec2 fp = foamPattern(p, foamDensity, vDistance);
           float foamCover = fp.x;
           float foamTex = fp.y;
+          // Fresh whitewater is not a sheet: it is a heap of churned clots
+          // that fray at the edge into tongues and lumps, with holes of
+          // aerated turquoise water between them, and it boils.
+          if (freshCover > 0.01 && vDistance < 80.0) {
+            vec2 cp = p + (vec2(vnoise(p * 1.3 + 2.0), vnoise(p * 1.3 - 6.0)) - 0.5) * 0.9;
+            float c1 = fbm2(cp * 2.2 + vec2(uTime * 0.3, -uTime * 0.22));
+            float c2 = vnoise(cp * 6.5 - vec2(uTime * 0.7, uTime * 0.45));
+            float c3 = vnoise(cp * 17.0 + vec2(uTime * 1.1, -uTime * 0.8));
+            float churnN = c1 * 0.6 + c2 * 0.28 + c3 * 0.12;
+            float heap = clamp(wake.y, 0.0, 1.4) * (0.45 + 1.1 * churnN);
+            float wwCover = smoothstep(0.32, 0.7, heap);
+            float hole = smoothstep(0.4, 0.24, churnN) * (1.0 - smoothstep(0.9, 1.4, wake.y));
+            wwCover *= 1.0 - 0.8 * hole;
+            float keep = freshCover * (1.0 - smoothstep(40.0, 80.0, vDistance));
+            foamCover = mix(foamCover, wwCover, keep);
+            foamTex = mix(foamTex, clamp(0.2 + 1.1 * (churnN - 0.3), 0.0, 1.0), keep);
+          }
           // Far foam is unresolved: softer and thinner, never paint flecks.
           foamCover *= 1.0 - 0.45 * smoothstep(200.0, 1200.0, vDistance);
           if (wake.x + wake.y > 0.004) {
@@ -947,14 +930,26 @@ export class Ocean {
             // face the camera, where they reflect the horizon behind them.
             vec3 shadeN = microN;
             float nv = dot(view, shadeN);
+            // How far it had to be tipped: such a facet stands for the hidden
+            // back of a ripple, which shows the haze over the next ripple,
+            // never a crisp piece of the coast.
+            float tipped = smoothstep(0.0, 0.1, 0.06 - nv);
             if (nv < 0.06) shadeN = normalize(shadeN + view * (0.06 - nv));
             vec3 microN = shadeN;
             float cosView = clamp(dot(view, microN), 0.0, 1.0);
             float fres = 0.02 + 0.98 * pow(1.0 - cosView, 5.0);
-            // A rough sea never reaches mirror reflectance at grazing angles.
-            fres = min(fres, 0.52);
+            // Where the ripples are resolved each facet has its own Fresnel,
+            // up to near-mirror at grazing angles. Where they are filtered
+            // away (far off, or seen very flat) the pixel averages many
+            // facets, some hidden and some facing up, and the sea never
+            // reaches mirror reflectance.
+            float rough = smoothstep(0.0, 0.025, gRippleVar);
+            fres = min(fres, mix(0.92, 0.5, rough));
             vec3 refl = reflect(-view, microN);
-            vec3 sky = skyReflection(refl);
+            // A smooth patch reflects the clouds; a rough one a blur of them.
+            vec3 sky = skyReflection(refl, mix(0.85, 0.35, rough) * (1.0 - tipped));
+            vec3 haze = skyHorizonColor(normalize(vec3(refl.x, 0.0, refl.z) + vec3(1e-4, 0.0, 0.0)), uSunDir) * 0.86;
+            sky = mix(sky, haze, tipped);
             vec3 viewFlat = normalize(vec3(-view.x, 0.0, -view.z) + vec3(1e-4, 0.0, 0.0));
             vec3 horizon = skyHorizonColor(viewFlat, uSunDir);
 
@@ -971,7 +966,9 @@ export class Ocean {
             // translucent turquoise of the reference sea. Looking toward the
             // sun the whole crest glows.
             float thin = max(smoothstep(-0.15, 0.9, vCrest), smoothstep(0.45, 1.0, megaRise));
-            vec2 nH = microN.xz;
+            // Light through the water follows the wave's shape, not each
+            // ripple on it: take the facing from the wave normal.
+            vec2 nH = mix(n.xz, microN.xz, 0.25);
             vec2 vH = view.xz / max(length(view.xz), 1e-4);
             float faceView = clamp(dot(nH, vH) * 3.0, 0.0, 1.0);
             float towardSun = pow(clamp(dot(-view, uSunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
@@ -986,14 +983,56 @@ export class Ocean {
             // Bubbles below the foam scatter the light: pale turquoise.
             body = mix(body, sssColor * 0.9 + 0.08, clamp(aeration * 0.75 + foam * 0.3, 0.0, 0.85));
 
+            // What is under the surface (the dolphin), seen through it: bent
+            // by the ripples, dimmed and tinted by the water in between, and
+            // veiled by the light the water itself scatters toward the eye.
+            if (uRefrOn > 0.5) {
+              vec2 suv = gl_FragCoord.xy / uViewport;
+              float zWater = -perspDepthToViewZ(gl_FragCoord.z);
+              // Bend the view by the slope of the waves a body's width or
+              // more across (the longest ripple cascade). A ray crossing the
+              // surface turns by about a quarter of the slope, so the image
+              // shifts by that times the water's thickness; in screen terms
+              // the shift shrinks with distance. The centimetre ripples only
+              // shimmer the image, which the soft lookup below stands for.
+              vec2 pw = rippleFrame(p);
+              vec2 sLong = texture2D(uRipple0, pw / uRippleL.x).xy
+                + texture2D(uRipple1, pw / uRippleL.y + 0.37).xy * 0.6;
+              vec2 tilt = -rippleWorld(sLong) * (uDetailStrength / 0.55);
+              vec3 nv = (viewMatrix * vec4(tilt.x, 0.0, tilt.y, 0.0)).xyz;
+              float thick0 = -perspDepthToViewZ(texture2D(uRefrDepth, suv).r) - zWater;
+              vec2 shift = nv.xy * clamp(thick0, 0.0, 3.0) * 0.14 / max(zWater, 1.0);
+              float sl = length(shift);
+              if (sl > 0.035) shift *= 0.035 / sl;
+              vec2 bent = suv + shift;
+              float thick = -perspDepthToViewZ(texture2D(uRefrDepth, bent).r) - zWater;
+              // The water scatters the image more the further it travels.
+              vec2 blur = vec2(1.0, uViewport.x / uViewport.y) * (0.0015 + 0.004 * clamp(thick, 0.0, 4.0) / max(zWater, 1.0));
+              vec4 rc = texture2D(uRefrColor, bent) * 0.4
+                + texture2D(uRefrColor, bent + vec2(blur.x, 0.0)) * 0.15
+                + texture2D(uRefrColor, bent - vec2(blur.x, 0.0)) * 0.15
+                + texture2D(uRefrColor, bent + vec2(0.0, blur.y)) * 0.15
+                + texture2D(uRefrColor, bent - vec2(0.0, blur.y)) * 0.15;
+              if (rc.a > 0.002) {
+                thick = thick > 0.0 ? thick : max(thick0, 0.3);
+                // The light that shows the body came down through the water
+                // before it came back up: about half again the view path.
+                vec3 T = exp(-vec3(0.45, 0.16, 0.14) * thick * 1.6);
+                vec3 seen = (rc.rgb / rc.a) * T + body * (1.0 - T);
+                float clear = rc.a * (1.0 - clamp(aeration * 1.2 + foam * 0.6, 0.0, 1.0));
+                body = mix(body, seen, clear);
+              }
+            }
+
             above = mix(body, sky, fres);
 
             // Overcast sheen: a broad soft highlight toward the hidden sun and
             // only a scatter of small sparkles, never a hard sun path.
             float sunAlign = max(dot(refl, uSunDir), 0.0);
             float sheen = pow(sunAlign, 18.0) * 0.12 + pow(sunAlign, 160.0) * 0.35;
-            float sparkle = smoothstep(0.7, 0.95, vnoise(p * 3.4 + vec2(uTime * 0.4, -uTime * 0.33)));
-            sheen += pow(sunAlign, 600.0) * sparkle * 1.4 * (1.0 - smoothstep(60.0, 500.0, vDistance));
+            // Glints: the few ripple facets tilted just right to catch the
+            // bright patch of cloud in front of the sun.
+            sheen += pow(sunAlign, 600.0) * 0.9 * (1.0 - rough);
             above += SKY_HORIZON_SUN * sheen * (1.0 - foamCover);
 
             // Foam: lit by the sky, slightly shadowed in its own cell walls.
@@ -1380,6 +1419,15 @@ export class Ocean {
     this.sim.addSplat(x, z, 0, radius, foam, fresh);
   }
 
+  /** Hand the shader what lies under the surface (see refraction.js). */
+  setRefraction(refraction, on, camera) {
+    const u = this.uniforms;
+    u.uRefrOn.value = on ? 1 : 0;
+    u.uRefrColor.value = refraction.target.texture;
+    u.uRefrDepth.value = refraction.target.depthTexture;
+    u.uCamNF.value.set(camera.near, camera.far);
+  }
+
   update(dt, playerPos, camera, underwater, wetness, context = {}) {
     this.time += dt * TUNING.water.timeScale;
     this.solver.enabled = TUNING.water.solverEnabled;
@@ -1408,6 +1456,7 @@ export class Ocean {
     this._drift.x = Number.isFinite(drift.velocityX) ? drift.velocityX : 0;
     this._drift.z = Number.isFinite(drift.velocityZ) ? drift.velocityZ : 0;
     this.sim.update(dt, playerPos, this._drift);
+    this.ripples.update(this.time);
     u.uSimState.value = this.sim.texture;
     u.uSimCenter.value.copy(this.sim.center);
     u.uSimExtent.value = this.sim.extent;

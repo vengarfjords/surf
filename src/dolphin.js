@@ -194,10 +194,12 @@ function addDolphinMaterialShader(material, uniforms) {
     shader.fragmentShader = shader.fragmentShader.replace(
       "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;",
       /* glsl */ `
-        vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;
+        // Skin against water barely reflects: their refractive indices are
+        // close, so a submerged dolphin loses nearly all of its sheen.
+        float submerged = smoothstep(0.0, 0.4, dolphinDepth);
+        vec3 outgoingLight = totalDiffuse + totalSpecular * (1.0 - 0.8 * submerged) + totalEmissiveRadiance;
         // Under the water the light reaching the skin has lost much of its
         // strength and most of its red on the way down.
-        float submerged = smoothstep(0.0, 0.4, dolphinDepth);
         vec3 waterLight = vec3(0.4, 0.55, 0.6) * exp(-max(dolphinDepth, 0.0) * 0.03);
         outgoingLight *= mix(vec3(1.0), waterLight, submerged);
       `
