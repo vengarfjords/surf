@@ -310,6 +310,12 @@ export class Hull {
     }
     const planeKeep = 1 - cfg.planeDragCut * planing;
     this.result.planing = planing;
+    // Shift dive: a tucked, streamlined body (Dolphin.streamline, 0..1).
+    // Along-body drag, the entry slam and fin lift fall away; crossflow stays,
+    // so the body still tracks along its own axis.
+    const streamline = control.streamline || 0;
+    const diveKeep = 1 - (cfg.diveDragCut ?? 0) * streamline;
+    const slamKeep = 1 - (cfg.diveSlamCut ?? 0) * streamline;
 
     for (let i = 0; i < this.panels.length; i++) {
       const p = this.panels[i];
@@ -384,10 +390,10 @@ export class Hull {
       const axial = rx * fx + ry * fy + rz * fz;
       const vnAxial = axial * (p.worldNormal.x * fx + p.worldNormal.y * fy + p.worldNormal.z * fz);
       const vnCross = vn - vnAxial;
-      const axialScale = (cfg.axialDragScale ?? 1) * planeKeep;
+      const axialScale = (cfg.axialDragScale ?? 1) * planeKeep * diveKeep;
       const normalDrag =
         0.5 * rhoMix * cdN * p.area * wet * (Math.abs(vnCross) * vnCross + axialScale * Math.abs(vnAxial) * vnAxial);
-      const tangentDrag = 0.5 * rhoMix * cdT * p.area * wet * tSpeed * planeKeep;
+      const tangentDrag = 0.5 * rhoMix * cdT * p.area * wet * tSpeed * planeKeep * diveKeep;
       dragForce += Math.abs(normalDrag) + Math.abs(tangentDrag) * tSpeed;
       p.force.addScaledVector(p.worldNormal, -normalDrag);
       p.force.x -= tx * tangentDrag;
@@ -397,7 +403,7 @@ export class Hull {
       // Wagner-style entry impulse: an extra drag coefficient while a panel
       // crosses the surface, not a permanent drag increase.
       if (p.prevWet < 0.25 && wet > 0.45 && vn > cfg.slamMinSpeed) {
-        const slam = 0.5 * rhoWater * cfg.slamDrag * p.area * vn * Math.abs(vn) * wet;
+        const slam = 0.5 * rhoWater * cfg.slamDrag * p.area * vn * Math.abs(vn) * wet * slamKeep;
         slamForce += slam;
         p.force.addScaledVector(p.worldNormal, -slam);
       }
@@ -471,7 +477,7 @@ export class Hull {
       );
       const flukeCl = clamp(flukeAlpha * cfg.flukeLiftSlope, -cfg.finLiftMax, cfg.finLiftMax);
       lift += 0.5 * rhoFin * cfg.flukeArea * flukeCl * speed * speed;
-      lift = clamp(lift, -cfg.liftCap, cfg.liftCap);
+      lift = clamp(lift, -cfg.liftCap, cfg.liftCap) * (1 - (cfg.diveFinCut ?? 0) * streamline);
       this.force.addScaledVector(this.liftDir, lift);
       this.result.liftForce = lift;
     } else {

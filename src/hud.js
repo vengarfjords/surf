@@ -213,10 +213,16 @@ export class HUD {
       if (this.started) {
         const locked = (telemetry.surfLock || 0) > 0.5;
         const label = (telemetry.surfGlide || 0) > 0.5 ? "SURFING" : telemetry.porpoising ? "PORPOISING" : "ON THE SURFACE";
-        this.el.surfaceLabel.textContent = locked || telemetry.porpoising ? label : telemetry.underwater ? "SURFACE" : "AIR";
+        this.el.surfaceLabel.textContent = telemetry.diving
+          ? "DIVING"
+          : locked || telemetry.porpoising
+            ? label
+            : telemetry.underwater
+              ? "SURFACE"
+              : "AIR";
         this.el.surfaceIndicator.classList.toggle(
           "is-visible",
-          locked || telemetry.porpoising || telemetry.depth < 1.35 || !telemetry.underwater
+          telemetry.diving || locked || telemetry.porpoising || telemetry.depth < 1.35 || !telemetry.underwater
         );
       }
     }

@@ -106,6 +106,25 @@ export const TUNING = {
     floorClearance: 0.52,
     floorBounce: 0.3,
     breachImpulse: 1.6,
+    // Shift held as the body breaks the surface: one last fluke stroke of
+    // this much speed (m/s, at surge speed; scaled by exit speed) along the
+    // path the body is already on, spread over `hydro.surfaceLeapStroke`
+    // (about 6 g) instead of the small vertical kick above.
+    breachBoost: 7,
+    // Shift held in the air: the body tucks into a streamlined dive. An
+    // extra downward pull (m/s^2, on top of gravity) and air drag cut to
+    // this fraction. Shift held through a breach arms the dive only after
+    // the top of the arc. In the water the dive's low drag is
+    // `hydro.diveDragCut`; it lasts until Shift is let go.
+    airDiveAccel: 8,
+    airDiveDrag: 0.3,
+    // A dive heading for the seabed pulls out on its own: within ~1.6 s of
+    // reaching `diveFloorClear` metres above the sand, the body opens up
+    // and the nose comes up toward `diveFloorPitch` at up to
+    // `diveFloorRate` rad/s.
+    diveFloorClear: 2.5,
+    diveFloorPitch: 0.25,
+    diveFloorRate: 2.5,
     boundaryPush: 1.8,
 
     // Airborne translation. Full gravity and a ballistic arc, shaped by the
@@ -191,6 +210,17 @@ export const TUNING = {
     planeSpeedGlide: 6,
     planeSpeedRange: 14,
     planeDragCut: 0.85,
+    // Shift dive (movement.airDiveAccel): while it lasts the body is tucked
+    // and streamlined. Axial and skin drag are cut by `diveDragCut`, the
+    // tucked flippers give `1 - diveFinCut` of their lift, the entry slam is
+    // cut by `diveSlamCut`, and the speed lost on entering the water by
+    // `diveEntryKeep`, so the velocity carries straight through the surface.
+    // Crossflow drag is unchanged: the body still tracks along its axis and
+    // the mouse still steers it. The tail does not stroke.
+    diveDragCut: 0.6,
+    diveFinCut: 0.8,
+    diveSlamCut: 0.7,
+    diveEntryKeep: 0.85,
     airDragNormal: 0.05,
     airDragTangential: 0.004,
     slamDrag: 2.4,
@@ -622,6 +652,9 @@ export const TUNE_CONTROLS = [
   { path: "movement.airLiftMax", label: "air lift max (m/s2)", min: 0, max: 20, step: 0.5 },
   { path: "movement.airGravity", label: "air gravity", min: 0, max: 14, step: 0.05 },
   { path: "movement.breachImpulse", label: "breach kick", min: 0, max: 6, step: 0.05 },
+  { path: "movement.breachBoost", label: "boosted breach (Shift)", min: 0, max: 15, step: 0.1 },
+  { path: "movement.airDiveAccel", label: "dive pull in air (Shift)", min: 0, max: 20, step: 0.1 },
+  { path: "movement.airDiveDrag", label: "dive air drag", min: 0, max: 1, step: 0.01 },
   { path: "dolphin.tailBeatSpeed", label: "tail beat", min: 0.15, max: 2.6, step: 0.01 },
   { path: "dolphin.tailBeatAccel", label: "accel beat", min: 0, max: 1.8, step: 0.01 },
   { path: "dolphin.tailWaveAmplitude", label: "tail stroke", min: 0.4, max: 5, step: 0.05 },
@@ -687,6 +720,7 @@ export const TUNE_CONTROLS = [
   { path: "hydro.surfaceTurnResponse", label: "surface turn response", min: 4, max: 20, step: 0.5 },
   { path: "hydro.surfaceLockDepth", label: "surface lock depth", min: 0, max: 1.2, step: 0.05 },
   { path: "hydro.planeDragCut", label: "planing drag cut", min: 0, max: 0.95, step: 0.01 },
+  { path: "hydro.diveDragCut", label: "dive drag cut (Shift)", min: 0, max: 0.95, step: 0.01 },
   { path: "hydro.planeSpeed", label: "planing speed", min: 10, max: 40, step: 0.5 },
   { path: "hydro.finLiftSlope", label: "fin lift", min: 0, max: 6, step: 0.05 },
   { path: "hydro.slamDrag", label: "slam drag", min: 0, max: 8, step: 0.1 },

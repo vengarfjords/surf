@@ -1,4 +1,5 @@
 import { TUNING } from "../config.js";
+import { clamp } from "../utils.js";
 
 /**
  * Seeded scenario harness for the water/dolphin coupling. These are developer
@@ -618,6 +619,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       const counts = { step: 0, accel: 0, spike: 0, airStall: 0, body: 0, head: 0, camPos: 0, camDir: 0 };
       let pending = null;
       const tumble = { kicks: 0, max: 0, time: 0, at: [] };
+      const shift = { breaches: 0, boosted: dolphin.boostBreachCount || 0, dives: 0, diveWet: 0 };
       let reroll = 0;
       let mouseX = 0;
       let mouseY = 0;
@@ -700,6 +702,46 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
             mouseX = (-err / sens) * 1.5;
             mouseY = (rnd() - 0.5) * (dolphin.leapFlight ? 800 : 200);
           }
+        } else if (program === "dive") {
+          // Breach and dive back in with Shift, over and over: Shift held
+          // through the breach (a boosted breach; the dive arms past the
+          // top) or let go on the way up and pressed again near the top,
+          // then held in the water for a while and let go.
+          control.forward = true;
+          control.rise = false;
+          const wetNow = dolphin.hydro ? dolphin.hydro.wetFraction : 1;
+          if (state.phase === undefined) state.phase = "swim";
+          if (state.phase !== "air" && dolphin.leaping && wetNow < 0.3) {
+            state.phase = "air";
+            state.hold = rnd() < 0.5;
+            mouseY = (rnd() - 0.5) * 300;
+          }
+          if (state.phase === "air") {
+            control.boost = state.hold || dolphin.velocity.y < 1.5;
+            if (!dolphin.leaping) {
+              state.phase = "under";
+              state.left = 0.3 + rnd() * 2.5;
+              mouseY = (rnd() - 0.5) * 200;
+            }
+          } else if (state.phase === "under") {
+            state.left -= dt;
+            if (state.left <= 0) {
+              control.boost = false;
+              state.phase = "swim";
+              state.aim = 0;
+              reroll = 0.3;
+            }
+          } else if (reroll <= 0) {
+            // Swim: level off, aim down a little, then pull up hard to breach.
+            state.aim = ((state.aim || 0) + 1) % 3;
+            reroll = state.aim === 2 ? 0.5 + rnd() * 0.6 : 0.3 + rnd() * 0.7;
+            control.boost = rnd() < 0.7;
+            mouseY = state.aim === 0 ? 0 : state.aim === 1 ? 200 + rnd() * 300 : -600 - rnd() * 400;
+            const want = shore + (rnd() - 0.5) * 2;
+            let err = want - dolphin.targetYaw;
+            err = Math.atan2(Math.sin(err), Math.cos(err));
+            mouseX = (-err / sens) * 1.2;
+          }
         } else if (program === "free") {
           control.forward = true;
           control.rise = false;
@@ -765,7 +807,9 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         if (dry && prev.dry) {
           const loss = (prev.v.length() - v.length()) / dt;
           const g = 9.81 * Math.max(0, v.y) / Math.max(1, v.length());
-          const excess = loss - g - 0.01 * v.length() * v.length() * 0.05;
+          // A Shift dive pulls down on purpose (`movement.airDiveAccel`).
+          const pull = dolphin.diveState ? TUNING.movement.airDiveAccel * Math.max(0, v.y) / Math.max(1, v.length()) : 0;
+          const excess = loss - g - pull - 0.01 * v.length() * v.length() * 0.05;
           if (excess > 6) note("airStall", excess, elapsed, dt);
         }
         prev.dry = dry;
@@ -818,6 +862,11 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         const tmag = Math.max(Math.abs(dolphin.tumbleRoll || 0), Math.abs(dolphin.tumblePitch || 0));
         tumble.max = Math.max(tumble.max, tmag);
         if (tmag > 0.15) tumble.time += dt;
+        if (dolphin.diveState && !prev.dive) shift.dives++;
+        if (dolphin.leaping && !prev.leaping) shift.breaches++;
+        if (dolphin.diveState && dolphin.hydro && dolphin.hydro.wetFraction > 0.5) shift.diveWet += dt;
+        prev.dive = dolphin.diveState;
+        prev.leaping = dolphin.leaping;
         prev.p.copy(p);
         prev.v.copy(v);
         prev.tp = dolphin.targetPitch;
@@ -839,7 +888,9 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       const round = (o) => Object.fromEntries(Object.entries(o).map(([k, x]) => [k, +x.toFixed(2)]));
       tumble.max = +tumble.max.toFixed(2);
       tumble.time = +tumble.time.toFixed(1);
-      return { program, where, dt: opts.dt ?? 1 / 60, seed: opts.seed ?? 1, frames, finite, counts, worst: round(worst), tumble, flags };
+      shift.boosted = (dolphin.boostBreachCount || 0) - shift.boosted;
+      shift.diveWet = +shift.diveWet.toFixed(1);
+      return { program, where, dt: opts.dt ?? 1 / 60, seed: opts.seed ?? 1, frames, finite, counts, worst: round(worst), tumble, shift, flags };
     },
 
     /**
@@ -1320,6 +1371,132 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       cameraReport();
       const out = { boost, at1: at[1], at2: at[2], at4: at[4], top, after2sCoast: coast2 };
       if (surface) Object.assign(out, { relMin, relMax, trace, breaches: dolphin.breachCount });
+      return out;
+    },
+
+    /**
+     * Shift transitions on calm water (deterministic, 60 Hz). The dolphin
+     * surges up from `depth` m at `pitch` rad (starting at `speed` m/s) and
+     * breaks the surface; W is let go once it is clear of the water.
+     *   opts.breach: "boost" (Shift held through the breach) or "plain"
+     *                (Shift let go 2.5 m below the surface).
+     *   opts.air: "none" (no Shift in the air), "hold" (Shift kept from the
+     *             breach) or "press" (Shift pressed at the top of the arc).
+     *   opts.release: s after re-entry to let go of Shift (default: never).
+     * Reports the exit speed, the top of the arc above the surface, air
+     * time and length, entry speed and angle, speed 0.5 s and 1 s after
+     * entry, the deepest point in 2 s, and the worst one-frame
+     * acceleration in the air and around the entry.
+     */
+    async shiftDive(opts = {}) {
+      const saved = saveState();
+      const savedPreset = TUNING.water.preset;
+      const savedTime = TUNING.water.timeScale;
+      water.setPreset("calm");
+      freeze(true);
+      TUNING.water.timeScale = 0;
+      const savedClock = ocean.time;
+      // A fixed clock so every mode meets the same swell.
+      ocean.time = opts.clock ?? 40;
+      water.setTime(ocean.time);
+      const depth = opts.depth ?? 8;
+      const pitch = opts.pitch ?? 0.7;
+      const speed0 = opts.speed ?? 20;
+      const breachMode = opts.breach ?? "boost";
+      const airMode = opts.air ?? "none";
+      // Out past the shelf edge, ~60 m of water, so a dive has room to run.
+      const x = opts.x ?? -985;
+      const z = opts.z ?? -690;
+      const yaw = opts.yaw ?? 1.2;
+      setPose(x, ocean.getWaterHeight(x, z) - depth, z, yaw, pitch);
+      dolphin.targetYaw = dolphin.yaw = yaw;
+      dolphin.targetPitch = dolphin.pitch = pitch;
+      // The climb is the player's own (as if steered up with the mouse), so
+      // the surface ride trim does not take it for drift and level it out.
+      dolphin.rideOffset = pitch;
+      dolphin.velocity.copy(dolphin.forward).multiplyScalar(speed0);
+      // Start from a body that has been under water all along: every panel
+      // wet (no entry slam on the first step) and no tilt left from the
+      // last run.
+      for (const p of dolphin.hull.panels) p.prevWet = 1;
+      dolphin.waterTilt.set(0, 0, 0);
+      dolphin.waterTiltRate.set(0, 0, 0);
+      const control = botInput();
+      control.forward = true;
+      control.boost = true;
+      const dt = 1 / 60;
+      const boosts0 = dolphin.boostBreachCount || 0;
+      const out = { water: ocean.getWaterHeight(x, z) - seabed.getSurfaceHeight(x, z), breach: breachMode, air: airMode, exitSpeed: null, exitPitch: null, apex: -Infinity, airTime: 0, airLength: 0,
+        entrySpeed: null, entryAngle: null, entryDive: false, speed05: null, speed1: null, deepest: 0, depthAt1: null,
+        aAir: 0, aEntry: 0, boosted: 0 };
+      let phase = "up";
+      let tExit = 0;
+      let tEntry = 0;
+      let exitX = 0;
+      let exitZ = 0;
+      const prevV = dolphin.velocity.clone();
+      for (let t = 0; t < (opts.seconds ?? 8); t += dt) {
+        const h = ocean.getWaterHeight(dolphin.position.x, dolphin.position.z);
+        const rel = dolphin.position.y - h;
+        if (phase === "up") {
+          if (breachMode === "plain" && rel > -2.5) control.boost = false;
+          if (dolphin.leaping) {
+            phase = "air";
+            tExit = t;
+            exitX = dolphin.position.x;
+            exitZ = dolphin.position.z;
+            out.exitSpeed = dolphin.velocity.length();
+            out.exitPitch = Math.asin(clamp(dolphin.velocity.y / Math.max(out.exitSpeed, 1e-3), -1, 1));
+          }
+        }
+        if (phase === "air") {
+          control.forward = false;
+          if (airMode === "none") control.boost = false;
+          else if (airMode === "press") control.boost = dolphin.velocity.y <= 0;
+          out.apex = Math.max(out.apex, rel);
+          if (!dolphin.leaping) {
+            phase = "water";
+            tEntry = t;
+            out.airTime = t - tExit;
+            out.airLength = Math.hypot(dolphin.position.x - exitX, dolphin.position.z - exitZ);
+            out.entrySpeed = dolphin.velocity.length();
+            out.entryAngle = Math.asin(clamp(dolphin.velocity.y / Math.max(out.entrySpeed, 1e-3), -1, 1));
+            out.entryDive = !!dolphin.diveState;
+          }
+        }
+        if (phase === "water") {
+          const since = t - tEntry;
+          if (opts.release !== undefined && since >= opts.release) control.boost = false;
+          if (out.speed05 === null && since >= 0.5) out.speed05 = dolphin.velocity.length();
+          if (out.speed1 === null && since >= 1) {
+            out.speed1 = dolphin.velocity.length();
+            out.depthAt1 = -rel;
+          }
+          if (since <= 2) out.deepest = Math.max(out.deepest, -rel);
+          const alt = dolphin.position.y - seabed.getSurfaceHeight(dolphin.position.x, dolphin.position.z);
+          out.floorMin = Math.min(out.floorMin ?? Infinity, alt);
+          if (dolphin.contact.floor) out.floorHits = (out.floorHits || 0) + 1;
+          if (since > 2.5) break;
+        }
+        if (opts.trace && Math.round(t / dt) % (opts.traceEvery || 6) === 0)
+          (out.trace || (out.trace = [])).push([+t.toFixed(2), +rel.toFixed(2), +dolphin.velocity.length().toFixed(1), +Math.asin(clamp(dolphin.velocity.y / Math.max(1e-3, dolphin.velocity.length()), -1, 1)).toFixed(2), +dolphin.pitch.toFixed(2), +Math.asin(clamp(dolphin.forward.y, -1, 1)).toFixed(2), +dolphin.targetPitch.toFixed(2), +(dolphin.airAim||0).toFixed(2), +dolphin.waterTilt.x.toFixed(2), +(dolphin.rideHold||0).toFixed(2), !!dolphin._flying, !!dolphin._leapNose, +dolphin.hydro.wetFraction.toFixed(2), dolphin.surfLock.toFixed(2), !!dolphin.leaping, !!dolphin.leapFlight, dolphin.diveState]);
+        stepWorld(dt, control);
+        const a = prevV.distanceTo(dolphin.velocity) / dt;
+        prevV.copy(dolphin.velocity);
+        if (phase === "air") out.aAir = Math.max(out.aAir, a);
+        if (phase === "water" && t - tEntry < 0.6) out.aEntry = Math.max(out.aEntry, a);
+      }
+      out.boosted = (dolphin.boostBreachCount || 0) - boosts0;
+      out.diveAtEnd = !!dolphin.diveState;
+      ocean.time = savedClock;
+      water.setTime(savedClock);
+      TUNING.water.timeScale = savedTime;
+      restoreState(saved);
+      for (const p of dolphin.hull.panels) p.prevWet = 0;
+      dolphin.waterTilt.set(0, 0, 0);
+      dolphin.waterTiltRate.set(0, 0, 0);
+      freeze(false);
+      water.setPreset(savedPreset);
       return out;
     },
 

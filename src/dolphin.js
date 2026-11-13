@@ -259,7 +259,12 @@ export class Dolphin {
     // still steers the nose directly, but translation is now force-driven.
     this.hull = new Hull();
     this.mass = this.hull.mass;
-    this.hydroControl = { thrustAccel: 0, reverseAccel: 0, verticalAccel: 0 };
+    this.hydroControl = { thrustAccel: 0, reverseAccel: 0, verticalAccel: 0, streamline: 0 };
+    // Shift dive (see update): engaged, and how tucked the body is (0..1).
+    this.diveState = false;
+    this.streamline = 0;
+    this._boostThroughExit = false;
+    this.boostBreachCount = 0;
     this.hydro = this.hull.result;
 
     this.tailUniforms = {
@@ -696,6 +701,70 @@ export class Dolphin {
     let pitchRef = this.targetPitch;
 
     this.verticalInput = (input.rise ? 1 : 0) - (input.dive ? 1 : 0);
+
+    // --- Shift dive --------------------------------------------------------
+    // Holding Shift in the air tucks the body into a streamlined dive: an
+    // extra pull down and less air drag (dry-hull flight below), the nose
+    // kept on the flight path, and in the water far less entry loss, slam,
+    // drag and fin lift, no tail stroke, no ride trim and no surface lock
+    // (hull.js, re-entry below). The body carries its whole 3D velocity
+    // through the surface and stays tucked until Shift is let go.
+    // Pressing Shift in the air dives at once. Shift still held from a
+    // breach (a boosted breach) arms the dive only past the top of the arc,
+    // so it does not pull the body down on its way up. It never arms from a
+    // Space leap or while Space is held: those belong to the ride (a leap
+    // you land back into, porpoising), and surging riders hold Shift
+    // through them.
+    {
+      const wetNow = this.hydro ? this.hydro.wetFraction : 1;
+      const inAir = wetNow < 0.05 && (this.leaping || this.leapFlight);
+      if (!input.boost) {
+        this.diveState = false;
+        this._boostThroughExit = false;
+      } else if (
+        !this.diveState &&
+        inAir &&
+        (!this._boostThroughExit || (!this.leapFlight && this.velocity.y <= 0 && !input.rise))
+      ) {
+        this.diveState = true;
+      }
+      // The seabed: a diving dolphin knows where the bottom is and pulls out
+      // above it. Where the path would reach the sand within about 1.6 s,
+      // the body opens out of the tuck (fin lift and drag come back) and
+      // the nose comes up, and the water bends the path. Shift stays held:
+      // past the bottom the body tucks again.
+      // In the air it looks along the falling arc, and the extra pull eases
+      // off ahead of shallow water.
+      let floorNear = 0;
+      if (this.diveState && this.velocity.y < -1 && seabed) {
+        const v = this.velocity;
+        const p = this.position;
+        const fall = wetNow < 0.3 ? 0.5 * movement.airGravity : 0;
+        for (let tau = 0.2; tau <= 1.61; tau += 0.2) {
+          const fx = p.x + v.x * tau;
+          const fz = p.z + v.z * tau;
+          if (p.y + v.y * tau - fall * tau * tau - seabed.getSurfaceHeight(fx, fz) < movement.diveFloorClear) {
+            floorNear = 1 - smoothstep(0.6, 1.6, tau);
+            break;
+          }
+        }
+      }
+      this.floorPull = damp(this.floorPull || 0, floorNear, floorNear > (this.floorPull || 0) ? 12 : 3, dt);
+      if (this.floorPull < 1e-3) this.floorPull = 0;
+      if (this.floorPull > 0) {
+        const up = movement.diveFloorPitch;
+        if (this.targetPitch < up) {
+          this.targetPitch = Math.min(up, this.targetPitch + movement.diveFloorRate * this.floorPull * dt);
+          this.lastRideTarget = this.targetPitch;
+        }
+      }
+      // Tucking takes a few hundredths of a second, opening up a little longer.
+      // In the air the body stays tucked (it would only slam into the water
+      // on its belly); only the extra pull eases off (dry-hull flight).
+      const tuck = this.diveState ? 1 - (wetNow < 0.3 ? 0 : this.floorPull) : 0;
+      this.streamline = damp(this.streamline, tuck, tuck > this.streamline ? 14 : 8, dt);
+      if (this.streamline < 1e-3) this.streamline = 0;
+    }
     const lock = this._surfaceLockUpdate(dt, input, ocean, my);
     // On the surface the mouse looks instead of pitching (below).
     pitchRef -= aimDelta * lock;
@@ -745,7 +814,11 @@ export class Dolphin {
         // second, the aim relaxes over about 0.7 s. While aiming it holds,
         // and gaps between mouse reports do not count as letting go.
         this._aimIdle = Math.abs(my) > 0 || input.pitchUpKeys || input.pitchDownKeys ? 0 : (this._aimIdle || 0) + dt;
-        if (this._aimIdle > 0.25) this.airAim = damp(this.airAim || 0, 0, movement.airAimReturn, dt);
+        // Tucked for a dive (Shift), the body lines up with its path at
+        // once and much faster, so it goes into the water nose first.
+        const aimHold = this.diveState ? 0 : 0.25;
+        const aimReturn = movement.airAimReturn * (this.diveState ? 4 : 1);
+        if (this._aimIdle > aimHold) this.airAim = damp(this.airAim || 0, 0, aimReturn, dt);
         // The player can aim up to `airAimMax` off the path. A nose already
         // further off it (a breach with the nose well above a shallow path)
         // is not snapped to that limit: the air turns it in.
@@ -915,6 +988,9 @@ export class Dolphin {
       this.tailStill = damp(this.tailStill || 0, this._waveGlideTarget(thrusting), TUNING.hydro.glideRate, dt);
     }
     if (this.tailStill > 0 && thrustAccel > 0) thrustAccel *= 1 - this.tailStill;
+    // Tucked in a Shift dive the tail is still: the body glides on what it
+    // carried in.
+    if (this.streamline > 0 && thrustAccel > 0) thrustAccel *= 1 - this.streamline;
 
     let reverseAccel = 0;
     if (input.brake) {
@@ -947,6 +1023,7 @@ export class Dolphin {
     this.hydroControl.thrustAccel = thrustAccel;
     this.hydroControl.reverseAccel = reverseAccel;
     this.hydroControl.verticalAccel = verticalAccel;
+    this.hydroControl.streamline = this.streamline;
 
     let hydro = this.hydro;
     let hullMs = 0;
@@ -1006,12 +1083,16 @@ export class Dolphin {
         } else this.airLiftNow = 0;
       }
 
+      // Shift dive: an extra pull down on top of gravity, and the tucked
+      // body cuts through the air with less drag.
+      if (this.diveState) this.velocity.y -= movement.airDiveAccel * this.streamline * (1 - (this.floorPull || 0)) * dt;
+      const airDrag = 1 - (1 - movement.airDiveDrag) * this.streamline;
       let vf = this.velocity.dot(this.forward);
       let vr = this.velocity.dot(this.right);
       let vu = this.velocity.dot(this.up);
-      vf -= vf * (movement.airForwardDrag + Math.abs(vf) * movement.airForwardQuadraticDrag) * dt;
-      vr -= vr * movement.airLateralDrag * dt;
-      vu -= vu * movement.airVerticalDrag * dt;
+      vf -= vf * (movement.airForwardDrag + Math.abs(vf) * movement.airForwardQuadraticDrag) * airDrag * dt;
+      vr -= vr * movement.airLateralDrag * airDrag * dt;
+      vu -= vu * movement.airVerticalDrag * airDrag * dt;
       this.velocity
         .copy(this.forward).multiplyScalar(vf)
         .addScaledVector(this.right, vr)
@@ -1209,8 +1290,22 @@ export class Dolphin {
         this.surfLock < 0.5 &&
         !(this.leapClock > 0)
       ) {
-        this.velocity.y +=
-          movement.breachImpulse * clamp(exitSpeed / movement.boostSpeed, 0, 1.15);
+        if (input.boost && movement.breachBoost > 0) {
+          // Boosted breach (Shift): one last hard fluke stroke while the
+          // flukes are still in the water, along the path the body is on
+          // (and its axis), spread over a stroke like a leap's. It throws
+          // the body higher and further on the line it chose.
+          const P = this._leapPush || (this._leapPush = new THREE.Vector3());
+          P.copy(this.velocity).multiplyScalar(1 / Math.max(exitSpeed, 1e-3)).add(this.forward).normalize();
+          P.multiplyScalar(movement.breachBoost * clamp(exitSpeed / movement.boostSpeed, 0.5, 1.2));
+          const stroke = TUNING.hydro.surfaceLeapStroke || 0;
+          if (stroke > 0) this._leapPushT = stroke;
+          else this.velocity.add(P);
+          this.boostBreachCount++;
+        } else {
+          this.velocity.y +=
+            movement.breachImpulse * clamp(exitSpeed / movement.boostSpeed, 0, 1.15);
+        }
       }
     }
     // Breach and re-entry events use a hysteresis band: the body has to get
@@ -1221,6 +1316,8 @@ export class Dolphin {
     const clearOfWater = this.position.y > centerHeight + 0.3;
     if (!this.leaping && clearOfWater) {
       this.leaping = true;
+      // Shift held through the breach: the dive arms only past the apex.
+      this._boostThroughExit = !!input.boost;
       const exitSpeed = this.velocity.length();
       const breachPower = clamp(Math.abs(this.velocity.y) * 0.38 + exitSpeed * 0.08, 0.2, 2.1);
       this.surfaceImpulseAll(ocean, centerWater, breachPower);
@@ -1294,8 +1391,11 @@ export class Dolphin {
         const rl = Math.hypot(rx, ry, rz) || 1;
         const align = Math.max(0, (rx * this.forward.x + ry * this.forward.y + rz * this.forward.z) / rl);
         const clean = align * align;
-        const cutN = 0.32 * hit * (1 - 0.7 * clean);
-        const cutT = 0.08 * hit * (1 - 0.9 * clean);
+        // Tucked in a Shift dive the body knifes in and keeps nearly all of
+        // its speed.
+        const keep = 1 - (TUNING.hydro.diveEntryKeep ?? 0) * this.streamline;
+        const cutN = 0.32 * hit * (1 - 0.7 * clean) * keep;
+        const cutT = 0.08 * hit * (1 - 0.9 * clean) * keep;
         // Tangential part keeps 1 - cutT, normal part keeps 1 - cutN.
         const tx = rx - vn * nx;
         const ty = ry - vn * ny;
@@ -1518,6 +1618,7 @@ export class Dolphin {
     this.telemetry.surfLock = this.surfLock;
     this.telemetry.surfGlide = (this.surfGlide || 0) * this.surfLock;
     this.telemetry.porpoising = !!this.porpoising;
+    this.telemetry.diving = this.diveState;
     this.telemetry.breaches = this.breachCount;
     this.telemetry.hydro = this.hydro;
 
@@ -1563,6 +1664,10 @@ export class Dolphin {
     this.leapFlight = false;
     this._leapPushT = 0;
     this._leapNose = false;
+    this.diveState = false;
+    this.streamline = 0;
+    this.floorPull = 0;
+    this._boostThroughExit = false;
     this._lockSettle = 0;
     this.rideCmd = undefined;
     this.tailStill = 0;
@@ -1600,7 +1705,8 @@ export class Dolphin {
    */
   _surfaceLockUpdate(dt, input, ocean, my) {
     const cfg = TUNING.hydro;
-    const want = !!input.rise && !input.dive && cfg.surfaceLock > 0;
+    // A Shift dive goes through the surface; the lock waits until it ends.
+    const want = !!input.rise && !input.dive && cfg.surfaceLock > 0 && !this.diveState;
     // The surface the body follows is the water averaged over its own
     // length (longer at speed): a planing body rides over wavelets shorter
     // than itself instead of chasing every one at 70 m/s.
@@ -1972,7 +2078,8 @@ export class Dolphin {
   _rideTrim(dt, ocean, pitchInput) {
     const cfg = TUNING.hydro;
     const movement = TUNING.movement;
-    if (!(cfg.rideTrim > 0)) {
+    // No reflex pulls a Shift dive back up to the surface.
+    if (!(cfg.rideTrim > 0) || this.diveState) {
       this.rideHold = 0;
       this.rideOffset = 0;
       this.lastRideTarget = null;
