@@ -197,10 +197,27 @@ export function applyPreset(water, name) {
       // Glassy big-wave day: light wind, few whitecaps.
       foamAmount: 0.3,
     },
+    // Every wave 500 m+: the mega wave train (field.js megaAt) with a small
+    // long swell and light wind sea riding on it.
+    mega: {
+      swellHeight: 1.6,
+      swellWavelength: 400,
+      windSeaHeight: 0.4,
+      windSeaWavelength: 9.5,
+      swellDirection: 0.61,
+      swellDirectionSpread: 0.12,
+      windSeaDirection: 1.02,
+      chop: 0.72,
+      timeScale: 1.0,
+      foamAmount: 0.3,
+      megaWave: true,
+    },
   };
   const p = presets[name];
   if (!p) return false;
   Object.assign(water, p);
+  // Only the mega preset runs the 500 m wave train.
+  water.megaWave = !!p.megaWave;
   water.preset = name;
   return true;
 }

@@ -690,7 +690,15 @@ export class Dolphin {
 
     this._applyWaterAttitude(dt, pitchInput, keyTurn !== 0 || Math.abs(mx) > 0);
 
-    const forwardSpeed = this.velocity.dot(this.forward);
+    // Swim pace is speed through the water, not over the ground: a dolphin
+    // carried along by a mega wave's 60 m/s flow still strokes against the
+    // water around it. (Last frame's water velocity at the body.)
+    const wvel = this._bodyWaterVel();
+    const forwardSpeed = wvel
+      ? (this.velocity.x - wvel.x) * this.forward.x +
+        (this.velocity.y - wvel.y) * this.forward.y +
+        (this.velocity.z - wvel.z) * this.forward.z
+      : this.velocity.dot(this.forward);
     const surge = input.boost && !input.brake;
     const thrusting = (input.forward || surge) && !input.brake;
 
@@ -709,7 +717,9 @@ export class Dolphin {
       thrustAccel = accel * (0.38 + headroom * 0.62) * overrun;
     } else if (!input.brake && forwardSpeed < movement.idleGlide) {
       // A slow, always-present tail scull keeps the creature alive at rest.
-      thrustAccel = (movement.idleGlide - forwardSpeed) * 2.6;
+      // Capped: swept backwards through fast water (or just after a
+      // teleport), the scull must not turn into a sprint.
+      thrustAccel = Math.min(movement.idleGlide, movement.idleGlide - forwardSpeed) * 2.6;
     }
 
     let reverseAccel = 0;
@@ -929,7 +939,7 @@ export class Dolphin {
       this.lastSurfaceHeight === undefined || dt <= 0 ? 0 : (centerHeight - this.lastSurfaceHeight) / dt;
     this.lastSurfaceHeight = centerHeight;
     this.surfaceRate =
-      (this.surfaceRate || 0) + (clamp(surfaceRateRaw, -20, 20) - (this.surfaceRate || 0)) * Math.min(1, dt * 10);
+      (this.surfaceRate || 0) + (clamp(surfaceRateRaw, -60, 60) - (this.surfaceRate || 0)) * Math.min(1, dt * 10);
 
     if (!this.wasAbove && centerAbove) {
       // A clean breach, driven by real upward momentum through the surface
@@ -1232,6 +1242,17 @@ export class Dolphin {
    * release it. Only the steering target changes; every force on the body
    * is still the hull, fins and thrust.
    */
+  /**
+   * Water velocity at the body from the hull's last sample, or null when
+   * that sample was taken somewhere else (a teleport or scripted pose).
+   */
+  _bodyWaterVel() {
+    const h = this.hull;
+    if (!h) return null;
+    const reach = 2 + this.velocity.length() * 0.1;
+    return h.waterVelAt.distanceToSquared(this.position) < reach * reach ? h.waterVel : null;
+  }
+
   /** Forget ride-trim and surface history after a teleport or scripted pose. */
   resetRide() {
     this.rideOffset = 0;
@@ -1240,6 +1261,7 @@ export class Dolphin {
     this.lastRideTarget = null;
     this.lastSurfaceHeight = undefined;
     this.surfaceRate = 0;
+    if (this.hull) this.hull.waterVelAt.set(Infinity, 0, 0);
   }
 
   _rideTrim(dt, ocean, pitchInput) {
@@ -1258,7 +1280,15 @@ export class Dolphin {
 
     const w = ocean.getWaterSample(this.position.x, this.position.z);
     const depth = w.height - this.position.y;
-    const speed = this.velocity.length();
+    // Pitch only turns into climb through the water, so the reflex works in
+    // the water's frame: speed through it, and climb relative to its own
+    // rise. On ordinary swell that is close to the ground frame; on a mega
+    // wave face the water itself moves at tens of m/s.
+    const wv = this._bodyWaterVel();
+    const wvx = wv ? wv.x : 0;
+    const wvy = wv ? wv.y : 0;
+    const wvz = wv ? wv.z : 0;
+    const speed = Math.hypot(this.velocity.x - wvx, this.velocity.y - wvy, this.velocity.z - wvz);
     const near =
       smoothstep(-0.7, -0.15, depth) * (1 - smoothstep(cfg.rideTrimDepth * 0.6, cfg.rideTrimDepth, depth));
     const fast = smoothstep(cfg.rideTrimSpeed * 0.6, cfg.rideTrimSpeed, speed);
@@ -1266,8 +1296,8 @@ export class Dolphin {
 
     // Climb rate that follows the surface at the riding depth.
     const surfaceRate = this.surfaceRate || 0;
-    const wantVy = surfaceRate + clamp((depth - cfg.rideDepth) * cfg.rideDepthGain, -4, 4);
-    const lead = wantVy + (wantVy - this.velocity.y) * cfg.rideDamping;
+    const wantVy = surfaceRate + clamp((depth - cfg.rideDepth) * cfg.rideDepthGain, -4, 4) - wvy;
+    const lead = wantVy + (wantVy - (this.velocity.y - wvy)) * cfg.rideDamping;
     const cmd = clamp(Math.asin(clamp(lead / Math.max(3, speed), -0.95, 0.95)), -0.9, 0.9);
 
     const release = cfg.rideRelease;

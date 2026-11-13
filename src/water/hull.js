@@ -145,6 +145,9 @@ export class Hull {
     this.tmp2 = new THREE.Vector3();
     this.flow = new THREE.Vector3();
     this.waterVel = new THREE.Vector3();
+    // Where waterVel was sampled, so a stale value after a teleport is not
+    // mistaken for the water around the body.
+    this.waterVelAt = new THREE.Vector3(Infinity, 0, 0);
     this.liftDir = new THREE.Vector3();
     this.span = new THREE.Vector3();
     this.centerSample = {};
@@ -378,6 +381,7 @@ export class Hull {
       ? ocean.water.sampleForForces(pos.x, pos.y, pos.z, this.centerSample)
       : this.centerSample;
     this.waterVel.set(c.velocityX + current.x, c.velocityY + current.y, c.velocityZ + current.z);
+    this.waterVelAt.copy(pos);
     const wetFraction = clamp(wettedArea / Math.max(0.2, this.area), 0, 1);
     const underwater = wetFraction > 0.02;
     const aeration = wettedPanels > 0 ? aerationSum / wettedPanels : 0;
@@ -445,6 +449,13 @@ export class Hull {
       this.fBody.z / (this.mass * (1 + cfg.addedMassForward))
     );
     this.accel.copy(this.aBody).applyQuaternion(q);
+    // Non-hydrostatic part of the mega wave's pressure gradient
+    // (WaveField._sample megaFk): the wetted body is carried with the water
+    // where the water accelerates harder than the surface slope implies.
+    if (c.megaFkX || c.megaFkZ) {
+      this.accel.x += c.megaFkX * wetFraction;
+      this.accel.z += c.megaFkZ * wetFraction;
+    }
 
     // Propulsion is specified as an acceleration (as in the original
     // controller), so it is added after the effective-mass division. This

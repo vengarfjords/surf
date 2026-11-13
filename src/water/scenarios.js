@@ -499,6 +499,121 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     },
 
     /**
+     * Mega wave ride. Starts in the trough `lead` seconds ahead of the next
+     * 500 m+ crest (WaveField.megaSpawn), facing shore at `angle` from the
+     * travel direction, and steps `seconds` of world time. `mode`:
+     *   "hands": no input at all, the dolphin floats and the wave decides;
+     *   "swim":  W held, Shift once the face arrives, yaw held at `angle`;
+     *   "ride":  as swim, with a ridePitch depth hold just under the surface.
+     * Reports time spent on the front face near the surface, the height
+     * and speed reached, air time, and whether the state stayed finite.
+     */
+    async megaRide(mode = "hands", angle = 0, seconds = 40, lead = 10) {
+      if (!seabed || !freeze) return { error: "scenario needs seabed and freeze hooks" };
+      if (!TUNING.water.megaWave) return { error: "mega wave is off" };
+      const saved = saveState();
+      const savedTime = TUNING.water.timeScale;
+      const savedClock = ocean.time;
+      freeze(true);
+      TUNING.water.timeScale = 0;
+      const sp = water.megaSpawn(lead);
+      const q0 = { ...ocean.getWaterSample(sp.x, sp.z) };
+      const yaw = sp.heading + angle;
+      setPose(sp.x, q0.height - 0.4, sp.z, yaw, 0);
+      dolphin.targetYaw = dolphin.yaw = yaw;
+      dolphin.targetPitch = 0;
+      dolphin.velocity.set(0, 0, 0);
+      const control = botInput();
+      const sens = TUNING.movement.mouseSensitivity;
+      const front = TUNING.water.megaFront;
+      const dt = 1 / 60;
+      const trace = [];
+      const hold = {};
+      const m = {};
+      resetCamera();
+      let onFace = 0;
+      let air = 0;
+      let yMax = -Infinity;
+      let vMax = 0;
+      let aMax = 0;
+      let finite = true;
+      let prevV = dolphin.velocity.clone();
+      let elapsed = 0;
+      for (; elapsed < seconds; elapsed += dt) {
+        const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
+        const rel = dolphin.position.y - q.height;
+        water.megaAt(dolphin.position.x, dolphin.position.z, m);
+        const faceUp = m.h > 25;
+        if (mode !== "hands") {
+          let err = yaw - dolphin.targetYaw;
+          err = Math.atan2(Math.sin(err), Math.cos(err));
+          control.mdx = (-err / sens) * 0.1;
+          control.forward = true;
+          control.boost = faceUp;
+          if (mode === "ride") {
+            const wantPitch = ridePitch(rel, -0.4, hold, dt);
+            control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
+          } else control.mdy = 0;
+        }
+        stepWorld(dt, control);
+        const v = dolphin.velocity;
+        if (![v.x, v.y, v.z, dolphin.position.y].every(Number.isFinite)) {
+          finite = false;
+          break;
+        }
+        const acc = prevV.distanceTo(v) / dt;
+        prevV.copy(v);
+        aMax = Math.max(aMax, acc);
+        vMax = Math.max(vMax, v.length());
+        yMax = Math.max(yMax, dolphin.position.y);
+        if (m.xi > 0 && m.xi < 2.5 * front && m.h > 25 && Math.abs(rel) < 3) onFace += dt;
+        if (dolphin.hydro && dolphin.hydro.wetFraction < 0.02) air += dt;
+        if (Math.round(elapsed * 60) % 30 === 0) {
+          const wv = dolphin.hull.waterVel;
+          trace.push([
+            +elapsed.toFixed(1),
+            Math.round(m.xi),
+            Math.round(m.h),
+            +rel.toFixed(2),
+            +v.length().toFixed(1),
+            +(v.x * dx() + v.z * dz()).toFixed(1),
+            +v.y.toFixed(1),
+            +(dolphin.hydro ? dolphin.hydro.wetFraction : 0).toFixed(2),
+            cameraRig ? +cameraRig.surf.toFixed(2) : 0,
+            +(wv.x * dx() + wv.z * dz()).toFixed(1),
+            +wv.y.toFixed(1),
+            ...(api.megaDebug && dolphin.hydro
+              ? [+dolphin.hydro.accel.y.toFixed(1), Math.round(dolphin.hydro.liftForce), +dolphin.pitch.toFixed(2), +dolphin.forward.y.toFixed(2)]
+              : []),
+          ]);
+        }
+        if (api.onStep) await api.onStep({ elapsed, mode });
+      }
+      const end = { x: dolphin.position.x, z: dolphin.position.z };
+      TUNING.water.timeScale = savedTime;
+      ocean.time = savedClock;
+      water.setTime(savedClock);
+      restoreState(saved);
+      for (const p of dolphin.hull.panels) p.prevWet = 0;
+      dolphin.waterTilt.set(0, 0, 0);
+      dolphin.waterTiltRate.set(0, 0, 0);
+      freeze(false);
+      return {
+        wait: sp.wait,
+        speed: water.megaSpeed,
+        onFace,
+        air,
+        heightMax: yMax,
+        speedMax: vMax,
+        accelMax: aMax,
+        finite,
+        end,
+        camera: cameraReport(),
+        trace,
+      };
+    },
+
+    /**
      * Scenario 9: flat-water swim speeds. In the calm preset, holds W (or
      * W + Shift) at 2 m depth for `seconds` with offline stepping and reports
      * the speed reached, then the coast-down after letting go. Used to keep

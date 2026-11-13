@@ -257,12 +257,27 @@ export const TUNING = {
    */
   water: {
     seed: 20261109,
-    // Default sea state is the "bigwave" preset (see spectrum.js).
-    preset: "bigwave",
+    // Default sea state is the "mega" preset (see spectrum.js): every wave
+    // 500 m+, from the mega wave train below, with a small swell on top.
+    preset: "mega",
+    // Mega wave train (field.js megaAt). Crests `megaHeight` tall (each crest
+    // 0..+megaVariation taller), `megaWavelength` apart, travelling along
+    // the swell direction at sqrt(g (megaDepthRef + H)), the solitary-wave
+    // speed. Each crest is a sech^2 hump: `megaFront` metres wide ahead of
+    // the crest (the steep face), `megaBack` behind it (the long back). The
+    // troughs sit near still-water level, so the shelf never drains.
+    megaWave: true,
+    megaHeight: 520,
+    megaVariation: 0.2,
+    megaWavelength: 3000,
+    megaFront: 200,
+    megaBack: 500,
+    megaDepthRef: 40,
+    megaLateral: 0.12,
     // Centre of the big-wave reef (mirrors REEF_X/Z in utils.seabedHeight).
     surfZoneX: 700,
     surfZoneZ: -350,
-    swellHeight: 4.4,
+    swellHeight: 1.6,
     swellWavelength: 400,
     swellWavelengthSpread: 0.17,
     swellDirection: 0.61,
@@ -396,7 +411,9 @@ export const TUNING = {
     fogShallow: 0.51,
     fogDeep: 0.67,
     underwaterDensity: 0.0235,
-    aboveDensity: 0.0012,
+    // Thin enough that a 500 m mega crest a kilometre away still reads as
+    // water rather than a grey hill in the haze.
+    aboveDensity: 0.0007,
     renderScale: 0.6,
     // Optional governor: reduce composer resolution after sustained slow
     // frames, never below this scale. It only steps down, so it cannot hunt.
@@ -501,7 +518,9 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.bodyFollow", label: "segment follow", min: 0.25, max: 2.5, step: 0.01 },
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
-  { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf", "groundswell", "bigwave"] },
+  { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf", "groundswell", "bigwave", "mega"] },
+  { path: "water.megaHeight", label: "mega wave height", min: 50, max: 900, step: 10 },
+  { path: "water.megaFront", label: "mega face width", min: 80, max: 600, step: 10 },
   { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 4, step: 0.05 },
   { path: "water.swellWavelength", label: "swell λ (m)", min: 25, max: 110, step: 1 },
   { path: "water.swellDirection", label: "swell direction", min: 0, max: 6.28, step: 0.01 },

@@ -43,6 +43,11 @@ export class WaveField {
     this.lastSample = {};
     this.bathy = bathy;
     this._depthScratch = {};
+    this._megaD = {};
+    this._megaS = {};
+    this.megaCrestMod = 0;
+    this.megaIndex = 0;
+    this.megaSpeed = 0;
     this.rebuild(cfg);
   }
 
@@ -140,7 +145,12 @@ export class WaveField {
   /** Local depth, finite-depth wavenumber scale and Green's-law shoaling. */
   depthState(x, z, out = this._depthScratch) {
     const cfg = TUNING.water;
-    const depth = this.bathy ? Math.max(0.3, this.bathy.sampleDepth(x, z)) : 18;
+    // The mega wave raises the water column: the swell riding on it is in
+    // deep water and does not shoal or break on the shelf underneath.
+    const stillDepth = this.bathy ? Math.max(0.3, this.bathy.sampleDepth(x, z)) : 18;
+    const megaH = TUNING.water.megaWave ? this.megaAt(x, z, this._megaD).h : 0;
+    const depth = stillDepth + megaH;
+    out.megaH = megaH;
     if (!cfg.depthResponse) {
       out.depth = depth;
       out.ratio = 1;
@@ -211,6 +221,92 @@ export class WaveField {
       this.phase[i] = this.phase0[i] - this.omega[i] * t;
     }
     this.peakPhaseNow = this.peakIndex >= 0 ? this.phase[this.peakIndex] : 0;
+    // Mega wave train: crest 0 sits at megaSpeed * t along the travel
+    // direction from the surf-zone origin. Kept as (position mod L, crest
+    // index) so the GPU sees small, precise numbers at any sim time.
+    const cfg = TUNING.water;
+    const L = Math.max(100, cfg.megaWavelength || 3000);
+    this.megaSpeed = Math.sqrt(9.81 * ((cfg.megaDepthRef || 40) + (cfg.megaHeight || 0)));
+    const crest = this.megaSpeed * t;
+    this.megaIndex = Math.floor(crest / L);
+    this.megaCrestMod = crest - this.megaIndex * L;
+  }
+
+  /**
+   * Mega wave train: every wave 500 m+. Each crest is a sech^2 hump of
+   * height H_n (megaHeight, each crest up to megaVariation taller, with a
+   * gentle along-crest modulation), `megaFront` metres wide ahead of the
+   * crest and `megaBack` behind it, so the face is short and steep and the
+   * back long. Crests are megaWavelength apart and the troughs sit near
+   * still-water level, so the shelf never drains. Height-only (no horizontal
+   * displacement); evaluated at the parameter-space point like the rest of
+   * the field so the GPU mirrors it exactly (vertex shader `mega`).
+   * Returns the height, its slope along the travel direction, and the
+   * signed distance ahead of the nearest crest and that crest's height.
+   */
+  megaAt(x, z, out = this._megaS) {
+    out.h = 0;
+    out.ds = 0;
+    out.xi = 0;
+    out.H = 0;
+    const cfg = TUNING.water;
+    if (!cfg.megaWave || !(cfg.megaHeight > 0)) return out;
+    const ox = x - cfg.surfZoneX;
+    const oz = z - cfg.surfZoneZ;
+    const s = ox * this.peakDirX + oz * this.peakDirZ;
+    const c = -ox * this.peakDirZ + oz * this.peakDirX;
+    const L = Math.max(100, cfg.megaWavelength);
+    const d = s - this.megaCrestMod;
+    const n0 = Math.floor(d / L);
+    let best = Infinity;
+    for (let n = n0 - 1; n <= n0 + 2; n++) {
+      const xi = d - n * L;
+      const lam = xi > 0 ? cfg.megaFront : cfg.megaBack;
+      const g = n + this.megaIndex;
+      const Hn =
+        cfg.megaHeight *
+        (1 + cfg.megaVariation * (0.5 + 0.5 * Math.sin(g * 2.39996 + 0.7))) *
+        (1 + cfg.megaLateral * Math.sin(c / 700 + g * 1.3));
+      const a = Math.min(20, Math.abs(xi) / lam);
+      const ch = Math.cosh(a);
+      const sech2 = 1 / (ch * ch);
+      out.h += Hn * sech2;
+      out.ds -= (2 * Hn * sech2 * Math.tanh(a) * Math.sign(xi)) / lam;
+      if (Math.abs(xi) < Math.abs(best)) {
+        best = xi;
+        out.H = Hn;
+      }
+    }
+    out.xi = best;
+    return out;
+  }
+
+  /**
+   * A spawn point in the trough `lead` seconds ahead of the next mega crest,
+   * on the line through the world centre along the travel direction, as far
+   * up-wave as the world allows so the ride that follows is long. Returns
+   * { x, z, heading, wait } (wait: seconds until the face arrives).
+   */
+  megaSpawn(lead = 12, limit = 1500) {
+    const cfg = TUNING.water;
+    const dx = this.peakDirX;
+    const dz = this.peakDirZ;
+    const L = Math.max(100, cfg.megaWavelength);
+    // Mega coordinate of the world centre.
+    const s0 = -(cfg.surfZoneX * dx + cfg.surfZoneZ * dz);
+    const ahead = this.megaSpeed * lead;
+    // Crest positions are megaCrestMod + n L. Take the last crest whose
+    // spawn point is still on the up-wave half of the line.
+    const target = s0 - 0.1 * limit;
+    const n = Math.floor((target - ahead - this.megaCrestMod) / L);
+    const crest = this.megaCrestMod + n * L;
+    const sigma = Math.max(-limit, crest + ahead - s0);
+    return {
+      x: dx * sigma,
+      z: dz * sigma,
+      heading: Math.atan2(dx, dz),
+      wait: (sigma + s0 - crest) / Math.max(1, this.megaSpeed),
+    };
   }
 
   /** Raw parameter-space height (no horizontal inversion). */
@@ -421,6 +517,31 @@ export class WaveField {
       const onFront = smoothstep(-0.45, 0.05, facePhase) * (1 - smoothstep(0.8, 1.5, facePhase));
       breaking = breakMask * waveSize * onFront;
     }
+    // Mega wave train on top of everything else. It sets the face phase,
+    // size and speed the camera, ride logic and scenarios read, since it is
+    // the wave being surfed whenever it is up.
+    let megaH = 0;
+    let megaDs = 0;
+    let phaseSpeed = this.stats.peakPhaseSpeed / ratio;
+    if (TUNING.water.megaWave) {
+      const m = this.megaAt(px, pz, this._megaS);
+      megaH = m.h;
+      megaDs = m.ds;
+      h += megaH;
+      dhdx += megaDs * this.peakDirX;
+      dhdz += megaDs * this.peakDirZ;
+      if (m.H > 0) {
+        const cfg = TUNING.water;
+        const L = Math.max(100, cfg.megaWavelength);
+        const frontSpan = 2.5 * cfg.megaFront;
+        facePhase =
+          m.xi >= 0
+            ? Math.PI * Math.min(1, m.xi / frontSpan)
+            : -Math.PI * Math.min(1, -m.xi / Math.max(1, L - frontSpan));
+        envelope = Math.max(envelope, 0.5 * megaH);
+        phaseSpeed = this.megaSpeed;
+      }
+    }
     const noise =
       0.5 +
       0.5 *
@@ -482,7 +603,10 @@ export class WaveField {
     out.envelope = envelope;
     out.aeration = clamp(aeration, 0, 0.85);
     out.turbulence = Math.max(breaking, breakMask * 0.15) * (0.5 + 0.5 * noise);
-    out.phaseSpeed = this.stats.peakPhaseSpeed / ratio;
+    out.phaseSpeed = phaseSpeed;
+    out.megaH = megaH;
+    out.megaDs = megaDs;
+    out.stillDepth = state.depth - state.megaH;
     out.wavelength = this.stats.peakWavelength / ratio;
     out.crest = crest;
     out.peakArg = peakArg;
@@ -568,6 +692,51 @@ export class WaveField {
       pressure += RHO * G * a * pF * s;
     }
 
+    // Mega wave: a long wave over the depth hb, so its flow is depth
+    // uniform. Mass conservation for a permanent-form wave moving at c gives
+    // u = c eta / (hb + eta) along the travel direction (near c under the
+    // crest, still water in the trough) and, from continuity, a vertical
+    // velocity growing linearly from the seabed that meets the kinematic
+    // surface condition exactly. The pressure is hydrostatic, so the hull
+    // sees the face as a slope to slide down; pressure += rho g eta makes
+    // the hull's Wheeler-stretched dynamic term vanish for this part.
+    let megaFk = 0;
+    if (surf.megaH > 0) {
+      const eta = surf.megaH;
+      // The train's own reference depth (the one its speed is set by), not
+      // the local shelf: one consistent long wave, no bathymetry speckle.
+      const hb = Math.max(1, TUNING.water.megaDepthRef);
+      const col = hb + eta;
+      const c = this.megaSpeed;
+      const u = (c * eta) / col;
+      // Slope along the travel direction and du/ds.
+      const etaS = surf.megaDs;
+      const duds = ((c * hb) / (col * col)) * etaS;
+      const zb = clamp(y + hb, 0, col);
+      const wM = -zb * duds;
+      const aS = (u - c) * duds;
+      vx += u * this.peakDirX;
+      vz += u * this.peakDirZ;
+      vy += wM;
+      ax += aS * this.peakDirX;
+      az += aS * this.peakDirZ;
+      pressure += RHO * G * eta;
+      // This flow is not hydrostatic: on the toe of the face (and the tail
+      // of the back) the water accelerates far harder than g times the
+      // slope, so a body pushed only by the hydrostatic slope lags the water
+      // and the rising face buries it tens of metres deep. Where the water's
+      // own acceleration is the larger, the body gets the difference as a
+      // Froude-Krylov correction, so it is picked up with the water. Higher
+      // on the face the slope push is the larger and is left alone: that is
+      // the gravity slide a surfer rides down.
+      const slide = -G * etaS;
+      if (Math.abs(aS) > Math.abs(slide) && aS * slide >= 0) {
+        megaFk = aS - slide;
+      }
+    }
+    out.megaFkX = megaFk * this.peakDirX;
+    out.megaFkZ = megaFk * this.peakDirZ;
+
     // Breaker jet: near a breaking crest, water near the surface is thrown
     // forward at roughly the local phase speed. This is the force that can
     // overtake and throw the dolphin.
@@ -618,8 +787,11 @@ export class WaveField {
     out.significantHeight = this.stats.height;
     out.depthBelowSurface = Math.max(0, h - y);
     out.underwater = y < h;
-    out.seabedY = -depth;
-    out.depthToSeabed = y + depth;
+    // The seabed sits at the still-water depth; the mega wave raises the
+    // surface above it, not the floor below.
+    const floorDepth = surf.stillDepth ?? depth;
+    out.seabedY = -floorDepth;
+    out.depthToSeabed = y + floorDepth;
     out.distanceToSurface = h - y;
     return out;
   }

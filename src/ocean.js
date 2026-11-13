@@ -348,6 +348,9 @@ export class Ocean {
       uPeakPhase: { value: this.water.peakPhaseNow || 0 },
       uBreakerLip: { value: TUNING.water.breakerLip },
       uFaceSkew: { value: TUNING.water.faceSkew || 0 },
+      uMegaOn: { value: 0 },
+      uMegaA: { value: new THREE.Vector4() },
+      uMegaB: { value: new THREE.Vector4() },
       uAerationAmount: { value: TUNING.water.aerationAmount },
       uFoamPersistence: { value: TUNING.water.foamPersistence },
       uPeakWavelength: { value: this.water.stats.peakWavelength },
@@ -580,7 +583,9 @@ export class Ocean {
           microN = normalize(mix(microN, vec3(0.0, 1.0, 0.0), distFilter * 0.55));
 
           float depthRaw = texture2D(uBathy, vWorld.xz / uBathyExtent + 0.5).r * uBathyMaxDepth;
-          float pathDepth = clamp(depthRaw, 0.0, 24.0);
+          // vDepth carries the mega wave's water column, so its face reads
+          // as deep water instead of the shelf tint underneath.
+          float pathDepth = clamp(max(depthRaw, vDepth), 0.0, 24.0);
 
           vec2 p = vWorld.xz;
           float crest = clamp(vCrest, 0.0, 1.0);
@@ -882,6 +887,15 @@ export class Ocean {
     this.uniforms.uPeakPhase.value = this.water.peakPhaseNow || 0;
     this.uniforms.uBreakerLip.value = TUNING.water.breakerLip;
     this.uniforms.uFaceSkew.value = TUNING.water.faceSkew || 0;
+    const w = TUNING.water;
+    this.uniforms.uMegaOn.value = w.megaWave && w.megaHeight > 0 ? 1 : 0;
+    this.uniforms.uMegaA.value.set(
+      this.water.megaCrestMod,
+      this.water.megaIndex,
+      Math.max(100, w.megaWavelength),
+      w.megaHeight
+    );
+    this.uniforms.uMegaB.value.set(w.megaFront, w.megaBack, w.megaVariation, w.megaLateral);
     this.uniforms.uAerationAmount.value = TUNING.water.aerationAmount;
     this.uniforms.uFoamPersistence.value = TUNING.water.foamPersistence;
     this.uniforms.uPeakWavelength.value = this.water.stats.peakWavelength;

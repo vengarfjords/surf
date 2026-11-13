@@ -47,6 +47,9 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     uniform float uBreakerLip;
     uniform float uFaceSkew;
     uniform float uPeakWavelength;
+    uniform float uMegaOn;
+    uniform vec4 uMegaA;
+    uniform vec4 uMegaB;
     uniform sampler2D uSolverTexture;
     uniform vec2 uSolverCenter;
     uniform float uSolverExtent;
@@ -98,11 +101,51 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
     }
 
+    // Mega wave train (WaveField.megaAt): sech^2 crests megaA.z apart, the
+    // nearest at megaA.x along the travel direction from the reef origin.
+    // megaA = (crest position mod L, crest index, L, height),
+    // megaB = (front width, back width, variation, lateral modulation).
+    // Returns (height, slope along travel, signed distance ahead of the
+    // nearest crest, that crest's height).
+    vec4 megaAt(vec2 p, vec2 dir) {
+      vec2 o = p - uFocusCenter;
+      float s = dot(o, dir);
+      float c = -o.x * dir.y + o.y * dir.x;
+      float L = uMegaA.z;
+      float d = s - uMegaA.x;
+      float n0 = floor(d / L);
+      float h = 0.0;
+      float ds = 0.0;
+      float best = 1e9;
+      float bestH = 0.0;
+      for (int k = -1; k <= 2; k++) {
+        float n = n0 + float(k);
+        float xi = d - n * L;
+        float lam = xi > 0.0 ? uMegaB.x : uMegaB.y;
+        float g = n + uMegaA.y;
+        float Hn = uMegaA.w * (1.0 + uMegaB.z * (0.5 + 0.5 * sin(g * 2.39996 + 0.7)))
+          * (1.0 + uMegaB.w * sin(c / 700.0 + g * 1.3));
+        float a = min(20.0, abs(xi) / lam);
+        float ch = cosh(a);
+        float sech2 = 1.0 / (ch * ch);
+        h += Hn * sech2;
+        ds -= 2.0 * Hn * sech2 * tanh(a) * sign(xi) / lam;
+        if (abs(xi) < abs(best)) {
+          best = xi;
+          bestH = Hn;
+        }
+      }
+      return vec4(h, ds, best, bestH);
+    }
+
     void main() {
       vec3 base = vec3(position.x + uCenter.x, 0.0, position.z + uCenter.y);
 
       vec2 field = phaseFieldSample(base.xz);
-      float depth = max(0.3, field.x);
+      vec2 megaDir = vec2(uPeakKx, uPeakKz) / max(1e-6, uPeakK);
+      vec4 mega = uMegaOn > 0.5 ? megaAt(base.xz, megaDir) : vec4(0.0);
+      // The mega wave deepens the water column the swell rides on.
+      float depth = max(0.3, field.x) + mega.x;
       float delay = 0.0;
       float ratio = 1.0;
       float shoal = 1.0;
@@ -234,6 +277,23 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       }
       h += lip;
 
+      // Mega wave height and slope, and its face phase and whitewater: the
+      // upper front face of each crest feathers white.
+      float swellOnlyH = h;
+      if (mega.w > 0.0) {
+        h += mega.x;
+        dhdx += mega.y * megaDir.x;
+        dhdz += mega.y * megaDir.y;
+        float frontSpan = 2.5 * uMegaB.x;
+        facePhase = mega.z >= 0.0
+          ? 3.14159265 * min(1.0, mega.z / frontSpan)
+          : -3.14159265 * min(1.0, -mega.z / max(1.0, uMegaA.z - frontSpan));
+        float megaFoam = (mega.z >= 0.0 ? 1.0 : smoothstep(-0.25, 0.0, mega.z / uMegaB.x))
+          * (1.0 - smoothstep(0.3, 1.0, mega.z / uMegaB.x))
+          * smoothstep(0.6, 0.92, mega.x / mega.w);
+        waveBreak = max(waveBreak, megaFoam * 0.85);
+      }
+
       vec3 world = base + vec3(horizX, h, horizZ);
 
       // Local nonlinear surf-zone solver. Its height/foam replace the
@@ -292,7 +352,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       vWorld = world;
       vNormalW = n;
       vWaveHeight = h;
-      vCrest = clamp(h / max(0.25, uMaxCrest), -1.0, 1.0);
+      vCrest = clamp(swellOnlyH / max(0.25, uMaxCrest), -1.0, 1.0);
       vJacobian = (1.0 + dxdx) * (1.0 + dzdz) - dxdz * dxdz;
       vDistance = length(world.xz - uCenter);
       vSlope = vec2(dhdx, dhdz);
@@ -300,7 +360,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       // only contributes a third of its slope, so big groundswell stays glassy.
       // Whitecaps key off the wind sea: the swell's own slope (and the
       // steepened face it is reshaped into) is not a whitecap.
-      vCapSlope = vSlope - swellSlope * 0.65 - skewSlope;
+      vCapSlope = vSlope - swellSlope * 0.65 - skewSlope - mega.y * megaDir;
       // Iribarren number for breaker type. Doing this in the vertex shader
       // costs four bathymetry taps per vertex instead of per fragment.
       float be = 8.0;

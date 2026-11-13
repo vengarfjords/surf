@@ -208,6 +208,14 @@ export class CameraRig {
       this.look.copy(targetLook);
       this.initialized = true;
     } else {
+      // At big-wave speeds (40-75 m/s on a mega face) a plain damped follow
+      // trails tens of metres behind. Carry the lens with the body first, so
+      // the damping only smooths the framing, not the travel.
+      const carry = smoothstep(14, 30, speed);
+      if (carry > 0) {
+        this.position.addScaledVector(dolphin.velocity, dt * carry);
+        this.look.addScaledVector(dolphin.velocity, dt * carry);
+      }
       const lag = lerp(camCfg.positionLag, camCfg.surfPositionLag, surf) * (started ? 1 : 0.55);
       dampVec3(this.position, targetPos, lag, dt);
       dampVec3(this.look, targetLook, camCfg.rotationLag, dt);
