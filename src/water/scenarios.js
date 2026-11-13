@@ -117,6 +117,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     if (api.lock && !control.manualRise) control.rise = true;
     ocean.time += dt;
     water.setTime(ocean.time);
+    ocean.foamField.follow(dolphin.position.x, dolphin.position.z);
     ocean.foamField.update(dt, ocean.time);
     dolphin.update(dt, control, ocean, seabed, effects);
     if (cameraRig) trackCamera(dt);
@@ -240,7 +241,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
      * Returns the longest continuous ride: time spent on the front face, near
      * the surface, moving with the wave, plus how far it dropped and climbed.
      */
-    async surfCatch(start = -70, angle = 0, seconds = 30, time0 = 0, carve = false) {
+    async surfCatch(start = -70, angle = 0, seconds = 30, time0 = 0, carve = false, where = "reef") {
       if (!seabed || !freeze) return { error: "scenario needs seabed and freeze hooks" };
       const saved = saveState();
       const savedTime = TUNING.water.timeScale;
@@ -252,8 +253,12 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       const dirX = dx();
       const dirZ = dz();
       const waveYaw = yawAlong();
-      const sx = TUNING.water.surfZoneX + dirX * start;
-      const sz = TUNING.water.surfZoneZ + dirZ * start;
+      // "edge": `start` m along the swell from the storm's shelf-edge spot
+      // (45 m of water, 720 m up-swell of the centre) instead of the reef.
+      const ox = where === "edge" ? Math.cos(TUNING.water.swellDirection) * -720 : TUNING.water.surfZoneX;
+      const oz = where === "edge" ? Math.sin(TUNING.water.swellDirection) * -720 : TUNING.water.surfZoneZ;
+      const sx = ox + dirX * start;
+      const sz = oz + dirZ * start;
       setPose(sx, ocean.getWaterHeight(sx, sz) - 0.35, sz, waveYaw, 0);
       dolphin.velocity.set(0, 0, 0);
       dolphin.targetYaw = dolphin.yaw = waveYaw;
@@ -542,7 +547,9 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
      *            pitching up to breach off the face).
      *   opts.dt: frame time in s, or "jitter" (mostly 1/60, with 1/30,
      *            1/25 and 1/120 frames, as a real browser delivers).
-     *   opts.where: "mega" (trough ahead of a 500 m crest) or "reef".
+     *   opts.where: "mega" (trough ahead of a 500 m crest), "reef", or
+     *            "edge" (45 m of water up-swell of the shelf edge, where
+     *            the storm's biggest waves peak and break).
      *   opts.seed, opts.seconds, opts.lead.
      */
     async glitchProbe(program = "fuzz", opts = {}) {
@@ -567,6 +574,13 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         const sp = water.megaSpawn(opts.lead ?? 6);
         yaw = sp.heading;
         setPose(sp.x, ocean.getWaterHeight(sp.x, sp.z) - 0.4, sp.z, yaw, 0);
+      } else if (where === "edge") {
+        const ex = Math.cos(TUNING.water.swellDirection);
+        const ez = Math.sin(TUNING.water.swellDirection);
+        yaw = Math.atan2(ex, ez);
+        const x = ex * -720;
+        const z = ez * -720;
+        setPose(x, ocean.getWaterHeight(x, z) - 0.4, z, yaw, 0);
       } else {
         yaw = yawAlong();
         const x = TUNING.water.surfZoneX - dx() * 120;
@@ -714,6 +728,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         if (cameraRig) cameraRig.update(dt, dolphin, seabed, true);
         ocean.time += dt;
         water.setTime(ocean.time);
+        ocean.foamField.follow(dolphin.position.x, dolphin.position.z);
         ocean.foamField.update(dt, ocean.time);
         elapsed += dt;
         frames++;

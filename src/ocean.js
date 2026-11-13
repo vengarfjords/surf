@@ -327,6 +327,7 @@ export class Ocean {
       uFocusCross: { value: TUNING.water.reefFocusCross },
       uFocusReach: { value: TUNING.water.reefFocusReach },
       uBreakRatio: { value: TUNING.water.breakRatio },
+      uBreakFloor: { value: TUNING.water.breakFloor ?? 2.4 },
       uBreakSoftness: { value: TUNING.water.breakSoftness },
       uHs: { value: this.water.stats.height },
       uPeakKx: { value: this.water.peakKx },
@@ -535,6 +536,7 @@ export class Ocean {
         varying float vDistance;
         varying vec2 vSlope;
         varying float vBreak;
+        varying float vBreakZone;
         varying float vFacePhase;
         varying vec2 vCapSlope;
         varying float vShoal;
@@ -844,13 +846,27 @@ export class Ocean {
           float fieldLace = 0.55 * foamNoise + 0.45 * lace;
           float fieldMask = smoothstep(0.28, 0.72, fieldLace);
           foam = max(foam, vFoamField * fieldMask * 1.15);
+          // Residual foam: across a surf zone every bore leaves a sheet of
+          // foam behind it that thins into patches and lace until the next
+          // one comes through. age is 0 just behind a crest, 1 at the next.
+          float foamAge = vFacePhase < 0.0 ? -vFacePhase / 6.2832 : 1.0 - vFacePhase / 6.2832;
+          float residual = smoothstep(0.35, 0.9, vBreakZone) * (1.0 - 0.65 * foamAge);
+          // Rafts and patches tens of metres across, not lined up with the wind.
+          float resPat = fbm2(p * 0.06 + vec2(foamNoise * 0.8, uTime * 0.008)) * 0.65 + foamNoise * 0.35;
+          residual *= smoothstep(0.4 + 0.14 * foamAge, 0.66 + 0.14 * foamAge, resPat);
+          foam = max(foam, residual * 0.75 * clamp(0.4 + uFoamAmount * 0.5, 0.0, 1.0));
 
           // Foam streaks: old whitecap foam stretched into long lines along
           // the wind, lying over the backs of the waves, and on a mega face
           // the scars of foam that pour down from the lip.
-          float streakA = vnoise(vec2(perpA * 0.035 + uTime * 0.03, perpB * 0.55));
-          float streakB = vnoise(vec2(perpA * 0.09 - uTime * 0.02, perpB * 1.6) + 7.0);
+          // The lines wander a few metres across the wind and break up along
+          // it into flecks and patches, so they read as foam, not as ruled
+          // lines.
+          float streakB0 = perpB + (vnoise(vec2(perpA * 0.012, perpB * 0.03) + 4.0) - 0.5) * 7.0;
+          float streakA = vnoise(vec2(perpA * 0.035 + uTime * 0.03, streakB0 * 0.55));
+          float streakB = vnoise(vec2(perpA * 0.09 - uTime * 0.02, streakB0 * 1.6) + 7.0);
           float streaks = smoothstep(0.58, 0.9, streakA * 0.6 + streakB * 0.45);
+          streaks *= smoothstep(0.25, 0.7, vnoise(vec2(perpA * 0.22, streakB0 * 0.7) + 21.0));
           streaks *= smoothstep(0.35, 0.75, vnoise(p * 0.02 + 11.0));
           streaks *= 1.0 - smoothstep(250.0, 1400.0, vDistance);
           if (megaRise > 0.02) {
@@ -1241,6 +1257,7 @@ export class Ocean {
     this.uniforms.uFocusCross.value = TUNING.water.reefFocusCross;
     this.uniforms.uFocusReach.value = TUNING.water.reefFocusReach;
     this.uniforms.uBreakRatio.value = TUNING.water.breakRatio;
+    this.uniforms.uBreakFloor.value = TUNING.water.breakFloor ?? 2.4;
     this.uniforms.uBreakSoftness.value = TUNING.water.breakSoftness;
     this.uniforms.uHs.value = this.water.stats.height;
     this.uniforms.uPeakKx.value = this.water.peakKx;
@@ -1433,8 +1450,10 @@ export class Ocean {
     this.solver.enabled = TUNING.water.solverEnabled;
     this.solver.update(dt, this.time);
     this.foamField.enabled = TUNING.water.foamFieldEnabled;
+    this.foamField.follow(camera.position.x, camera.position.z);
     this.foamField.update(dt, this.time);
     const u = this.uniforms;
+    u.uFoamCenter.value.set(this.foamField.centerX, this.foamField.centerZ);
     u.uSolverEnabled.value = this.solver.enabled ? 1 : 0;
     u.uFoamEnabled.value = this.foamField.enabled ? 1 : 0;
     u.uTime.value = this.time;

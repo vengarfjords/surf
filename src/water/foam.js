@@ -42,17 +42,52 @@ export class FoamField {
     this.texture.colorSpace = THREE.NoColorSpace;
     this.texture.needsUpdate = true;
 
+    this._bakeBed();
+    this._sample = {};
+    this.updateTexture();
+  }
+
+  _bakeBed() {
+    const n = this.n;
     const originX = this.centerX - this.extent * 0.5;
     const originZ = this.centerZ - this.extent * 0.5;
     for (let j = 0; j < n; j++) {
       const z = originZ + (j + 0.5) * this.dx;
       for (let i = 0; i < n; i++) {
         const x = originX + (i + 0.5) * this.dx;
-        this.bed[j * n + i] = Math.max(0.35, bathy.sampleDepth(x, z));
+        this.bed[j * n + i] = Math.max(0.35, this.bathy.sampleDepth(x, z));
       }
     }
-    this._sample = {};
+  }
+
+  /**
+   * Keep the field over (x, z). In a storm the sea breaks along the whole
+   * shelf edge, not only on the reef, so the field travels with the view.
+   * It moves in whole cells once the point is an eighth of the field off
+   * centre, and the foam already on the water stays where it is.
+   */
+  follow(x, z) {
+    const n = this.n;
+    const si = Math.round((x - this.centerX) / this.dx);
+    const sj = Math.round((z - this.centerZ) / this.dx);
+    const reach = n / 8;
+    if (Math.abs(si) < reach && Math.abs(sj) < reach) return false;
+    const foam = this.foam;
+    const next = this.next;
+    next.fill(0);
+    if (Math.abs(si) < n && Math.abs(sj) < n) {
+      for (let j = Math.max(0, -sj); j < Math.min(n, n - sj); j++) {
+        const from = (j + sj) * n;
+        const to = j * n;
+        for (let i = Math.max(0, -si); i < Math.min(n, n - si); i++) next[to + i] = foam[from + i + si];
+      }
+    }
+    foam.set(next);
+    this.centerX += si * this.dx;
+    this.centerZ += sj * this.dx;
+    this._bakeBed();
     this.updateTexture();
+    return true;
   }
 
   update(dt, time) {

@@ -15,7 +15,7 @@ import { buildEnvironments } from "./environment.js";
 import { WaterRefraction, REFRACTION_LAYER } from "./refraction.js";
 import { WaterDebug } from "./water/debug.js";
 import { createScenarios } from "./water/scenarios.js";
-import { clamp, lerp, MAX_FRAME_DT, smoothstep } from "./utils.js";
+import { clamp, damp, lerp, MAX_FRAME_DT, smoothstep } from "./utils.js";
 
 const frame = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -133,6 +133,9 @@ async function boot() {
   let ventClock = 0;
   let cullClock = 0;
   let surfSprayAccumulator = 0;
+  let surfRoar = 0;
+  const surfRoarSample = {};
+  const surfRoarLook = new THREE.Vector3();
   let surfBubbleAccumulator = 0;
   let frozen = false;
   let freeView = null;
@@ -286,13 +289,9 @@ async function boot() {
     if (!TUNING.water.surfSpray || underwater > 0.9) return;
     const rate = TUNING.water.surfSprayRate;
     if (rate <= 0) return;
+    // The foam field travels with the camera, so the mist comes off whatever
+    // is breaking around it: the reef, or in a storm the whole shelf edge.
     const field = ocean.foamField;
-    const dx = camera.position.x - field.centerX;
-    const dz = camera.position.z - field.centerZ;
-    if (dx * dx + dz * dz > 160 * 160) {
-      surfSprayAccumulator = 0;
-      return;
-    }
     surfSprayAccumulator = Math.min(surfSprayAccumulator + dt, 0.2);
     const period = 1 / rate;
     let emitted = 0;
@@ -452,9 +451,10 @@ async function boot() {
     scene.background.copy(fogColor);
     renderer.setClearColor(fogColor, 1);
 
-    // Lights warm and soften once the camera breaks through.
-    lights.sun.intensity = lerp(6.0, 4.8, camState.underwater);
-    lights.hemi.intensity = lerp(0.95, 0.9, camState.underwater);
+    // Lights warm and soften once the camera breaks through. Under the storm
+    // overcast the sun is a diffuse glow: weak direct light, more sky light.
+    lights.sun.intensity = lerp(4.0, 3.3, camState.underwater);
+    lights.hemi.intensity = lerp(1.1, 1.0, camState.underwater);
     lights.ambient.intensity = lerp(0.28, 0.34, camState.underwater);
     // The sun stays warm in the air, but once the camera is under the surface
     // the light is filtered toward the cyan end of the spectrum.
@@ -535,10 +535,24 @@ async function boot() {
       if (input.boost && !wasSurge) audio.event("whoosh", 0.75);
       wasSurge = input.boost;
       if (dolphin.edgeWarning) hud.boundaryToast(elapsed);
-      const sdx = camera.position.x - ocean.foamField.centerX;
-      const sdz = camera.position.z - ocean.foamField.centerZ;
+      const sdx = camera.position.x - TUNING.water.surfZoneX;
+      const sdz = camera.position.z - TUNING.water.surfZoneZ;
       const surfDist = Math.hypot(sdx, sdz) || 1;
-      const surf = 1 - smoothstep(70, 320, surfDist);
+      // Surf roar: the reef, or wherever the sea is breaking around you
+      // (under the camera and 60 m along the view).
+      camera.getWorldDirection(surfRoarLook);
+      const lookXZ = Math.hypot(surfRoarLook.x, surfRoarLook.z) || 1;
+      let breakingNear = ocean.water.sampleSurface(camera.position.x, camera.position.z, surfRoarSample).breakMask;
+      breakingNear = Math.max(
+        breakingNear,
+        ocean.water.sampleSurface(
+          camera.position.x + (surfRoarLook.x / lookXZ) * 60,
+          camera.position.z + (surfRoarLook.z / lookXZ) * 60,
+          surfRoarSample
+        ).breakMask * 0.8
+      );
+      surfRoar = damp(surfRoar, breakingNear, 0.8, dt);
+      const surf = Math.max(1 - smoothstep(70, 320, surfDist), surfRoar);
       audio.update(dt, {
         underwater: camState.underwater,
         depth: telemetry.depth,

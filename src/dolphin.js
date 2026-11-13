@@ -1031,11 +1031,16 @@ export class Dolphin {
     // the body through the water attitude (qWater).
     this.tumbleClock -= dt;
     const aer = this.hydro ? this.hydro.aeration : 0;
-    const rough = aer > 0.18 && this.hydro.wetFraction > 0.3;
+    // Only in the roller itself (aeration over 0.4): in a storm the foam
+    // left behind every bore is above 0.18 almost everywhere near the
+    // surface, and the body was thrown about every 0.65 s just swimming
+    // through it. Riding the surface (Space held and the lock engaged) the
+    // animal holds its line, so the body is not thrown at all.
+    const rough = aer > 0.4 && this.hydro.wetFraction > 0.3 && !this.surfLockEngaged;
     if (rough && this.tumbleClock <= 0) {
       this.tumbleClock = 0.65;
       const seed = Math.sin(this.position.x * 0.73 + this.position.z * 0.91 + ocean.time * 1.37);
-      const k = smoothstep(0.18, 0.5, aer);
+      const k = smoothstep(0.4, 0.75, aer);
       this.tumbleRollVel += seed * 3.4 * k;
       this.tumblePitchVel += Math.cos(seed * 2.1 + this.position.y) * 2.6 * k;
     }

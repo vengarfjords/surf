@@ -65,6 +65,19 @@ function buildTrain(cfg, rand, opts) {
     });
   }
 
+  // The strongest component travels along the train's mean direction. The
+  // wave field takes its breaking, shoaling delay, reef focus and face
+  // direction from it, so a broad spread (the storm's ±0.3 rad) must not
+  // leave the dominant waves crossing the shelf 20° off the swell.
+  let top = null;
+  for (const c of out) if (!top || c.amp > top.amp) top = c;
+  if (top) {
+    top.dx = Math.cos(direction);
+    top.dz = Math.sin(direction);
+    top.kx = top.k * top.dx;
+    top.kz = top.k * top.dz;
+  }
+
   // Renormalise this train to its own significant wave height: Hs = 4 sqrt(m0)
   // where m0 = sum(a_i^2 / 2).
   const scale = weightSum > 1e-12 ? height / (4 * Math.sqrt(weightSum * 0.5)) : 0;
@@ -81,7 +94,7 @@ export function buildSpectrum(cfg) {
     wavelengthSpread: cfg.swellWavelengthSpread,
     direction: cfg.swellDirection,
     directionSpread: cfg.swellDirectionSpread,
-    gamma: 7.0,
+    gamma: cfg.swellGamma ?? 7.0,
     layer: 0,
   });
   const wind = buildTrain(cfg, rand, {
@@ -91,7 +104,7 @@ export function buildSpectrum(cfg) {
     wavelengthSpread: cfg.windSeaWavelengthSpread,
     direction: cfg.windSeaDirection,
     directionSpread: cfg.windSeaDirectionSpread,
-    gamma: 2.2,
+    gamma: cfg.windGamma ?? 2.2,
     layer: 1,
   });
   const components = swell.concat(wind);
@@ -129,8 +142,58 @@ export function buildSpectrum(cfg) {
   return { components, chop, stats };
 }
 
+// Settings a preset may change, at the values every preset starts from, so
+// switching presets never leaves one sea state's spectrum shape behind.
+const PRESET_BASE = {
+  swellWavelengthSpread: 0.17,
+  swellGamma: 7.0,
+  windSeaWavelengthSpread: 0.42,
+  windSeaDirectionSpread: 0.62,
+  windGamma: 2.2,
+  detailStrength: 0.55,
+  reefFocus: 5.0,
+  breakFloor: 2.4,
+  breakRatio: 0.85,
+  shoalReference: 12,
+};
+
 export function applyPreset(water, name) {
   const presets = {
+    // A severe storm over the shelf (Beaufort 10-11). One storm sea, not a
+    // tidy groundswell: a broad JONSWAP peak (gamma 3.3, the standard wind-sea
+    // value) at 300 m / 14 s, short-crested (about 17 degrees of spread),
+    // Hs 13 m, with a steep 70 m wind sea on top running a little off the
+    // main sea. Total Hs is about 13.7 m, so the biggest waves in a few
+    // minutes are around 25-30 m crest to trough. The height is the
+    // deep-water height (Green's law referenced to 60 m, not 12), and depth
+    // limits it the way real surf does: a broken sea holds a significant
+    // height of about 0.45 of the depth (breakRatio), so single waves stay
+    // below about the depth itself. The outer shelf (60-75 m,
+    // utils.seabedHeight) lets the sea arrive at full size; the biggest
+    // waves stand up past 30 m as they shoal onto the shelf edge at 30-45 m
+    // and break there and over the reef, and the inner shelf is a field of
+    // bores. The reef's canyon focusing is eased back.
+    storm: {
+      swellHeight: 13,
+      swellWavelength: 300,
+      swellWavelengthSpread: 0.26,
+      swellGamma: 3.3,
+      swellDirection: 0.61,
+      swellDirectionSpread: 0.3,
+      windSeaHeight: 4.2,
+      windSeaWavelength: 70,
+      windSeaWavelengthSpread: 0.6,
+      windSeaDirection: 0.78,
+      windSeaDirectionSpread: 0.5,
+      windGamma: 2.0,
+      chop: 0.85,
+      timeScale: 1.0,
+      foamAmount: 1.25,
+      detailStrength: 0.9,
+      reefFocus: 1.2,
+      breakRatio: 0.45,
+      shoalReference: 60,
+    },
     calm: {
       swellHeight: 0.8,
       swellWavelength: 46,
@@ -215,7 +278,7 @@ export function applyPreset(water, name) {
   };
   const p = presets[name];
   if (!p) return false;
-  Object.assign(water, p);
+  Object.assign(water, PRESET_BASE, p);
   // Only the mega preset runs the 500 m wave train.
   water.megaWave = !!p.megaWave;
   water.preset = name;

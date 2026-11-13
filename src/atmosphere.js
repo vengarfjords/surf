@@ -6,9 +6,10 @@ import { PALETTE } from "./config.js";
  * the horizon fog and the volumetric haze all call the same function, so the
  * water always melts into the air behind it instead of meeting a seam.
  *
- * The look is a soft dusk under high overcast: a pale, slightly cool zenith,
- * a creamy middle sky, a peach band low on the sun's side and a grey sea mist
- * on the other, with a hazy headland on part of the horizon.
+ * The look is a storm: a low, heavy slate overcast driven fast by the wind,
+ * with darker ragged scud under it, a little pale light low on the sun's
+ * side and grey rain and spray haze on the other, and a hazy headland on part
+ * of the horizon.
  */
 const lin = (hex) => {
   const c = new THREE.Color(hex);
@@ -92,16 +93,19 @@ export const glslSky = /* glsl */ `
     vec3 horizon = skyHorizonColor(d, sunDir);
     float h = max(d.y, 0.0);
 
-    // High overcast: broad soft decks with darker, cooler undersides, and
-    // brighter breaks where the light comes through.
+    // Storm overcast: a heavy deck over most of the sky with darker, cooler
+    // undersides and only thin brighter breaks, driven along by the wind.
     vec2 cp = d.xz / (h + 0.09);
-    float base = fbm2(cp * 0.55 + vec2(t * 0.0025, t * 0.001));
-    float fine = fbm2(cp * 1.7 + vec2(base * 1.8 - t * 0.004, base));
-    float deck = smoothstep(0.38, 0.78, base * 0.65 + fine * 0.45);
-    float thin = smoothstep(0.55, 0.85, fine);
-    vec3 cloud = mix(SKY_CLOUD, mix(SKY_MID, SKY_HORIZON_SUN, 0.35) * 1.02, thin * skyWarmth(d, sunDir));
+    float base = fbm2(cp * 0.55 + vec2(t * 0.012, t * 0.005));
+    float fine = fbm2(cp * 1.7 + vec2(base * 1.8 - t * 0.02, base));
+    float deck = smoothstep(0.2, 0.62, base * 0.65 + fine * 0.45);
+    float thin = smoothstep(0.62, 0.9, fine);
+    vec3 cloud = mix(SKY_CLOUD, mix(SKY_MID, SKY_HORIZON_SUN, 0.35) * 1.02, thin * skyWarmth(d, sunDir) * 0.6);
     float fadeHorizon = smoothstep(0.0, 0.12, h);
-    col = mix(col, cloud, deck * 0.58 * fadeHorizon * detail);
+    col = mix(col, cloud, deck * 0.82 * fadeHorizon * detail);
+    // Ragged low scud racing under the deck.
+    float scud = fbm2(cp * 1.1 + vec2(t * 0.045, t * 0.02) + 17.0);
+    col = mix(col, SKY_CLOUD * 0.82, smoothstep(0.55, 0.8, scud) * fadeHorizon * 0.5 * detail);
     // Long streaks of stratus low over the horizon.
     float strat = vnoise(vec2(atan(d.z, d.x) * 9.0, h * 60.0 + t * 0.002));
     col = mix(col, mix(SKY_CLOUD, horizon, 0.5), smoothstep(0.55, 0.9, strat) * (1.0 - smoothstep(0.02, 0.14, h)) * 0.35 * detail);
@@ -109,7 +113,7 @@ export const glslSky = /* glsl */ `
     // The sun is behind cloud: a wide glow, no hard disc.
     float sd = max(dot(d, sunDir), 0.0);
     vec3 sunTint = mix(SKY_HORIZON_SUN, vec3(1.0, 0.93, 0.8), 0.5);
-    col += sunTint * (pow(sd, 5.0) * 0.14 + pow(sd, 28.0) * 0.22 + pow(sd, 260.0) * 0.45) * (1.0 - deck * 0.4);
+    col += sunTint * (pow(sd, 5.0) * 0.08 + pow(sd, 28.0) * 0.1 + pow(sd, 260.0) * 0.12) * (1.0 - deck * 0.6);
 
     col = skyLand(d, col, horizon, detail);
     // Below the horizon the dome only ever shows as reflection: hold it at

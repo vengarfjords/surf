@@ -48,6 +48,8 @@ export class WaveField {
     this.megaCrestMod = 0;
     this.megaIndex = 0;
     this.megaSpeed = 0;
+    // Start in the configured sea state with all of its settings.
+    if (cfg.preset) applyPreset(cfg, cfg.preset);
     this.rebuild(cfg);
   }
 
@@ -180,8 +182,14 @@ export class WaveField {
       hsLocal / depth
     );
     // Once breaking, the height cannot keep growing; saturate near H/h.
-    const cap = (cfg.breakRatio * depth) / Math.max(0.3, this.stats.height);
-    const shoal = Math.min(shoalRaw, Math.max(0.55, cap * 1.05));
+    // Broken water keeps at least `breakFloor` m of significant height (at
+    // most 0.55 of the offshore sea): a storm sea must not be held at half
+    // its offshore height over a 5 m shoal, where its troughs would cut
+    // into the sand.
+    const hs = Math.max(0.3, this.stats.height);
+    const cap = (cfg.breakRatio * depth) / hs;
+    const floor = Math.min(0.55, (cfg.breakFloor ?? 2.4) / hs);
+    const shoal = Math.min(shoalRaw, Math.max(floor, cap * 1.05));
     out.depth = depth;
     out.ratio = ratio;
     out.shoal = shoal;

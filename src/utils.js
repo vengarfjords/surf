@@ -98,6 +98,11 @@ export function fbm(x, y, octaves = 4, lacunarity = 2.02, gain = 0.5) {
 const REEF_DIR_X = Math.cos(0.41);
 const REEF_DIR_Z = Math.sin(0.41);
 const REEF_X = 700;
+// Travel direction of the default sea (TUNING.water.swellDirection) and how
+// much deeper the outer shelf is up-swell (see seabedHeight).
+const WAVE_DIR_X = Math.cos(0.61);
+const WAVE_DIR_Z = Math.sin(0.61);
+const OFFSHORE_DROP = 52;
 const REEF_Z = -350;
 
 export function seabedHeight(x, z) {
@@ -138,9 +143,17 @@ export function seabedHeight(x, z) {
   const radius = Math.max(Math.abs(x), Math.abs(z));
   const openWater = smoothstep(1120, 1510, radius) * 14;
 
+  // The outer shelf. Up-swell of the inner shelf the bed falls away from
+  // about 14 m to 60-75 m over a kilometre, so a storm sea (30 m waves need
+  // 40 m+ of water to stay unbroken) rolls in at full size and only starts
+  // to break as it climbs onto the inner shelf and the reef. The inner shelf
+  // around the start, its reef patches and seagrass are unchanged.
+  const sWave = x * WAVE_DIR_X + z * WAVE_DIR_Z;
+  const offshore = OFFSHORE_DROP * smoothstep(-250, -1150, sWave);
+
   const shelfDepth =
     7.15 + broad * 6.4 + mid * 2.1 + fine * 0.6 + channel - bar - shelf + openWater;
-  const depth = shelfDepth + (spotDepth + fine * 0.6 - shelfDepth) * spotWeight;
+  const depth = shelfDepth + (spotDepth + fine * 0.6 - shelfDepth) * spotWeight + offshore;
   return -Math.max(2.55, depth);
 }
 

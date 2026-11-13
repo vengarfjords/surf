@@ -39,6 +39,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     uniform float uFocusCross;
     uniform float uFocusReach;
     uniform float uBreakRatio;
+    uniform float uBreakFloor;
     uniform float uBreakSoftness;
     uniform float uHs;
     uniform float uPeakKx;
@@ -69,6 +70,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     varying float vDistance;
     varying vec2 vSlope;
     varying float vBreak;
+    varying float vBreakZone;
     varying float vFacePhase;
     varying vec2 vCapSlope;
     varying float vShoal;
@@ -166,7 +168,8 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         breakMask = smoothstep(uBreakRatio - uBreakSoftness, uBreakRatio + uBreakSoftness, hsLocal / depth);
         skew = uFaceSkew * smoothstep(uBreakRatio * 0.3, uBreakRatio * 0.95, hsLocal / depth);
         float cap = (uBreakRatio * depth) / max(0.3, uHs);
-        shoal = min(shoalRaw, max(0.55, cap * 1.05));
+        float floorShoal = min(0.55, uBreakFloor / max(0.3, uHs));
+        shoal = min(shoalRaw, max(floorShoal, cap * 1.05));
         delay = field.y;
       }
       vec2 peakDir = vec2(uPeakKx, uPeakKz) / max(1e-6, uPeakK);
@@ -372,6 +375,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
       vXi = tanBeta / sqrt(max(0.01, uHs / max(1.0, uPeakWavelength)));
 
       vBreak = waveBreak;
+      vBreakZone = breakMask;
       vFacePhase = facePhase;
       vShoal = shoal;
       vDepth = depth;

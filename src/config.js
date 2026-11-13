@@ -350,16 +350,18 @@ export const TUNING = {
    */
   water: {
     seed: 20261109,
-    // Default sea state is the "mega" preset (see spectrum.js): every wave
-    // 500 m+, from the mega wave train below, with a small swell on top.
-    preset: "mega",
+    // Default sea state is the "storm" preset (see spectrum.js): a severe
+    // storm over the shelf, Hs about 13.7 m, the biggest waves around 30 m.
+    // The preset is applied on start (WaveField), so its values win over the
+    // ones below; "mega" brings back the 500 m wave train.
+    preset: "storm",
     // Mega wave train (field.js megaAt). Crests `megaHeight` tall (each crest
     // 0..+megaVariation taller), `megaWavelength` apart, travelling along
     // the swell direction at sqrt(g (megaDepthRef + H)), the solitary-wave
     // speed. Each crest is a sech^2 hump: `megaFront` metres wide ahead of
     // the crest (the steep face), `megaBack` behind it (the long back). The
     // troughs sit near still-water level, so the shelf never drains.
-    megaWave: true,
+    megaWave: false,
     megaHeight: 520,
     megaVariation: 0.2,
     megaWavelength: 3000,
@@ -370,39 +372,44 @@ export const TUNING = {
     // Centre of the big-wave reef (mirrors REEF_X/Z in utils.seabedHeight).
     surfZoneX: 700,
     surfZoneZ: -350,
-    swellHeight: 1.6,
-    swellWavelength: 400,
-    swellWavelengthSpread: 0.17,
+    swellHeight: 13,
+    swellWavelength: 300,
+    swellWavelengthSpread: 0.26,
+    swellGamma: 3.3,
     swellDirection: 0.61,
-    swellDirectionSpread: 0.12,
+    swellDirectionSpread: 0.3,
     swellComponents: 96,
-    windSeaHeight: 0.4,
-    windSeaWavelength: 9.5,
-    windSeaWavelengthSpread: 0.42,
-    windSeaDirection: 1.02,
-    windSeaDirectionSpread: 0.62,
+    windSeaHeight: 4.2,
+    windSeaWavelength: 70,
+    windSeaWavelengthSpread: 0.6,
+    windSeaDirection: 0.78,
+    windSeaDirectionSpread: 0.5,
+    windGamma: 2.0,
     windSeaComponents: 32,
     // Gerstner horizontal displacement scale. The generator computes a safe
     // base value from the total steepness; this is an artistic multiplier.
-    chop: 0.72,
+    chop: 0.85,
     timeScale: 1.0,
     // Rendering / foam.
     foamThreshold: 0.56,
-    foamAmount: 0.3,
-    detailStrength: 0.55,
+    foamAmount: 1.25,
+    detailStrength: 0.9,
     // M3 depth response. The wave spectrum is evaluated with finite-depth
     // dispersion and Green's-law shoaling using the baked bathymetry; the
     // breaker is a saturated, aerated crest (a heightfield cannot overhang).
     depthResponse: true,
-    shoalReference: 12,
+    shoalReference: 60,
     shoalStrength: 0.25,
     // Refraction focusing over the reef canyon: peak amplitude gain on the
     // reef centre line, its cross-swell half-width (m) and how far up-swell
     // (m) the focusing builds. Sets of 15-30 m stand up on the reef.
-    reefFocus: 5.0,
+    reefFocus: 1.2,
     reefFocusCross: 95,
     reefFocusReach: 450,
-    breakRatio: 0.85,
+    breakRatio: 0.45,
+    // Broken water keeps at least this significant height (m), or 0.55 of
+    // the offshore sea if that is less.
+    breakFloor: 2.4,
     breakSoftness: 0.12,
     breakerJet: 0.65,
     breakerLip: 0.12,
@@ -504,9 +511,9 @@ export const TUNING = {
     fogShallow: 0.51,
     fogDeep: 0.67,
     underwaterDensity: 0.03,
-    // Thin enough that a 500 m mega crest a kilometre away still reads as
-    // water rather than a grey hill in the haze.
-    aboveDensity: 0.0007,
+    // Rain and spray haze over a storm sea: about a fifth of the light
+    // gets through from a kilometre away.
+    aboveDensity: 0.0014,
     renderScale: 0.6,
     // Optional governor: reduce composer resolution after sustained slow
     // frames, never below this scale. It only steps down, so it cannot hunt.
@@ -546,10 +553,10 @@ export const TUNING = {
     // whitecaps scales wind whitecap coverage, foamStreaks the wind-drawn
     // foam lines and mega-face foam scars, horizonFog how fast the far sea
     // dissolves into the horizon mist, seaMist the low mist layer.
-    whitecaps: 1.15,
-    foamStreaks: 1.0,
-    horizonFog: 1.0,
-    seaMist: 1.0,
+    whitecaps: 1.7,
+    foamStreaks: 1.25,
+    horizonFog: 1.6,
+    seaMist: 1.5,
     spindrift: 1.0,
   },
 
@@ -569,19 +576,20 @@ export const TUNING = {
 };
 
 export const PALETTE = {
-  // Matched to the reference photographs: a teal-green sea under a soft dusk
-  // overcast (peach low on the sun's side, grey sea mist on the other) and,
-  // below, blue water that turns green-teal toward a sunlit seagrass floor.
+  // A storm over the shelf: a dark teal-green sea under a low, heavy slate
+  // overcast (a little pale light left low on the sun's side, grey rain and
+  // spray haze on the other) and, below, blue water that turns green-teal
+  // toward the seagrass floor.
   fogShallow: 0x2a6a70,
   fogDeep: 0x0d2f45,
-  waterTop: 0x4fb3a4,
+  waterTop: 0x3f9e90,
   waterDeep: 0x0b3442,
-  skyZenith: 0x8c97a0,
-  skyMid: 0xd9d1c2,
-  skyMidAway: 0xb6bbba,
-  skyHorizon: 0xf3caa2,
-  skyHorizonAway: 0xb7bfc0,
-  skyCloud: 0x8c9196,
+  skyZenith: 0x59626b,
+  skyMid: 0x9ca2a3,
+  skyMidAway: 0x828b8f,
+  skyHorizon: 0xc8bfae,
+  skyHorizonAway: 0x9aa3a7,
+  skyCloud: 0x4e565d,
   skyLand: 0x3f4a55,
   sandLight: 0x9b8a64,
   sandShade: 0x41402f,
@@ -589,7 +597,7 @@ export const PALETTE = {
   seagrass: 0x3d6a33,
   seagrassLight: 0x9db35a,
   skinTint: 0x879b9f,
-  sunColor: 0xffe2bd,
+  sunColor: 0xdcd6c8,
 };
 
 export const SUN_DIRECTION = { x: -0.46, y: 0.7, z: 0.55 };
@@ -625,7 +633,7 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.bodyFollow", label: "segment follow", min: 0.25, max: 2.5, step: 0.01 },
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
-  { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf", "groundswell", "bigwave", "mega"] },
+  { path: "water.preset", label: "sea state", type: "preset", options: ["calm", "moderate", "surf", "groundswell", "bigwave", "storm", "mega"] },
   { path: "water.megaHeight", label: "mega wave height", min: 50, max: 900, step: 10 },
   { path: "water.megaFront", label: "mega face width", min: 80, max: 600, step: 10 },
   { path: "water.swellHeight", label: "swell Hs (m)", min: 0.2, max: 4, step: 0.05 },
