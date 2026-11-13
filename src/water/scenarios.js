@@ -838,7 +838,10 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let airStart = null;
       let apexPitch = null;
       let apexRel = -Infinity;
+      // api.onLeapStep({ t, control, phase }): steer during the leap and the
+      // landing (set control.mdx / mdy / left / right) and record per frame.
       for (let t = 0; t < 1.6; t += dt) {
+        if (api.onLeapStep) api.onLeapStep({ t, control, phase: "leap" });
         stepWorld(dt, control);
         const rel = dolphin.position.y - ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) - dolphin.surfaceLead;
         if (leap.relAfter === undefined && t >= (TUNING.hydro.surfaceLeapStroke || 0) + 0.02) {
@@ -876,9 +879,12 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       control.rise = true;
       let relockAt = null;
       for (let t = 0; t < 3; t += dt) {
+        if (api.onLeapStep) api.onLeapStep({ t: t + 1.6, control, phase: "land" });
         stepWorld(dt, control);
         if (relockAt === null && dolphin.surfLock > 0.99) relockAt = t;
       }
+      control.mdx = control.mdy = 0;
+      control.left = control.right = false;
       control.rise = false;
       control.dive = true;
       const y0 = dolphin.position.y;

@@ -631,6 +631,12 @@ export class Dolphin {
       input.pitchDownKeys;
     if (input.pitchUpKeys) this.targetPitch += 0.9 * dt;
     if (input.pitchDownKeys) this.targetPitch -= 0.9 * dt;
+    // How far the player moved the nose up or down this frame (used in the
+    // air, where the aim is kept relative to the flight path).
+    const aimDelta =
+      -my * movement.mouseSensitivity * 0.78 +
+      (input.pitchUpKeys ? 0.9 * dt : 0) -
+      (input.pitchDownKeys ? 0.9 * dt : 0);
     if (pitchInput) this.pitchInputTimer = movement.pitchTrimDelay;
     else {
       this.pitchInputTimer -= dt;
@@ -644,23 +650,73 @@ export class Dolphin {
 
     this.verticalInput = (input.rise ? 1 : 0) - (input.dive ? 1 : 0);
     const lock = this._surfaceLockUpdate(dt, input, ocean, my);
-    const pitchAim = Math.abs(my) > 0 || input.pitchUpKeys || input.pitchDownKeys;
-    if (this.leapFlight && !pitchAim) {
-      // Through a leap the nose follows the arc: up out of the water, level
-      // at the top, down into it. Turning (mouse or A/D) does not stop that;
-      // only aiming the nose up or down does.
-      const vl = this.velocity.length();
-      if (vl > 0.5) {
-        this.targetPitch = clamp(Math.asin(clamp(this.velocity.y / vl, -1, 1)), -movement.maxPitch, movement.maxPitch);
+    // In the air the nose is the player's, kept relative to the flight path:
+    // the mouse (or arrow keys) sets how far it points above or below the
+    // path, and that aim rides along with the arc. Left alone the nose
+    // follows the arc (up out of the water, level at the top, down into
+    // it); aimed off it, lift bends the path toward the nose (dry-hull
+    // flight below). The aim persists between mouse events, so a mouse that
+    // reports on some frames and not others does not make it flicker.
+    // Only while clear of the water: in it, the water has the body.
+    const wetA = this.hydro ? this.hydro.wetFraction : 1;
+    const flying = (this.leapFlight && wetA < 0.3) || (this.leaping && wetA < 0.1);
+    if (flying) {
+      // The path the body is on, including what is left of a leap's stroke.
+      let pvx = this.velocity.x;
+      let pvy = this.velocity.y;
+      let pvz = this.velocity.z;
+      if (this._leapPushT > 0 && this._leapPush) {
+        const rem = this._leapPushT / (TUNING.hydro.surfaceLeapStroke || this._leapPushT);
+        pvx += this._leapPush.x * rem;
+        pvy += this._leapPush.y * rem;
+        pvz += this._leapPush.z * rem;
+      }
+      const pvl = Math.hypot(pvx, pvy, pvz);
+      const path = pvl > 0.01 ? Math.asin(clamp(pvy / pvl, -1, 1)) : 0;
+      // Leaving the water, the nose keeps whatever aim it has. Below a few
+      // m/s (a body bobbing clear of a swell) the path means nothing and the
+      // nose is simply the player's.
+      if (!this._flying || pvl < movement.airPathSpeed) {
+        this.airAim = this.targetPitch - path;
+      } else {
+        // The air flowing over the body turns it back into the path
+        // (weathervane): once the player has not aimed for a quarter of a
+        // second, the aim relaxes over about 0.7 s. While aiming it holds,
+        // and gaps between mouse reports do not count as letting go.
+        this._aimIdle = Math.abs(my) > 0 || input.pitchUpKeys || input.pitchDownKeys ? 0 : (this._aimIdle || 0) + dt;
+        if (this._aimIdle > 0.25) this.airAim = damp(this.airAim || 0, 0, movement.airAimReturn, dt);
+        this.airAim = clamp((this.airAim || 0) + aimDelta, -movement.airAimMax, movement.airAimMax);
+        this.targetPitch = clamp(path + this.airAim, -movement.maxPitch, movement.maxPitch);
         this.lastRideTarget = this.targetPitch;
       }
-    }
+    } else this.airAim = 0;
+    // Back in the water after a flight, the automatic pitch (ride trim,
+    // surface lock) turns the nose at most `landingPitchRate` rad/s for a
+    // moment: a nose-down entry pulls out over a few tenths of a second
+    // instead of being yanked level in four frames.
+    if (this._flying && !flying) this._landClock = 0.6;
+    this._landClock = Math.max(0, (this._landClock || 0) - dt);
+    this._flying = flying;
+    const autoPitch0 = this.targetPitch;
     this._rideTrim(dt, ocean, pitchInput);
     if (lock > 0) {
       // On the surface the body lies along it; the mouse looks instead.
-      this.targetPitch += (this.surfLockPitch - this.targetPitch) * lock;
+      // Landing into the lock (from a leap, nose down), the nose comes
+      // round to the surface over about 0.2 s, tightening as the lock
+      // takes hold, instead of being snapped to it.
+      this.targetPitch -= aimDelta * lock;
+      this.targetPitch = damp(this.targetPitch, this.surfLockPitch, 4 + 40 * lock * lock, dt);
       this.lastRideTarget = this.targetPitch;
       if (lock > 0.5) this.rideOffset = 0;
+    }
+    // The same while the lock is taking hold (arriving at the surface).
+    if (this._landClock > 0 || (lock > 0 && lock < 1 && this.surfLockEngaged)) {
+      const most = movement.landingPitchRate * dt;
+      const d = this.targetPitch - autoPitch0;
+      if (Math.abs(d) > most) {
+        this.targetPitch = autoPitch0 + Math.sign(d) * most;
+        this.lastRideTarget = this.targetPitch;
+      }
     }
     const posture = this.verticalInput > 0 ? movement.ascendPitch : this.verticalInput < 0 ? movement.descendPitch : 0;
     const pitchTarget = clamp(this.targetPitch + posture, -movement.maxPitch, movement.maxPitch);
@@ -674,7 +730,9 @@ export class Dolphin {
     this.pitch = damp(this.pitch, pitchTarget, movement.pitchResponsiveness, dt);
     if (lock > 0) this.pitch = damp(this.pitch, pitchTarget, TUNING.hydro.surfaceLockPitchRate * lock, dt);
     this.pitch = clamp(this.pitch, -movement.maxPitch, movement.maxPitch);
-    this.viewPitch = clamp(this.targetPitch + this.surfLook * lock, -movement.maxPitch, movement.maxPitch);
+    // The look offset fades instead of vanishing when the lock lets go (a
+    // leap), so the view does not jump.
+    this.viewPitch = clamp(this.targetPitch + this.surfLook, -movement.maxPitch, movement.maxPitch);
 
     // Previous frame's horizontal slip, used to lay the body over into the
     // drift. Use the level right axis so a steep climb doesn't feed vertical
@@ -819,17 +877,28 @@ export class Dolphin {
     // the hull. Only add the aerodynamic terms while the hull is essentially
     // out of the water.
     if (hydro.wetFraction < 0.02) {
+      // Lift: perpendicular to the flight path, toward where the nose
+      // points, growing with speed^2 and the angle between nose and path
+      // (stalling past movement.airStall), capped at movement.airLiftMax.
+      // With the nose on the path there is none: a pure ballistic arc.
+      // Turning the path costs speed (induced drag).
       const airSpeed = this.velocity.length();
-      const horizontalAirspeed = Math.hypot(this.velocity.x, this.velocity.z);
-      const levelness = airSpeed > 0.01 ? clamp(horizontalAirspeed / airSpeed, 0, 1) : 0;
-      // Body lift in air is small and saturates: at surf speed the old
-      // v^2 term cancelled a third of gravity and floated the animal off a
-      // crest instead of letting it drop back onto the face.
-      const liftSpeed = Math.min(airSpeed, 12);
-      // A leap off the surface is a ballistic arc: no lift, no steering of
-      // the path (the body can still turn to line up its landing).
-      const arc = this.leapFlight ? 0 : 1;
-      this.velocity.y += movement.airLift * liftSpeed * liftSpeed * levelness * arc * dt;
+      if (airSpeed > 1 && movement.airLiftCoef > 0) {
+        const vh = this.tmp.copy(this.velocity).multiplyScalar(1 / airSpeed);
+        const cosA = this.forward.dot(vh);
+        const lift = this.tmp2 || (this.tmp2 = new THREE.Vector3());
+        lift.copy(this.forward).addScaledVector(vh, -cosA);
+        const sinA = lift.length();
+        if (sinA > 1e-4 && cosA > 0) {
+          const stall = movement.airStall;
+          const alpha = Math.atan2(sinA, cosA);
+          const eff = alpha < stall ? Math.sin(alpha) : Math.sin(stall) * Math.max(0, 1 - (alpha - stall) / stall);
+          const a = Math.min(movement.airLiftCoef * airSpeed * airSpeed * eff, movement.airLiftMax);
+          this.velocity.addScaledVector(lift, (a / sinA) * dt);
+          this.velocity.addScaledVector(vh, -a * movement.airInducedDrag * dt);
+          this.airLiftNow = a;
+        } else this.airLiftNow = 0;
+      }
 
       let vf = this.velocity.dot(this.forward);
       let vr = this.velocity.dot(this.right);
@@ -842,16 +911,7 @@ export class Dolphin {
         .addScaledVector(this.right, vr)
         .addScaledVector(this.up, vu);
 
-      const steerSpeed = this.velocity.length();
-      const steerAuthority = clamp((steerSpeed - 4.0) / 10.0, 0, 1) * arc;
-      if (steerAuthority > 0.001) {
-        const steer = (1 - Math.exp(-movement.airSteer * dt)) * steerAuthority;
-        this.tmp.copy(this.forward).multiplyScalar(steerSpeed);
-        // Do not renormalise after steering: redirecting momentum costs a
-        // little energy instead of letting the animal carve for free.
-        this.velocity.lerp(this.tmp, steer);
-      }
-    }
+    } else this.airLiftNow = 0;
 
     this.speed = this.velocity.length();
 
@@ -1387,6 +1447,11 @@ export class Dolphin {
     this.surfLockEngaged = false;
     this.surfLock = 0;
     this.surfLook = 0;
+    this.viewLock = 0;
+    this.airAim = 0;
+    this._flying = false;
+    this._landClock = 0;
+    this.leaping = false;
     this.surfaceLead = 0;
     this.rideOffset = 0;
     this.rideHold = 0;
@@ -1565,7 +1630,10 @@ export class Dolphin {
     this.surfLockPitch = Math.atan(sx * Math.sin(this.yaw) + sz * Math.cos(this.yaw));
     if (this.surfLock > 0) {
       this.surfLook = clamp(this.surfLook - my * TUNING.movement.mouseSensitivity * 0.78, -1.2, 1.2);
-    } else this.surfLook = 0;
+    } else this.surfLook = damp(this.surfLook, 0, 2.5, dt);
+    // The camera's surface framing stays on through a leap off the lock and
+    // eases in and out, so it does not cut at take-off or landing.
+    this.viewLock = damp(this.viewLock || 0, this.surfLockEngaged || this.leapFlight ? 1 : 0, 5, dt);
     return this.surfLock;
   }
 
@@ -1595,12 +1663,13 @@ export class Dolphin {
     const vy = this.velocity.y + (stroke > 0 ? P.y : 0);
     const vz = this.velocity.z + (stroke > 0 ? P.z : 0);
     const vl = Math.hypot(vx, vy, vz);
+    // The body swings up into it at its normal pitch rate (no snap).
     if (vl > 0.1) {
       const pitchPath = clamp(Math.asin(clamp(vy / vl, -1, 1)), -TUNING.movement.maxPitch, TUNING.movement.maxPitch);
       this.targetPitch = pitchPath;
-      this.pitch += (pitchPath - this.pitch) * 0.7;
       this.lastRideTarget = this.targetPitch;
     }
+    this.airAim = 0;
     this.surfLock = 0;
     this.surfLockEngaged = false;
     this.leapClock = 0.6;
@@ -1751,7 +1820,9 @@ export class Dolphin {
     }
     const capture = 1 - smoothstep(release * 0.8, release, Math.abs(this.rideOffset));
     // Not during a leap: the trim would pull the nose back down into the face.
-    const hold = this.leapFlight ? 0 : near * fast * keys * capture * (1 - (this.surfLock || 0));
+    // Nor once the surface lock has caught the body: the lock owns the
+    // pitch then, and the two pulling different ways jerked the nose.
+    const hold = this.leapFlight || this.surfLockEngaged ? 0 : near * fast * keys * capture * (1 - (this.surfLock || 0));
     // Smooth the engagement so it never snaps the attitude.
     this.rideHold = damp(this.rideHold, hold, 6, dt);
 

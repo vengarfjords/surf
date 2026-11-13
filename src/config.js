@@ -108,16 +108,33 @@ export const TUNING = {
     breachImpulse: 1.6,
     boundaryPush: 1.8,
 
-    // Airborne translation. The animal is ballistic, but the body still
-    // glides: low drag, full gravity, a little speed-dependent lift and
-    // some velocity steering from the snout (none in a leap off the surface
-    // lock, which flies a pure arc). Nose-first air drag on a 200 kg
+    // Airborne translation. Full gravity and a ballistic arc, shaped by the
+    // air flowing over the body. Nose-first air drag on a 200 kg
     // streamlined body is tiny (about 0.5 rho Cd A / m = 4e-5 per metre);
     // the old 0.0025 braked a leap off a 70 m/s wave at 1.7 g, so the wave
     // outran its own surfer in the air.
+    //
+    // Steering in the air is lift: with the nose aimed off the flight path
+    // (mouse, arrow keys, A/D), the body and flippers push the path toward
+    // the nose, `airLiftCoef` x speed^2 x sin(angle) m/s^2, stalling past
+    // `airStall` rad and capped at `airLiftMax` (0.6 g, so a held nose-up
+    // stretches an arc but cannot glide level), and every bit of it costs
+    // `airInducedDrag` of itself in speed. Nose along the path: no lift, a
+    // pure arc. `airAimMax` is how far off the path the nose can be held.
     airGravity: 9.81,
-    airLift: 0.0065,
-    airSteer: 0.72,
+    airLiftCoef: 0.035,
+    airLiftMax: 6,
+    airStall: 0.5,
+    airInducedDrag: 0.2,
+    airAimMax: 0.6,
+    // Weathervane: rate (1/s) at which the nose relaxes back onto the
+    // flight path once the player stops aiming it.
+    airAimReturn: 1.5,
+    // Below this speed (m/s) the nose is not tied to the flight path.
+    airPathSpeed: 4,
+    // How fast the automatic pitch (ride trim, surface lock) may turn the
+    // nose just after a flight ends (rad/s).
+    landingPitchRate: 3,
     airForwardDrag: 0.004,
     airForwardQuadraticDrag: 0.0004,
     airLateralDrag: 0.08,
@@ -556,8 +573,8 @@ export const TUNE_CONTROLS = [
   { path: "movement.banking", label: "banking intensity", min: 0, max: 2.4, step: 0.01 },
   { path: "movement.bankIntoDrift", label: "drift bank", min: 0, max: 1.5, step: 0.01 },
   { path: "movement.verticalThrust", label: "rise / dive force", min: 0.2, max: 4, step: 0.05 },
-  { path: "movement.airSteer", label: "air control", min: 0, max: 4, step: 0.01 },
-  { path: "movement.airLift", label: "air lift", min: 0, max: 0.05, step: 0.001 },
+  { path: "movement.airLiftCoef", label: "air control (lift)", min: 0, max: 0.12, step: 0.005 },
+  { path: "movement.airLiftMax", label: "air lift max (m/s2)", min: 0, max: 20, step: 0.5 },
   { path: "movement.airGravity", label: "air gravity", min: 0, max: 14, step: 0.05 },
   { path: "movement.breachImpulse", label: "breach kick", min: 0, max: 6, step: 0.05 },
   { path: "dolphin.tailBeatSpeed", label: "tail beat", min: 0.15, max: 2.6, step: 0.01 },

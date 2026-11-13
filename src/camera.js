@@ -159,8 +159,8 @@ export class CameraRig {
       const sl = this.surfLook.copy(dolphin.position);
       sl.addScaledVector(sf, camCfg.surfLookAhead + speedNorm * 2.0);
       sl.y = base + camCfg.surfLookUp;
-      const lock = dolphin.surfLock || 0;
-      if (lock > 0 && dolphin._sl) {
+      const lock = dolphin.viewLock ?? dolphin.surfLock ?? 0;
+      if (lock > 0.001 && dolphin._sl) {
         // Locked to the surface (Space): frame the shot in the surface's own
         // plane, behind along the heading and lifted along its normal, so on
         // a 60 degree face the dolphin stays in frame on the way down instead
