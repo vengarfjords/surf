@@ -705,7 +705,7 @@ export class Ocean {
           // Meniscus/foam collar hugging the dolphin at the waterline.
           float bodyDist = length(vWorld.xz - uBodyPos.xz);
           float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));
-          float bodyFoam = bodyRing * uBodyActive * clamp(uBodySpeed / 7.0, 0.2, 1.1);
+          float bodyFoam = bodyRing * uBodyActive * clamp(uBodySpeed / 7.0, 0.0, 1.1);
           foam = max(foam, bodyFoam * 0.9);
           float foamTex = foamTexture(p, vDistance);
           // Thin foam is lace; thick foam closes up into a white sheet.
@@ -825,7 +825,7 @@ export class Ocean {
           float meniscus = exp(-pow(camGap / 0.05, 2.0)) * nearSurface;
           vec3 color = mix(below, aboveFog, aboveWeight);
           color = mix(color, vec3(0.92, 0.99, 0.97), meniscus * 0.22);
-          color = mix(color, vec3(0.9, 0.99, 0.95), bodyRing * uBodyActive * 0.22);
+          color = mix(color, vec3(0.9, 0.99, 0.95), bodyRing * uBodyActive * 0.06);
           foam = foamCover;
 
           // ---- debug overlays ------------------------------------------
