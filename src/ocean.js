@@ -6,6 +6,7 @@ import { SurfSolver } from "./water/solver.js";
 import { FoamField } from "./water/foam.js";
 import { makeBathymetry } from "./water/bathymetry.js";
 import { MAX_WAVES, probeFragmentShader, waterVertexShader } from "./water/shaders.js";
+import { glslSky } from "./atmosphere.js";
 
 /**
  * Seamless procedural ripple maps. Three independent maps are sampled at
@@ -372,6 +373,9 @@ export class Ocean {
       uDebugCrest: { value: 0 },
       uDebugSlope: { value: 0 },
       uDebugFoam: { value: 0 },
+      uWhitecaps: { value: TUNING.visuals.whitecaps },
+      uFoamStreaks: { value: TUNING.visuals.foamStreaks },
+      uHorizonFog: { value: TUNING.visuals.horizonFog },
     };
 
     this.material = this._buildMaterial();
@@ -505,6 +509,14 @@ export class Ocean {
         uniform float uDebugCrest;
         uniform float uDebugSlope;
         uniform float uDebugFoam;
+        uniform float uMegaOn;
+        uniform vec4 uMegaA;
+        uniform float uPeakK;
+        uniform float uPeakKx;
+        uniform float uPeakKz;
+        uniform float uWhitecaps;
+        uniform float uFoamStreaks;
+        uniform float uHorizonFog;
 
         varying vec3 vWorld;
         varying vec3 vNormalW;
@@ -526,27 +538,40 @@ export class Ocean {
         ${glslNoise}
         ${glslFog}
         ${glslCaustics}
+        ${glslSky}
+
+        // Bubbly foam texture: the bright cell walls of two drifting
+        // Voronoi layers, which reads as lace rather than as a smooth fog.
+        float foamCells(vec2 p) {
+          vec2 n = floor(p);
+          vec2 f = fract(p);
+          float d1 = 8.0;
+          float d2 = 8.0;
+          for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+              vec2 g = vec2(float(i), float(j));
+              vec2 o = vec2(hash21(n + g), hash21(n + g + 19.7));
+              vec2 r = g + o - f;
+              float d = dot(r, r);
+              if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) { d2 = d; }
+            }
+          }
+          return 1.0 - smoothstep(0.0, 0.35, sqrt(d2) - sqrt(d1));
+        }
+
+        float foamTexture(vec2 p, float dist) {
+          float near = 1.0 - smoothstep(25.0, 140.0, dist);
+          float lace = foamCells(p * 1.7 + vec2(uTime * 0.05, -uTime * 0.03));
+          float fine = near > 0.01 ? foamCells(p * 4.6 - vec2(uTime * 0.08, uTime * 0.05)) : 0.5;
+          float body = fbm2(p * 0.45 + uTime * 0.02);
+          float t = mix(0.35 + 0.65 * body, lace * 0.35 + fine * 0.25 + body * 0.6, near * 0.7 + 0.1);
+          return clamp(t, 0.0, 1.0);
+        }
 
         vec3 skyReflection(vec3 d) {
-          float h = clamp(d.y, 0.0, 1.0);
-          // The sea reflects a cooler, smoother sky than the dome. A literal
-          // golden horizon reflected off every wave facet turns a grazing
-          // surface into a busy cream patchwork, so the reflection uses a
-          // muted horizon and a broad smoothstep instead of a sharp gradient.
-          vec3 horizonCol = mix(uSkyZenith * 0.92, uSkyHorizon * 0.68, 0.32);
-          vec3 zenithCol = uSkyZenith * 1.04;
-          vec3 col = mix(horizonCol, zenithCol, smoothstep(0.0, 0.45, h));
-          col = mix(col, horizonCol * 1.04, exp(-h * 18.0) * 0.12);
-
-          vec2 cp = d.xz / (max(d.y, 0.03) + 0.22);
-          float baseCloud = fbm2(cp * 1.2 + vec2(uTime * 0.002, 0.0));
-          float clouds = fbm2(cp * 2.7 + vec2(baseCloud * 2.4 + uTime * 0.0012, baseCloud));
-          float band = smoothstep(0.5, 0.76, clouds + 0.1 * smoothstep(0.0, 0.3, d.y));
-          col = mix(col, vec3(0.56, 0.66, 0.72), band * (0.1 - 0.05 * h));
-
-          float sd = max(dot(d, uSunDir), 0.0);
-          col += uSunColor * (pow(sd, 700.0) * 2.1 + pow(sd, 30.0) * 0.16 + pow(sd, 5.0) * 0.035);
-          return col;
+          d.y = abs(d.y);
+          // A wind-roughened sea reflects a blurred, slightly darker sky.
+          return skyColor(d, uSunDir, uTime, 0.4) * 0.82;
         }
 
         vec2 detailSlope(vec2 p, float dist) {
@@ -561,7 +586,13 @@ export class Ocean {
           vec2 s0 = texture2D(uDetail0, uv0).rg * 2.0 - 1.0;
           vec2 s1 = texture2D(uDetail1, uv1).rg * 2.0 - 1.0;
           vec2 s2 = texture2D(uDetail2, uv2).rg * 2.0 - 1.0;
+          // A fourth, much larger cascade only fades in with distance, so a
+          // 500 m face seen from a kilometre away still carries chop.
+          vec2 s3 = texture2D(uDetail1, p / 210.0 + drift * 0.004).rg * 2.0 - 1.0;
+          vec2 s4 = texture2D(uDetail2, p / 640.0 - drift * 0.002).rg * 2.0 - 1.0;
+          float fadeBig = smoothstep(60.0, 600.0, dist);
           vec2 s = s0 * 0.52 * fadeNear + s1 * 0.32 * fadeNear + s2 * 0.2 * fadeFar;
+          s += (s3 * 0.42 + s4 * 0.3) * fadeBig;
           return s * uDetailStrength;
         }
 
@@ -577,41 +608,51 @@ export class Ocean {
           vec3 view = normalize(uCameraPos - vWorld);
           vec2 detail = detailSlope(vWorld.xz, vDistance);
           float microHeight = detailHeight(vWorld.xz, vDistance);
-          vec3 microN = normalize(vec3(n.x + detail.x * 0.28, n.y, n.z + detail.y * 0.28));
+          vec3 microN = normalize(vec3(n.x + detail.x * 0.3, n.y, n.z + detail.y * 0.3));
           if (microN.y < 0.0) microN = -microN;
 
-          float distFilter = smoothstep(600.0, 3600.0, vDistance);
-          microN = normalize(mix(microN, vec3(0.0, 1.0, 0.0), distFilter * 0.55));
+          float distFilter = smoothstep(900.0, 5200.0, vDistance);
+          microN = normalize(mix(microN, n, distFilter * 0.6));
 
           float depthRaw = texture2D(uBathy, vWorld.xz / uBathyExtent + 0.5).r * uBathyMaxDepth;
           // vDepth carries the mega wave's water column, so its face reads
           // as deep water instead of the shelf tint underneath.
           float pathDepth = clamp(max(depthRaw, vDepth), 0.0, 24.0);
+          // Height of the mega crest above the shelf, 0 in the trough and ~1
+          // at the lip. Drives the thin, glowing water near its crest.
+          float megaRise = uMegaOn > 0.5
+            ? clamp((vDepth - max(depthRaw, 0.3)) / max(1.0, uMegaA.w), 0.0, 1.4)
+            : 0.0;
+          vec2 megaDir = vec2(uPeakKx, uPeakKz) / max(1e-6, uPeakK);
+          bool megaFront = vFacePhase > 0.0 && megaRise > 0.02;
 
           vec2 p = vWorld.xz;
           float crest = clamp(vCrest, 0.0, 1.0);
           // Only strong horizontal compression reads as a whitecap; a big
           // swell squeezes every crest a little without breaking it.
           float compression = 1.0 - smoothstep(0.0, 0.42, vJacobian);
-          float slopeEnergy = smoothstep(0.1, 0.25, length(vCapSlope));
+          float slopeEnergy = smoothstep(0.08, 0.22, length(vCapSlope));
           float foamNoise = fbm2(p * 0.31 + vec2(uTime * 0.014, -uTime * 0.009));
           float perpA = dot(p, uWindDir);
           float perpB = dot(p, vec2(-uWindDir.y, uWindDir.x));
           float lace = vnoise(vec2(perpA * 0.32 + uTime * 0.05, perpB * 1.9 - uTime * 0.04) + 13.7);
           float windMask = smoothstep(0.4, 0.72, foamNoise * 0.72 + lace * 0.42);
-          float crestMask = smoothstep(0.16, 0.78, crest);
+          float crestMask = smoothstep(0.12, 0.7, crest);
           float foamSignal =
-            crestMask * (0.35 + slopeEnergy * 0.45 + windMask * 0.35) +
+            crestMask * (0.38 + slopeEnergy * 0.5 + windMask * 0.4) +
             compression * 2.2;
-          float foam = smoothstep(uFoamThreshold, uFoamThreshold + 0.17, foamSignal) * uFoamAmount;
-          foam *= 1.0 - smoothstep(1200.0, 4200.0, vDistance);
-          float fineFoam = vnoise(p * 4.6 + vec2(uTime * 0.16, -uTime * 0.12));
-          foam *= 0.55 + 0.6 * fineFoam;
+          float threshold = uFoamThreshold / max(0.35, uWhitecaps);
+          float foam = smoothstep(threshold, threshold + 0.2, foamSignal) * min(1.0, uFoamAmount * uWhitecaps);
+          // Scattered wind whitecaps: short-lived patches on the wind-sea
+          // crests, the white flecks that cover the reference sea.
+          float capCell = vnoise(vec2(perpA * 0.045 - uTime * 0.11, perpB * 0.09) + 3.1);
+          float capLife = vnoise(vec2(perpA * 0.11, perpB * 0.11) + uTime * 0.21);
+          float windCaps = smoothstep(0.7, 0.92, capCell * 0.6 + capLife * 0.55 + slopeEnergy * 0.25)
+            * smoothstep(-0.2, 0.5, vCrest + microHeight * 0.4);
+          foam = max(foam, windCaps * 0.85 * clamp(uWhitecaps - 0.4, 0.0, 1.0));
+          foam *= 1.0 - smoothstep(1500.0, 5200.0, vDistance);
 
           // ---- breaking and aeration ------------------------------------
-          // vBreak is the per-wave bore (WaveField.sampleSurface breaking):
-          // the same signal drives buoyancy, thrust loss and the breaker jet.
-          // The roller is thickest at the crest and thins down the face.
           float broken = smoothstep(0.15, 0.7, vBreak);
           float roller = 1.0 - smoothstep(0.1, 1.3, vFacePhase);
           float aeration = clamp(
@@ -622,76 +663,103 @@ export class Ocean {
           aeration = max(aeration, vSolverFoam * 0.85);
           aeration = max(aeration, vFoamField * 0.5);
           float plunge = smoothstep(0.5, 2.8, vXi);
-          float crestFoam = 0.45 + 0.55 * roller;
+          float crestFoam = 0.55 + 0.45 * roller;
           float whitewater = broken * crestFoam * smoothstep(
-            0.3,
-            0.8,
-            foamNoise * 0.5 + lace * 0.25 + roller * 0.15
+            0.22,
+            0.7,
+            foamNoise * 0.5 + lace * 0.25 + roller * 0.2
           );
           float lipTongue =
             broken * plunge * (1.0 - smoothstep(0.0, 0.7, abs(vFacePhase - 0.25))) *
             smoothstep(0.45, 0.9, foamNoise);
-          whitewater = clamp(whitewater * 0.58 + lipTongue * 0.22, 0.0, 1.0);
-          // Keep the aerated whitewater distinct from wind whitecaps: fade the
-          // generic whitecap field inside the break zone, then add the crest
-          // foam back in.
-          foam *= 1.0 - broken * 0.78;
+          whitewater = clamp(whitewater * 0.85 + lipTongue * 0.3, 0.0, 1.0);
+          foam *= 1.0 - broken * 0.6;
           foam = max(foam, whitewater);
           foam = max(foam, vSolverFoam * 1.15);
-          // Break the advected field into lacy patches at render resolution;
-          // the 2 m state grid is too smooth to read as foam on its own.
-          // Reuse the foam noise and lace already evaluated above, and keep
-          // blue gaps instead of laying down a uniform cream sheet.
           float fieldLace = 0.55 * foamNoise + 0.45 * lace;
           float fieldMask = smoothstep(0.28, 0.72, fieldLace);
           foam = max(foam, vFoamField * fieldMask * 1.15);
+
+          // Foam streaks: old whitecap foam stretched into long lines along
+          // the wind, lying over the backs of the waves, and on a mega face
+          // the scars of foam that pour down from the lip.
+          float streakA = vnoise(vec2(perpA * 0.035 + uTime * 0.03, perpB * 0.55));
+          float streakB = vnoise(vec2(perpA * 0.09 - uTime * 0.02, perpB * 1.6) + 7.0);
+          float streaks = smoothstep(0.58, 0.9, streakA * 0.6 + streakB * 0.45);
+          streaks *= smoothstep(0.35, 0.75, vnoise(p * 0.02 + 11.0));
+          streaks *= 1.0 - smoothstep(250.0, 1400.0, vDistance);
+          if (megaRise > 0.02) {
+            float along = dot(p, megaDir);
+            float across = dot(p, vec2(-megaDir.y, megaDir.x));
+            float scar = vnoise(vec2(along * 0.006 - uTime * 0.05, across * 0.06));
+            scar = scar * 0.6 + vnoise(vec2(along * 0.02, across * 0.21) + 5.0) * 0.4;
+            float scars = smoothstep(0.6, 0.86, scar) * smoothstep(0.08, 0.5, megaRise);
+            streaks = max(streaks, scars * (megaFront ? 1.0 : 0.45));
+          }
+          foam = max(foam, streaks * 0.42 * uFoamStreaks);
+
           // Meniscus/foam collar hugging the dolphin at the waterline.
           float bodyDist = length(vWorld.xz - uBodyPos.xz);
           float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));
           float bodyFoam = bodyRing * uBodyActive * clamp(uBodySpeed / 7.0, 0.2, 1.1);
           foam = max(foam, bodyFoam * 0.9);
-          foam = clamp(foam, 0.0, 1.0);
+          float foamTex = foamTexture(p, vDistance);
+          // Thin foam is lace; thick foam closes up into a white sheet.
+          float foamCover = clamp(foam * (0.45 + 0.9 * foamTex) + foam * foam * 0.4, 0.0, 1.0);
+          foamCover = smoothstep(0.08, 0.85, foamCover);
 
           // ---- above the surface ----------------------------------------
           float cosView = clamp(dot(view, microN), 0.0, 1.0);
           float fres = 0.02 + 0.98 * pow(1.0 - cosView, 5.0);
+          // A rough sea never reaches mirror reflectance at grazing angles.
+          fres = min(fres, 0.62);
           vec3 refl = reflect(-view, microN);
           vec3 sky = skyReflection(refl);
+          vec3 viewFlat = normalize(vec3(-view.x, 0.0, -view.z) + vec3(1e-4, 0.0, 0.0));
+          vec3 horizon = skyHorizonColor(viewFlat, uSunDir);
+
+          // Diffuse light under the overcast: mostly sky, a little sun.
+          float skyLight = 0.62 + 0.38 * microN.y;
+          vec3 ambient = mix(SKY_HORIZON_AWAY, SKY_MID, 0.5) * skyLight;
 
           float shallowMix = smoothstep(0.9, 14.0, pathDepth);
-          vec3 shallow = uTopColor * 0.42 + vec3(0.0, 0.065, 0.085);
-          vec3 body = mix(shallow, uDeepColor, shallowMix);
-          body *= 0.82 + 0.24 * crest;
-          body = mix(body, vec3(0.55, 0.72, 0.66), aeration * 0.42);
+          vec3 shallow = uTopColor * 0.55 + vec3(0.03, 0.05, 0.02);
+          vec3 body = mix(shallow, uDeepColor, shallowMix) * ambient;
 
-          // Wave-face legibility: faces tilted toward the sun collect more
-          // direct light, faces tilted away sit in their own shadow. This is
-          // an artistic scattering term, not a fake slope force; it exists so
-          // a surfer can read the face shape from above.
+          // Subsurface light. The water near a crest is thin, and the face
+          // tilted toward the viewer shows light coming through it: the
+          // translucent turquoise of the reference sea. Looking toward the
+          // sun the whole crest glows.
+          float thin = max(smoothstep(-0.15, 0.9, vCrest), smoothstep(0.45, 1.0, megaRise));
+          vec2 nH = microN.xz;
+          vec2 vH = view.xz / max(length(view.xz), 1e-4);
+          float faceView = clamp(dot(nH, vH) * 3.0, 0.0, 1.0);
+          float towardSun = pow(clamp(dot(-view, uSunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
+          float sss = thin * (0.35 + faceView * 0.9 + towardSun * 0.8);
+          sss += faceView * 0.18;
+          vec3 sssColor = uTopColor * vec3(0.85, 1.05, 0.95);
+          body += sssColor * sss * 0.42 * (0.7 + 0.3 * microHeight);
+          // Wave-face legibility from the sun side.
           vec2 sunFlat = normalize(uSunDir.xz);
-          float faceSun = clamp(-dot(n.xz, sunFlat) * 2.4, -1.0, 1.0);
-          body *= 1.0 + faceSun * 0.16;
-          float crestLip = smoothstep(0.42, 0.92, crest);
-          body += uTopColor * crestLip * 0.055;
+          float faceSun = clamp(-dot(n.xz, sunFlat) * 2.0, -1.0, 1.0);
+          body *= 1.0 + faceSun * 0.14;
+          // Bubbles below the foam scatter the light: pale turquoise.
+          body = mix(body, sssColor * 0.9 + 0.08, clamp(aeration * 0.75 + foam * 0.3, 0.0, 0.85));
 
-          // Light transmitted through a thin, backlit crest.
-          float backlit = pow(max(dot(view, -uSunDir), 0.0), 1.6) * crest * crest;
-          body += vec3(0.12, 0.38, 0.3) * backlit * 0.5;
-          body += uTopColor * (0.02 + crest * 0.08) * 0.35;
+          vec3 above = mix(body, sky, fres);
 
-          vec3 above = mix(body, sky, clamp(0.04 + fres * 0.82, 0.0, 0.94));
-
+          // Overcast sheen: a broad soft highlight toward the hidden sun and
+          // only a scatter of small sparkles, never a hard sun path.
           float sunAlign = max(dot(refl, uSunDir), 0.0);
-          float specPower = mix(1200.0, 70.0, smoothstep(80.0, 1800.0, vDistance));
-          float glint = pow(sunAlign, specPower) * mix(2.6, 0.3, smoothstep(100.0, 2200.0, vDistance));
-          glint += pow(sunAlign, 55.0) * 0.075;
-          float sparkle = smoothstep(0.52, 0.92, vnoise(p * 3.4 + vec2(uTime * 0.22, -uTime * 0.19)));
-          glint += pow(sunAlign, 22.0) * (0.012 + 0.025 * sparkle);
-          glint *= 0.55 + sparkle * 0.9;
-          above += uSunColor * glint;
+          float sheen = pow(sunAlign, 18.0) * 0.12 + pow(sunAlign, 160.0) * 0.35;
+          float sparkle = smoothstep(0.7, 0.95, vnoise(p * 3.4 + vec2(uTime * 0.4, -uTime * 0.33)));
+          sheen += pow(sunAlign, 600.0) * sparkle * 1.4 * (1.0 - smoothstep(60.0, 500.0, vDistance));
+          above += SKY_HORIZON_SUN * sheen * (1.0 - foamCover);
 
-          vec3 foamColor = mix(vec3(0.6, 0.72, 0.7), vec3(0.96, 0.99, 0.96), smoothstep(0.1, 0.8, foamNoise + lace * 0.25));
-          above = mix(above, foamColor, foam * 0.88);
+          // Foam: lit by the sky, slightly shadowed in its own cell walls.
+          vec3 foamLit = mix(ambient * 0.86, ambient * 1.18 + SKY_HORIZON_SUN * 0.08, foamTex);
+          foamLit *= 1.0 + faceSun * 0.08;
+          above = mix(above, foamLit, foamCover * 0.94);
 
           // ---- below the surface ----------------------------------------
           // Snell's window: refracted sky within the critical angle
@@ -704,36 +772,32 @@ export class Ocean {
           vec3 winDir = length(refr) > 0.5 ? normalize(refr) : normalize(I);
 
           float wav = clamp(vCrest * 0.5 + 0.5, 0.0, 1.0);
-          vec3 tir = uDeepColor * 0.42 + uTopColor * 0.08;
+          vec3 tir = uDeepColor * 0.55 + uTopColor * 0.06;
           tir *= 0.88 + 0.28 * wav;
-          tir += uTopColor * (0.075 + 0.16 * wav) * (0.4 + 0.6 * microHeight);
-          tir += uTopColor * pow(max(0.0, 1.0 - cosI), 1.25) * 0.1;
+          tir += uTopColor * (0.06 + 0.13 * wav) * (0.4 + 0.6 * microHeight);
+          tir += uTopColor * pow(max(0.0, 1.0 - cosI), 1.25) * 0.08;
           float undersideSheen = pow(max(dot(reflect(-view, microN), uSunDir), 0.0), 24.0);
-          tir += uSunColor * undersideSheen * 0.12;
-          // Caustic veins on the underside, modulated by the real wave slope
-          // and crest height rather than a flat screen-space pattern.
+          tir += uSunColor * undersideSheen * 0.1;
           float veins = causticNetwork(vWorld.xz * 0.34 + vec2(uTime * 0.02, -uTime * 0.015), uTime * 0.55);
-          tir += uTopColor * veins * 0.032 * (0.45 + 0.55 * wav);
-          tir += vec3(0.02, 0.075, 0.12) * (0.5 + 0.5 * microHeight) * 0.22;
+          tir += uTopColor * veins * 0.03 * (0.45 + 0.55 * wav);
 
-          vec3 winCol = skyReflection(winDir);
-          winCol = mix(winCol, uTopColor * 0.8, 0.29);
-          winCol += uSunColor * pow(max(dot(winDir, uSunDir), 0.0), 90.0) * 0.8;
-          winCol *= (0.84 + 0.28 * microHeight) * 0.72;
+          vec3 winCol = skyColor(winDir, uSunDir, uTime, 0.6);
+          winCol = mix(winCol, uTopColor * 0.85, 0.32);
+          winCol *= (0.84 + 0.28 * microHeight) * 0.78;
 
           vec3 below = mix(tir, winCol, window * 0.94);
-          below += uTopColor * rim * 0.95;
-          below = mix(below, vec3(0.55, 0.7, 0.68), foam * 0.24);
-          below = mix(below, vec3(0.5, 0.66, 0.6), aeration * 0.45);
+          below += uTopColor * rim * 0.7;
+          // Foam seen from below: a dark-edged, bright lace ceiling.
+          below = mix(below, vec3(0.46, 0.6, 0.58), foamCover * foamCover * 0.3);
+          below = mix(below, vec3(0.45, 0.62, 0.58), aeration * 0.45);
           below = applyWaterFog(below, vDistance, uFogColor, uFogDensity * 0.72);
 
-          vec3 aboveFog = applyWaterFog(above, vDistance, uFogColor, uFogDensity * 0.78);
+          // Above-water distance fog fades to the horizon colour in that
+          // direction, so the far sea dissolves into the sea mist.
+          float hz = 1.0 - exp(-vDistance * 0.00026 * uHorizonFog);
+          hz = max(hz, (1.0 - exp(-vDistance * 0.0006 * uHorizonFog)) * (1.0 - smoothstep(0.0, 0.2, abs(view.y))));
+          vec3 aboveFog = mix(above, horizon, clamp(hz, 0.0, 0.97));
 
-          // Camera side. A global switch is correct when the camera is clearly
-          // above or below water; near the waterline, use the local vertical
-          // side so a half-in frame shows both sides. Do not use the tangent
-          // plane: at grazing distance a wave normal can put the camera below
-          // its own plane and produce a spurious cellular underside.
           float nearSurface = clamp(1.0 - abs(uUnderwater - 0.5) * 2.0, 0.0, 1.0);
           float localAbove = smoothstep(-0.08, 0.08, uCameraPos.y - vWorld.y);
           float aboveWeight = mix(clamp(1.0 - uUnderwater, 0.0, 1.0), localAbove, nearSurface);
@@ -742,6 +806,7 @@ export class Ocean {
           vec3 color = mix(below, aboveFog, aboveWeight);
           color = mix(color, vec3(0.92, 0.99, 0.97), meniscus * 0.22);
           color = mix(color, vec3(0.9, 0.99, 0.95), bodyRing * uBodyActive * 0.22);
+          foam = foamCover;
 
           // ---- debug overlays ------------------------------------------
           if (uDebugCrest > 0.5) {
@@ -795,25 +860,10 @@ export class Ocean {
         uniform vec3 uSunColor;
         uniform float uTime;
         ${glslNoise}
+        ${glslSky}
         void main() {
           vec3 d = normalize(vDir);
-          float h = clamp(d.y, -0.05, 1.0);
-          vec3 col = mix(uHorizon, uZenith, pow(max(h, 0.0), 0.5));
-          col = mix(col, uHorizon * 1.05, exp(-max(h, 0.0) * 10.0) * 0.72);
-
-          vec2 cp = d.xz / (max(d.y, 0.035) + 0.22);
-          float baseCloud = fbm2(cp * 1.25 + vec2(uTime * 0.003, 0.0));
-          float clouds = fbm2(cp * 2.7 + vec2(baseCloud * 2.8 + uTime * 0.002, baseCloud));
-          float band = smoothstep(0.43, 0.68, clouds + 0.12 * smoothstep(0.0, 0.3, d.y));
-          float cloudWash = band * (0.36 - 0.18 * h);
-          vec3 cloudTone = mix(vec3(0.27, 0.29, 0.31), vec3(0.88, 0.8, 0.69), smoothstep(0.0, 0.5, clouds));
-          col = mix(col, cloudTone, cloudWash * 0.78);
-          col = mix(col, uHorizon * 0.96, exp(-max(d.y, 0.0) * 16.0) * 0.4);
-
-          float sd = max(dot(d, uSunDir), 0.0);
-          col += uSunColor * (pow(sd, 360.0) * 2.4 + pow(sd, 18.0) * 0.26 + pow(sd, 4.0) * 0.055);
-          col = mix(col, uSunColor * 1.35, pow(sd, 900.0) * 0.96);
-          gl_FragColor = vec4(col, 1.0);
+          gl_FragColor = vec4(skyColor(d, uSunDir, uTime, 1.0), 1.0);
         }
       `,
     });
@@ -1087,6 +1137,9 @@ export class Ocean {
     u.uDebugCrest.value = TUNING.debug.crestOverlay ? 1 : 0;
     u.uDebugSlope.value = TUNING.debug.slopeOverlay ? 1 : 0;
     u.uDebugFoam.value = TUNING.debug.foamOverlay ? 1 : 0;
+    u.uWhitecaps.value = TUNING.visuals.whitecaps;
+    u.uFoamStreaks.value = TUNING.visuals.foamStreaks;
+    u.uHorizonFog.value = TUNING.visuals.horizonFog;
 
     this.mesh.visible = true;
     this.sky.visible = camera.position.y > camSurf.height;

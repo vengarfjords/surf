@@ -280,6 +280,15 @@ export class ParticleFX {
       additive: true,
       opacity: 0.65,
     });
+    // Wind spray blown off whitecaps and crests around the camera.
+    this.windSprayPool = new CPUParticles(scene, 900, {
+      softness: 0.62,
+      additive: false,
+      opacity: 0.5,
+    });
+    this._windAccum = 0;
+    this._windSample = {};
+    this._windForward = new THREE.Vector3();
     this.tmp = new THREE.Color();
     this.ocean = null;
     this.stats = { spray: 0, foam: 0, bubbles: 0, crowns: 0, tails: 0, surfSpray: 0, surfBubbles: 0, surfAeration: 0 };
@@ -372,6 +381,94 @@ export class ParticleFX {
       });
     }
     this.stats.surfSpray += n;
+  }
+
+  /**
+   * Spray torn off crests by the wind, in a cone in front of the camera.
+   * Each hit throws a short-lived puff downwind; on the steepest crests a
+   * few larger, slower mist blobs hang behind it. Visual only.
+   */
+  updateWindSpray(dt, camera, underwater) {
+    const strength = TUNING.visuals.whitecaps;
+    if (!this.ocean || underwater > 0.5 || strength <= 0) {
+      this._windAccum = 0;
+      return;
+    }
+    const water = this.ocean.water;
+    const wdir = TUNING.water.windSeaDirection;
+    const wx = Math.cos(wdir);
+    const wz = Math.sin(wdir);
+    camera.getWorldDirection(this._windForward);
+    const f = this._windForward;
+    const fl = Math.hypot(f.x, f.z) || 1;
+    const fx = f.x / fl;
+    const fz = f.z / fl;
+    this._windAccum = Math.min(this._windAccum + dt, 0.1);
+    const period = 1 / (36 * strength);
+    let tries = 0;
+    while (this._windAccum >= period && tries < 8) {
+      this._windAccum -= period;
+      tries++;
+      const dist = 6 + Math.pow(Math.random(), 0.7) * 150;
+      const lateral = (Math.random() - 0.5) * dist * 1.3;
+      const x = camera.position.x + fx * dist - fz * lateral;
+      const z = camera.position.z + fz * dist + fx * lateral;
+      const s = water.sampleSurface(x, z, this._windSample);
+      const crest = s.crest || 0;
+      const brk = s.breakMask || 0;
+      const score = Math.max(crest * 0.9 + (Math.random() - 0.5) * 0.5, brk * 1.4);
+      if (score < 0.55) continue;
+      const vel = this.waterVel(x, s.height, z, 1);
+      const bx = vel ? vel.x : 0;
+      const bz = vel ? vel.z : 0;
+      const n = 2 + Math.floor(Math.random() * 3 + brk * 3);
+      const size = 0.5 + dist * 0.008;
+      for (let i = 0; i < n; i++) {
+        const gust = 4 + Math.random() * 7;
+        this.windSprayPool.spawn({
+          x: x + (Math.random() - 0.5) * 1.6,
+          y: s.height + 0.15 + Math.random() * 0.35,
+          z: z + (Math.random() - 0.5) * 1.6,
+          vx: bx + wx * gust + (Math.random() - 0.5),
+          vy: 1.2 + Math.random() * 2.4,
+          vz: bz + wz * gust + (Math.random() - 0.5),
+          bx: bx + wx * 3,
+          by: 0,
+          bz: bz + wz * 3,
+          life: 0.9 + Math.random() * 1.4,
+          size: size * (0.6 + Math.random() * 1.2),
+          drag: 0.8,
+          gravity: -2.4,
+          wobble: 0.4,
+          alpha: 0.22 + Math.random() * 0.25,
+          r: 0.9,
+          g: 0.94,
+          b: 0.94,
+        });
+      }
+      if (brk > 0.3 || crest > 0.8) {
+        this.windSprayPool.spawn({
+          x,
+          y: s.height + 0.6,
+          z,
+          vx: bx + wx * 3,
+          vy: 0.8,
+          vz: bz + wz * 3,
+          bx: bx + wx * 2.5,
+          by: 0.2,
+          bz: bz + wz * 2.5,
+          life: 2.5 + Math.random() * 2,
+          size: size * 4,
+          drag: 0.6,
+          gravity: 0,
+          wobble: 0.3,
+          alpha: 0.12,
+          r: 0.88,
+          g: 0.91,
+          b: 0.92,
+        });
+      }
+    }
   }
 
   /** Subsurface bubble plume under a breaking crest. */
@@ -766,6 +863,7 @@ export class ParticleFX {
     this.foam.update(dt, camera, fogColor, fogDensity, current);
     this.surf.update(dt, camera, fogColor, fogDensity, current);
     this.surfBubbles.update(dt, camera, fogColor, fogDensity, current);
+    this.windSprayPool.update(dt, camera, fogColor, fogDensity, current);
   }
 }
 

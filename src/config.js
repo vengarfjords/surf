@@ -49,7 +49,7 @@ export const TUNING = {
     // Base limit for the mid-body; it tapers stiffer toward the shoulders and
     // looser toward the peduncle, like a real dolphin's vertebral column.
     bodyBendLimit: 0.3,
-    skin: 0x7d9297,
+    skin: 0x56656c,
     belly: 0xb3bfb9,
   },
 
@@ -425,7 +425,7 @@ export const TUNING = {
   visuals: {
     fogShallow: 0.51,
     fogDeep: 0.67,
-    underwaterDensity: 0.0235,
+    underwaterDensity: 0.03,
     // Thin enough that a 500 m mega crest a kilometre away still reads as
     // water rather than a grey hill in the haze.
     aboveDensity: 0.0007,
@@ -445,13 +445,13 @@ export const TUNING = {
     reefCullDistance: 120,
     grassChunkSize: 80,
     grassCullDistance: 100,
-    bloomStrength: 0.16,
-    bloomRadius: 0.6,
-    bloomThreshold: 1.45,
+    bloomStrength: 0.22,
+    bloomRadius: 0.7,
+    bloomThreshold: 1.1,
     exposure: 1.34,
-    grain: 0.095,
-    aberration: 0.0042,
-    vignette: 0.58,
+    grain: 0.022,
+    aberration: 0.0022,
+    vignette: 0.32,
     cameraTint: 0.15,
     motionBlur: 0.22,
     causticStrength: 1.25,
@@ -464,6 +464,15 @@ export const TUNING = {
     volumetricCaustics: 0.72,
     surfaceHaze: 0.42,
     surfaceMist: 0.26,
+    // Look of the open sea (visual only, no effect on the wave physics).
+    // whitecaps scales wind whitecap coverage, foamStreaks the wind-drawn
+    // foam lines and mega-face foam scars, horizonFog how fast the far sea
+    // dissolves into the horizon mist, seaMist the low mist layer.
+    whitecaps: 1.15,
+    foamStreaks: 1.0,
+    horizonFog: 1.0,
+    seaMist: 1.0,
+    spindrift: 1.0,
   },
 
   fish: {
@@ -482,22 +491,27 @@ export const TUNING = {
 };
 
 export const PALETTE = {
-  // Clear neritic blue with a green undertow in the shallows. The references
-  // are considerably bluer than the old olive grade; the sand and seagrass
-  // stay earthy so the reef still reads as a real shelf.
-  fogShallow: 0x2a7096,
-  fogDeep: 0x062941,
-  waterTop: 0x6fc4df,
-  waterDeep: 0x0a3f60,
-  skyZenith: 0x6f9dba,
-  skyHorizon: 0xe8c69b,
+  // Matched to the reference photographs: a teal-green sea under a soft dusk
+  // overcast (peach low on the sun's side, grey sea mist on the other) and,
+  // below, blue water that turns green-teal toward a sunlit seagrass floor.
+  fogShallow: 0x2a6a70,
+  fogDeep: 0x0d2f45,
+  waterTop: 0x4fb3a4,
+  waterDeep: 0x0b3442,
+  skyZenith: 0x9aa4ab,
+  skyMid: 0xe2d6c0,
+  skyMidAway: 0xc4c6c2,
+  skyHorizon: 0xf3caa2,
+  skyHorizonAway: 0xb7bfc0,
+  skyCloud: 0x8c9196,
+  skyLand: 0x3f4a55,
   sandLight: 0x9b8a64,
   sandShade: 0x41402f,
   sandWet: 0x5b5540,
-  seagrass: 0x2a5637,
-  seagrassLight: 0x7b8a57,
+  seagrass: 0x3d6a33,
+  seagrassLight: 0x9db35a,
   skinTint: 0x879b9f,
-  sunColor: 0xffdfae,
+  sunColor: 0xffe2bd,
 };
 
 export const SUN_DIRECTION = { x: -0.46, y: 0.7, z: 0.55 };

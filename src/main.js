@@ -10,6 +10,7 @@ import { Input } from "./input.js";
 import { OceanAudio } from "./audio.js";
 import { HUD } from "./hud.js";
 import { Post } from "./post.js";
+import { Spindrift } from "./spindrift.js";
 import { WaterDebug } from "./water/debug.js";
 import { createScenarios } from "./water/scenarios.js";
 import { clamp, lerp, smoothstep } from "./utils.js";
@@ -75,6 +76,7 @@ async function boot() {
   const snow = new MarineSnow(scene, 3400);
   const motes = new NearMotes(scene, 240);
   const shafts = new SunShafts(scene);
+  const spindrift = new Spindrift(scene, ocean);
   const audio = new OceanAudio();
   audio.prepare();
   const input = new Input(canvas);
@@ -149,7 +151,7 @@ async function boot() {
     },
   });
 
-  const fogAbove = new THREE.Color(0x9fb3b8);
+  const fogAbove = new THREE.Color(PALETTE.skyHorizonAway);
   const fogShallow = new THREE.Color(PALETTE.fogShallow);
   const fogDeep = new THREE.Color(PALETTE.fogDeep);
   const skyHorizon = new THREE.Color(PALETTE.skyHorizon);
@@ -435,7 +437,7 @@ async function boot() {
     lights.sun.color
       .copy(skyHorizon)
       .lerp(sunWarm, 0.55)
-      .lerp(sunCool, camState.underwater * 0.78);
+      .lerp(sunCool, camState.underwater * 0.55);
 
     const seabedStart = performance.now();
     seabed.update(dt, dolphin, camera, fogColor, fogDensity);
@@ -480,6 +482,8 @@ async function boot() {
     snow.update(dt, camera, fogColor, fogDensity, camState.underwater);
     motes.update(dt, camera, fogColor, fogDensity, camState.underwater);
     shafts.update(camera, total, camState.underwater);
+    spindrift.update(dt, camera, camState.underwater);
+    effects.updateWindSpray(dt, camera, camState.underwater);
     const effectsMs = performance.now() - effectsStart;
 
     hud.update(dt, telemetry, elapsed, camState.underwater, clamp(dolphin.speed / TUNING.movement.boostSpeed, 0, 1.2));

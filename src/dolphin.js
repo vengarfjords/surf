@@ -142,8 +142,11 @@ function addDolphinMaterialShader(material, uniforms) {
         /* glsl */ `
           #include <color_fragment>
           // The geometry has been baked upright, so local Y is dorsal.
-          float dorsalAmount = smoothstep(-0.2, 0.65, vDolphinLocal.y);
-          float bellyMix = 1.0 - smoothstep(-1.2, 0.7, vDolphinLocal.y);
+          // The baked body is only ~0.5 m tall, so the countershading
+          // bands sit within a few tens of centimetres of the midline:
+          // a dark grey back, paler flanks, a cream belly.
+          float dorsalAmount = smoothstep(-0.1, 0.16, vDolphinLocal.y);
+          float bellyMix = 1.0 - smoothstep(-0.22, 0.06, vDolphinLocal.y);
           vec3 darkBack = vec3(0.13, 0.23, 0.27);
           vec3 paleBelly = vec3(1.35, 1.26, 1.05);
           diffuseColor.rgb *= mix(darkBack, paleBelly, bellyMix);
