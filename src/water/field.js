@@ -287,7 +287,7 @@ export class WaveField {
    * up-wave as the world allows so the ride that follows is long. Returns
    * { x, z, heading, wait } (wait: seconds until the face arrives).
    */
-  megaSpawn(lead = 12, limit = 1500) {
+  megaSpawn(lead = 12, limit = 1350) {
     const cfg = TUNING.water;
     const dx = this.peakDirX;
     const dz = this.peakDirZ;
