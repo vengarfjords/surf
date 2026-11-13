@@ -4,6 +4,7 @@ import { TUNING } from "./config.js";
 import {
   clamp,
   damp,
+  lerp,
   glslCaustics,
   seabedHeight,
   smoothstep,
@@ -619,7 +620,10 @@ export class Dolphin {
       movement.maxPitch
     );
     const keyTurn = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-    this.targetYaw = wrapAngle(this.targetYaw - keyTurn * movement.maxTurnRate * 1.15 * dt);
+    // On the surface (Space) the dolphin turns like a skier on an edge.
+    const skiing = this.surfLock || 0;
+    const keyTurnRate = lerp(movement.maxTurnRate * 1.15, TUNING.hydro.surfaceTurnRate, skiing);
+    this.targetYaw = wrapAngle(this.targetYaw - keyTurn * keyTurnRate * dt);
     const pitchInput =
       Math.abs(mx) > 0 ||
       Math.abs(my) > 0 ||
@@ -640,6 +644,17 @@ export class Dolphin {
 
     this.verticalInput = (input.rise ? 1 : 0) - (input.dive ? 1 : 0);
     const lock = this._surfaceLockUpdate(dt, input, ocean, my);
+    const pitchAim = Math.abs(my) > 0 || input.pitchUpKeys || input.pitchDownKeys;
+    if (this.leapFlight && !pitchAim) {
+      // Through a leap the nose follows the arc: up out of the water, level
+      // at the top, down into it. Turning (mouse or A/D) does not stop that;
+      // only aiming the nose up or down does.
+      const vl = this.velocity.length();
+      if (vl > 0.5) {
+        this.targetPitch = clamp(Math.asin(clamp(this.velocity.y / vl, -1, 1)), -movement.maxPitch, movement.maxPitch);
+        this.lastRideTarget = this.targetPitch;
+      }
+    }
     this._rideTrim(dt, ocean, pitchInput);
     if (lock > 0) {
       // On the surface the body lies along it; the mouse looks instead.
@@ -651,7 +666,9 @@ export class Dolphin {
     const pitchTarget = clamp(this.targetPitch + posture, -movement.maxPitch, movement.maxPitch);
 
     const prevYaw = this.yaw;
-    this.yaw = wrapAngle(dampAngle(this.yaw, this.targetYaw, movement.turnResponsiveness, dt));
+    this.yaw = wrapAngle(
+      dampAngle(this.yaw, this.targetYaw, lerp(movement.turnResponsiveness, TUNING.hydro.surfaceTurnResponse, skiing), dt)
+    );
     this.yawRate = clamp(wrapAngle(this.yaw - prevYaw) / Math.max(dt, 0.0001), -movement.maxTurnRate, movement.maxTurnRate);
     this.targetPitch = clamp(this.targetPitch, -movement.maxPitch, movement.maxPitch);
     this.pitch = damp(this.pitch, pitchTarget, movement.pitchResponsiveness, dt);
@@ -743,6 +760,13 @@ export class Dolphin {
       thrustAccel = Math.min(movement.idleGlide, movement.idleGlide - forwardSpeed) * 2.6;
     }
 
+    // Coasting on a wave with Space held (no W/Shift), the tail stops: the
+    // wave and gravity carry the body. W or Shift still stroke, to climb the
+    // face or chase a section.
+    const glide = thrusting ? 0 : (this.surfGlide || 0) * (this.surfLock || 0);
+    if (glide > 0 && thrustAccel > 0) thrustAccel *= 1 - glide;
+    this.tailStill = glide;
+
     let reverseAccel = 0;
     if (input.brake) {
       if (forwardSpeed > 0.1) reverseAccel = -movement.braking;
@@ -778,6 +802,12 @@ export class Dolphin {
       hydro = this.hull.apply(this, ocean, this.hydroControl, this.tmpCurrent, s === 0);
       hullMs += this.hull.lastMs;
       this.velocity.addScaledVector(hydro.accel, step);
+      if (this._leapPushT > 0) {
+        const stroke = TUNING.hydro.surfaceLeapStroke || step;
+        const k = Math.min(step, this._leapPushT) / stroke;
+        this.velocity.addScaledVector(this._leapPush, k);
+        this._leapPushT -= step;
+      }
       if (this.surfLock > 0) this._surfaceConstrain(step);
       this.position.addScaledVector(this.velocity, step);
     }
@@ -796,7 +826,10 @@ export class Dolphin {
       // v^2 term cancelled a third of gravity and floated the animal off a
       // crest instead of letting it drop back onto the face.
       const liftSpeed = Math.min(airSpeed, 12);
-      this.velocity.y += movement.airLift * liftSpeed * liftSpeed * levelness * dt;
+      // A leap off the surface is a ballistic arc: no lift, no steering of
+      // the path (the body can still turn to line up its landing).
+      const arc = this.leapFlight ? 0 : 1;
+      this.velocity.y += movement.airLift * liftSpeed * liftSpeed * levelness * arc * dt;
 
       let vf = this.velocity.dot(this.forward);
       let vr = this.velocity.dot(this.right);
@@ -810,7 +843,7 @@ export class Dolphin {
         .addScaledVector(this.up, vu);
 
       const steerSpeed = this.velocity.length();
-      const steerAuthority = clamp((steerSpeed - 4.0) / 10.0, 0, 1);
+      const steerAuthority = clamp((steerSpeed - 4.0) / 10.0, 0, 1) * arc;
       if (steerAuthority > 0.001) {
         const steer = (1 - Math.exp(-movement.airSteer * dt)) * steerAuthority;
         this.tmp.copy(this.forward).multiplyScalar(steerSpeed);
@@ -998,7 +1031,8 @@ export class Dolphin {
         rising &&
         noseOut > 0.25 &&
         exitSpeed > movement.cruiseSpeed * 0.45 &&
-        this.surfLock < 0.5
+        this.surfLock < 0.5 &&
+        !(this.leapClock > 0)
       ) {
         this.velocity.y +=
           movement.breachImpulse * clamp(exitSpeed / movement.boostSpeed, 0, 1.15);
@@ -1080,8 +1114,13 @@ export class Dolphin {
       const vn = rx * nx + ry * ny + rz * nz;
       const hit = smoothstep(1, 5, Math.max(0, -vn));
       if (hit > 0) {
-        const cutN = 0.32 * hit;
-        const cutT = 0.08 * hit;
+        // A clean nose-first entry slices in and keeps its speed; a belly
+        // flop pays the full loss.
+        const rl = Math.hypot(rx, ry, rz) || 1;
+        const align = Math.max(0, (rx * this.forward.x + ry * this.forward.y + rz * this.forward.z) / rl);
+        const clean = align * align;
+        const cutN = 0.32 * hit * (1 - 0.7 * clean);
+        const cutT = 0.08 * hit * (1 - 0.9 * clean);
         // Tangential part keeps 1 - cutT, normal part keeps 1 - cutN.
         const tx = rx - vn * nx;
         const ty = ry - vn * ny;
@@ -1182,8 +1221,10 @@ export class Dolphin {
     this.lastFlukeAbove = flukeAbove;
 
     // Remove the residual forward acceleration that can push the body back
-    // through the surface while hovering.
-    if (this.position.y > centerHeight + 1.8) {
+    // through the surface while hovering. Not in a leap or a breach: that is
+    // a ballistic flight, and this brake (0.3/s, 30 m/s^2 at 100 m/s) bled a
+    // leap off a mega wave down below the wave's own speed in the air.
+    if (this.position.y > centerHeight + 1.8 && !this.leapFlight && !this.leaping) {
       this.velocity.x *= 1 - 0.3 * dt;
       this.velocity.z *= 1 - 0.3 * dt;
     }
@@ -1257,7 +1298,9 @@ export class Dolphin {
           (surge ? tailCfg.tailSurgeHeave : 0)) *
           strokeScale,
         tailCfg.tailHeaveMax * strokeScale
-      ) * (underwater ? 1 : movement.airTailScale);
+      ) *
+      (underwater ? 1 : movement.airTailScale) *
+      (1 - 0.92 * (this.tailStill || 0));
 
     const beatRate =
       tailCfg.tailBeatBase +
@@ -1265,7 +1308,7 @@ export class Dolphin {
       Math.max(0, this.swimAccel) * tailCfg.tailBeatAccel +
       (thrusting ? tailCfg.tailThrustBeat : 0) +
       (surge ? tailCfg.tailSurgeBeat : 0);
-    this.tailPhase += dt * Math.min(beatRate, tailCfg.tailBeatMax);
+    this.tailPhase += dt * Math.min(beatRate, tailCfg.tailBeatMax) * (1 - 0.75 * (this.tailStill || 0));
     this.tailUniforms.causticTime.value = ocean.time;
     this.wetness = Math.max(0, this.wetness - dt * 0.13);
     this.impact *= Math.exp(-TUNING.movement.cameraShakeDecay * dt);
@@ -1293,6 +1336,8 @@ export class Dolphin {
     this.telemetry.heading = ((-this.targetYaw * 180) / Math.PI + 720) % 360;
     this.telemetry.underwater = !centerAbove;
     this.telemetry.surfLock = this.surfLock;
+    this.telemetry.surfGlide = (this.surfGlide || 0) * this.surfLock;
+    this.telemetry.porpoising = !!this.porpoising;
     this.telemetry.breaches = this.breachCount;
     this.telemetry.hydro = this.hydro;
 
@@ -1333,6 +1378,12 @@ export class Dolphin {
   /** Forget ride-trim and surface history after a teleport or scripted pose. */
   resetRide() {
     if (this._slPrev) this._slPrev.valid = this._slPrev.validOff = false;
+    this._spaceWas = false;
+    this.leapClock = 0;
+    this.leapFlight = false;
+    this._leapPushT = 0;
+    this.porpoiseClock = 0;
+    this.surfGlide = 0;
     this.surfLockEngaged = false;
     this.surfLock = 0;
     this.surfLook = 0;
@@ -1392,11 +1443,97 @@ export class Dolphin {
     P.valid = true;
 
     const depth = h - this.position.y;
+    // Speed at which the body closes on the surface along its normal
+    // (negative: moving away from it, as just after a leap).
+    const closing = dEta + sx * this.velocity.x + sz * this.velocity.z - this.velocity.y;
+    // Letting go of Space while riding the surface is a leap: a tail push off
+    // the water along the surface normal and forward along the heading, on
+    // top of the momentum the wave has already given the body. (C instead of
+    // letting go dives, with no leap.)
+    this.leapClock = Math.max(0, (this.leapClock || 0) - dt);
+    // Speed through the water along the heading.
+    const wv0 = this.hull.waterVel;
+    const wvOk = Number.isFinite(wv0.x);
+    const relFwd = wvOk
+      ? (this.velocity.x - wv0.x) * fx + (this.velocity.z - wv0.z) * fz
+      : this.velocity.x * fx + this.velocity.z * fz;
+
+    // On a wave or on open water? A sloping face or water already moving
+    // fast under the body (a wave carrying it) means surfing: the tail goes
+    // still and the wave does the work. Otherwise holding Space on the
+    // surface is high-speed porpoising.
+    const slopeMag = Math.hypot(sx, sz);
+    const flow = wvOk ? Math.hypot(wv0.x, wv0.z) : 0;
+    const onWave = Math.max(
+      smoothstep(cfg.surfGlideSlope * 0.5, cfg.surfGlideSlope, slopeMag),
+      smoothstep(cfg.surfGlideFlow * 0.5, cfg.surfGlideFlow, flow)
+    );
+    this.surfGlide = damp(this.surfGlide || 0, this.surfLockEngaged ? onWave : 0, 3, dt);
+
+    // Letting go of Space while riding the surface is a leap: a tail push off
+    // the water along the surface normal and forward along the heading, on
+    // top of the momentum the wave has already given the body. (C instead of
+    // letting go dives, with no leap.)
+    if (
+      this._spaceWas &&
+      !input.rise &&
+      !input.dive &&
+      this.surfLockEngaged &&
+      this.surfLock > 0.8 &&
+      cfg.surfaceLeap > 0
+    ) {
+      // A dolphin leap is a hard tail drive along the body: it launches
+      // forward along the line, much faster than the wave carrying it, at a
+      // low angle off the surface, and flies a ballistic arc (nose up out of
+      // the water, nose down into it). Faster rides throw longer, higher leaps.
+      const up = cfg.surfaceLeap + clamp(relFwd * cfg.surfaceLeapSpeedShare, 0, 3);
+      const onWaveDrive = cfg.surfaceLeapForward + clamp(relFwd * cfg.surfaceLeapDriveShare, 0, 8);
+      const calmDrive = cfg.surfaceLeapForwardCalm + clamp(relFwd * cfg.surfaceLeapDriveShare * 0.5, 0, 4);
+      const drive = lerp(calmDrive, onWaveDrive, Math.max(onWave, this.surfGlide || 0));
+      this._leapOff(up, drive, sx, sz, fx, fz);
+    }
+
+    // Porpoising: holding Space and swimming (W) on open water at speed, the
+    // dolphin runs a short stretch just under the surface and then clears it
+    // in a low, long leap, over and over. Leap height grows with speed.
+    const swimming = (input.forward || input.boost) && !input.brake;
+    if (
+      want &&
+      swimming &&
+      this.surfLockEngaged &&
+      this.surfLock > 0.9 &&
+      this.surfGlide < 0.3 &&
+      relFwd > cfg.porpoiseSpeed &&
+      cfg.porpoise > 0
+    ) {
+      this.porpoiseClock = (this.porpoiseClock || 0) + dt;
+      const interval = clamp(1.5 - 0.05 * relFwd, 0.45, 1.2);
+      if (this.porpoiseClock > interval) {
+        this.porpoiseClock = 0;
+        this._leapOff(clamp(relFwd * cfg.porpoiseLift, 2.2, cfg.porpoiseLiftMax), 0, sx, sz, fx, fz);
+        this.porpoiseCount = (this.porpoiseCount || 0) + 1;
+      }
+    } else if (!this.leapFlight) this.porpoiseClock = 0;
+    this.porpoising = this.porpoiseClock > 0 || (this.leapFlight && want);
+
+    this._spaceWas = !!input.rise;
+    // A leap lasts until the body is back in the ride or back in the water.
+    if (this.leapFlight && (this.surfLockEngaged || (this.leapClock <= 0 && this.hydro && this.hydro.wetFraction > 0.6)))
+      this.leapFlight = false;
     if (!want) this.surfLockEngaged = false;
     else if (!this.surfLockEngaged) {
-      // Caught once the body reaches the surface band (from below, or
-      // falling back into it from a leap).
-      if (depth < cfg.surfaceLockEnter && depth > -cfg.surfaceLockEnter) this.surfLockEngaged = true;
+      // Caught once the body reaches the surface band from below, or, coming
+      // down from a leap, once it is back in the water (a splash-down, not a
+      // landing on an invisible cushion).
+      // A landing at speed on a steep face skips: the body touches, is
+      // thrown off again and never gets 0.15 m deep. So the body touching
+      // the water (a quarter of the hull wet) also counts as back.
+      const band = depth < cfg.surfaceLockEnter && depth > -cfg.surfaceLockEnter;
+      const wetNow = this.hydro ? this.hydro.wetFraction : 0;
+      const back = this.leapFlight
+        ? (depth > 0.15 || wetNow > 0.25) && closing > 0 && this.leapClock < 0.45
+        : depth > 0 || closing > 0;
+      if (band && back) this.surfLockEngaged = true;
     } else if (depth > cfg.surfaceLockExit) {
       // Dragged deep (a breaking wave): swim back up.
       this.surfLockEngaged = false;
@@ -1406,8 +1543,9 @@ export class Dolphin {
     this.surfLock = target
       ? Math.min(1, this.surfLock + dt * ramp)
       : Math.max(0, this.surfLock - dt * ramp * 2);
-    // Rising (Space) gets you to the surface; on it there is nothing to rise to.
-    if (this.surfLockEngaged) this.verticalInput = 0;
+    // Rising (Space) gets you to the surface; on it there is nothing to rise
+    // to, and in the air Space only means "land back into the ride".
+    if (this.surfLockEngaged || (want && depth < 0)) this.verticalInput = 0;
 
     // The averaged surface sits off the true one where the face curves (the
     // toe of a 500 m wave is concave). That offset changes slowly, chop
@@ -1429,6 +1567,45 @@ export class Dolphin {
       this.surfLook = clamp(this.surfLook - my * TUNING.movement.mouseSensitivity * 0.78, -1.2, 1.2);
     } else this.surfLook = 0;
     return this.surfLock;
+  }
+
+  /**
+   * Leave the surface: `push` m/s along the surface normal and `fwd` m/s
+   * along the heading on top of the current velocity (which already carries
+   * the wave's momentum), nose along the new flight path.
+   */
+  _leapOff(push, fwd, sx, sz, fx, fz) {
+    const nl = Math.hypot(sx, 1, sz);
+    const fy = sx * fx + sz * fz;
+    const tl = Math.hypot(fx, fy, fz);
+    // One fluke stroke: the change of velocity is spread over
+    // `surfaceLeapStroke` s (applied in the substep loop), a hard push of
+    // about 15 g rather than a one-frame kick.
+    const P = this._leapPush || (this._leapPush = new THREE.Vector3());
+    P.set(
+      (-sx / nl) * push + (fx / tl) * fwd,
+      (1 / nl) * push + (fy / tl) * fwd,
+      (-sz / nl) * push + (fz / tl) * fwd
+    );
+    const stroke = TUNING.hydro.surfaceLeapStroke || 0;
+    if (stroke > 0) this._leapPushT = stroke;
+    else this.velocity.add(P);
+    // Nose along the flight path it is about to fly.
+    const vx = this.velocity.x + (stroke > 0 ? P.x : 0);
+    const vy = this.velocity.y + (stroke > 0 ? P.y : 0);
+    const vz = this.velocity.z + (stroke > 0 ? P.z : 0);
+    const vl = Math.hypot(vx, vy, vz);
+    if (vl > 0.1) {
+      const pitchPath = clamp(Math.asin(clamp(vy / vl, -1, 1)), -TUNING.movement.maxPitch, TUNING.movement.maxPitch);
+      this.targetPitch = pitchPath;
+      this.pitch += (pitchPath - this.pitch) * 0.7;
+      this.lastRideTarget = this.targetPitch;
+    }
+    this.surfLock = 0;
+    this.surfLockEngaged = false;
+    this.leapClock = 0.6;
+    this.leapFlight = true;
+    this.leapCount = (this.leapCount || 0) + 1;
   }
 
   /** Mean surface height and slope over a body-sized cross of five points. */
@@ -1471,6 +1648,50 @@ export class Dolphin {
     v.x -= L.sx * lam;
     v.y += lam;
     v.z -= L.sz * lam;
+
+    // Edge grip: like a ski on its edge, the body's speed through the water
+    // swings round into its heading instead of skidding sideways, keeping
+    // almost all of it (a carve costs `surfaceCarveLoss` of what it turns).
+    const grip = cfg.surfaceCarveGrip * this.surfLock;
+    if (grip > 0) {
+      const wv = this.hull.waterVel;
+      const wx = Number.isFinite(wv.x) ? wv.x : 0;
+      const wy = Number.isFinite(wv.y) ? wv.y : 0;
+      const wz = Number.isFinite(wv.z) ? wv.z : 0;
+      // Heading along the surface, and the surface's sideways direction.
+      const fx = Math.sin(this.yaw);
+      const fz = Math.cos(this.yaw);
+      let tx = fx;
+      let ty = L.sx * fx + L.sz * fz;
+      let tz = fz;
+      const tl = Math.hypot(tx, ty, tz);
+      tx /= tl;
+      ty /= tl;
+      tz /= tl;
+      const nl = Math.sqrt(jj);
+      const nx = -L.sx / nl;
+      const ny = 1 / nl;
+      const nz = -L.sz / nl;
+      const lx = ny * tz - nz * ty;
+      const ly = nz * tx - nx * tz;
+      const lz = nx * ty - ny * tx;
+      const rx = v.x - wx;
+      const ry = v.y - wy;
+      const rz = v.z - wz;
+      const along = rx * tx + ry * ty + rz * tz;
+      const side = rx * lx + ry * ly + rz * lz;
+      if (along > 0.5) {
+        const keep = Math.exp(-grip * step);
+        const side2 = side * keep;
+        const turned = Math.abs(side - side2);
+        const along2 = Math.sqrt(Math.max(0, along * along + side * side - side2 * side2)) - turned * cfg.surfaceCarveLoss;
+        const dA = Math.max(0, along2) - along;
+        const dS = side2 - side;
+        v.x += tx * dA + lx * dS;
+        v.y += ty * dA + ly * dS;
+        v.z += tz * dA + lz * dS;
+      }
+    }
   }
 
   _rideTrim(dt, ocean, pitchInput) {
@@ -1529,7 +1750,8 @@ export class Dolphin {
       this.rideOffset = damp(this.rideOffset, 0, cfg.rideOffsetReturn * 0.5, dt);
     }
     const capture = 1 - smoothstep(release * 0.8, release, Math.abs(this.rideOffset));
-    const hold = near * fast * keys * capture * (1 - (this.surfLock || 0));
+    // Not during a leap: the trim would pull the nose back down into the face.
+    const hold = this.leapFlight ? 0 : near * fast * keys * capture * (1 - (this.surfLock || 0));
     // Smooth the engagement so it never snaps the attitude.
     this.rideHold = damp(this.rideHold, hold, 6, dt);
 
@@ -1591,7 +1813,7 @@ export class Dolphin {
     // animal keeps the attitude the water gave it instead of springing back.
     const accept = 1 - Math.exp(-cfg.waterYield * dt);
     const acceptPitch = 1 - Math.exp(-cfg.waterYieldPitch * dt);
-    if (!steeringPitch && this.verticalInput === 0 && acceptPitch > 0) {
+    if (!steeringPitch && this.verticalInput === 0 && acceptPitch > 0 && !this.leapFlight) {
       const t = tilt.x * acceptPitch;
       tilt.x -= t;
       this.pitch = clamp(this.pitch - t, -TUNING.movement.maxPitch, TUNING.movement.maxPitch);
@@ -1606,8 +1828,11 @@ export class Dolphin {
 
     // Locked to the surface, the body lies along it: water pitch torque
     // does not tip the nose into or out of the face.
-    if (this.surfLock > 0) {
-      const k = Math.exp(-12 * this.surfLock * dt);
+    // Same through a leap off the surface: the tail dragging out of the water
+    // must not flip the nose down into the face.
+    const holdPitch = Math.max(this.surfLock, this.leapFlight ? 1 : 0);
+    if (holdPitch > 0) {
+      const k = Math.exp(-12 * holdPitch * dt);
       tilt.x *= k;
       rate.x *= k;
     }

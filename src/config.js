@@ -109,13 +109,17 @@ export const TUNING = {
     boundaryPush: 1.8,
 
     // Airborne translation. The animal is ballistic, but the body still
-    // glides: low drag, reduced gravity, a little speed-dependent lift and
-    // real velocity steering from the snout.
+    // glides: low drag, full gravity, a little speed-dependent lift and
+    // some velocity steering from the snout (none in a leap off the surface
+    // lock, which flies a pure arc). Nose-first air drag on a 200 kg
+    // streamlined body is tiny (about 0.5 rho Cd A / m = 4e-5 per metre);
+    // the old 0.0025 braked a leap off a 70 m/s wave at 1.7 g, so the wave
+    // outran its own surfer in the air.
     airGravity: 9.81,
     airLift: 0.0065,
     airSteer: 0.72,
-    airForwardDrag: 0.01,
-    airForwardQuadraticDrag: 0.0025,
+    airForwardDrag: 0.004,
+    airForwardQuadraticDrag: 0.0004,
     airLateralDrag: 0.08,
     airVerticalDrag: 0.02,
     airThrustScale: 0.1,
@@ -163,6 +167,8 @@ export const TUNING = {
     // water, axial and skin drag fall off by up to `planeDragCut` over the
     // next `planeSpeedRange` m/s.
     planeSpeed: 18,
+    // Planing onset while gliding on a wave with Space held (board-like).
+    planeSpeedGlide: 6,
     planeSpeedRange: 14,
     planeDragCut: 0.85,
     airDragNormal: 0.05,
@@ -193,6 +199,38 @@ export const TUNING = {
     surfaceLockGain: 8,
     surfaceLockRamp: 5,
     surfaceLockPitchRate: 12,
+    // Letting go of Space while on the surface leaps: a tail drive of
+    // `surfaceLeapForward` m/s (+ `surfaceLeapDriveShare` x speed through the
+    // water, up to +8) along the heading and `surfaceLeap` m/s (+ share, up
+    // to +3) off the surface, on top of the wave's momentum. On open water
+    // (no wave to borrow from) the forward drive is the smaller
+    // `surfaceLeapForwardCalm` (+ half the share, up to +4), so a flat-water
+    // leap leaves at about 20-25 degrees, like a real one. The drive is one
+    // fluke stroke of `surfaceLeapStroke` s, not an instant kick.
+    surfaceLeap: 6,
+    surfaceLeapForward: 10,
+    surfaceLeapForwardCalm: 3,
+    surfaceLeapSpeedShare: 0.1,
+    surfaceLeapDriveShare: 0.3,
+    surfaceLeapStroke: 0.12,
+    // With Space held: on a wave (surface slope above `surfGlideSlope`, or
+    // water under the body moving faster than `surfGlideFlow` m/s) the tail
+    // stops while coasting (no W) and the dolphin glides; on open water with W it porpoises,
+    // leaping at `porpoiseLift` x its speed through the water (m/s up)
+    // once above `porpoiseSpeed` m/s.
+    surfGlideSlope: 0.2,
+    surfGlideFlow: 8,
+    porpoise: 1,
+    porpoiseSpeed: 4.5,
+    porpoiseLift: 0.38,
+    porpoiseLiftMax: 5.5,
+    // Skiing on the surface: heading response (1/s), A/D turn rate (rad/s),
+    // edge grip that swings speed through the water into the heading (1/s),
+    // and the share of the turned speed a carve costs.
+    surfaceTurnResponse: 11,
+    surfaceTurnRate: 2.8,
+    surfaceCarveGrip: 5,
+    surfaceCarveLoss: 0.06,
     // Ride trim (dolphin.js _rideTrim): stay in the face at speed.
     rideTrim: 1,
     rideTrimDepth: 2.2,
@@ -579,6 +617,11 @@ export const TUNE_CONTROLS = [
   { path: "hydro.dragTangential", label: "skin drag", min: 0.0005, max: 0.02, step: 0.0005 },
   { path: "hydro.axialDragScale", label: "axial form drag", min: 0, max: 1, step: 0.01 },
   { path: "hydro.surfaceLock", label: "surface lock (Space)", min: 0, max: 1, step: 1 },
+  { path: "hydro.surfaceLeap", label: "leap on release (m/s)", min: 0, max: 16, step: 0.5 },
+  { path: "hydro.surfaceLeapForward", label: "leap drive on a wave (m/s)", min: 0, max: 30, step: 0.5 },
+  { path: "hydro.porpoiseLift", label: "porpoise leap", min: 0, max: 0.8, step: 0.01 },
+  { path: "hydro.surfaceCarveGrip", label: "surface carve grip", min: 0, max: 12, step: 0.5 },
+  { path: "hydro.surfaceTurnResponse", label: "surface turn response", min: 4, max: 20, step: 0.5 },
   { path: "hydro.surfaceLockDepth", label: "surface lock depth", min: 0, max: 1.2, step: 0.05 },
   { path: "hydro.planeDragCut", label: "planing drag cut", min: 0, max: 0.95, step: 0.01 },
   { path: "hydro.planeSpeed", label: "planing speed", min: 10, max: 40, step: 0.5 },
