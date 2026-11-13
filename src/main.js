@@ -11,6 +11,7 @@ import { OceanAudio } from "./audio.js";
 import { HUD } from "./hud.js";
 import { Post } from "./post.js";
 import { Spindrift } from "./spindrift.js";
+import { buildEnvironments } from "./environment.js";
 import { WaterDebug } from "./water/debug.js";
 import { createScenarios } from "./water/scenarios.js";
 import { clamp, lerp, smoothstep } from "./utils.js";
@@ -84,6 +85,17 @@ async function boot() {
   await frame();
 
   const dolphin = await Dolphin.create(scene);
+  // Wet skin reflects the sky above the water and the lit surface below it.
+  const envMaps = buildEnvironments(renderer, ocean.sunDir);
+  dolphin.tailUniforms.waterLevel = dolphin.tailUniforms.waterLevel || { value: -1e5 };
+  const dolphinMaterials = [];
+  (dolphin.model || dolphin.root).traverse((o) => {
+    if (o.isMesh && o.material && o.material.isMeshStandardMaterial) {
+      o.material.envMap = envMaps.above;
+      o.material.envMapIntensity = 1;
+      dolphinMaterials.push(o.material);
+    }
+  });
   const cameraRig = new CameraRig(camera, ocean);
   const post = new Post(renderer, scene, camera);
   const waterDebug = new WaterDebug(scene, ocean, dolphin);
@@ -439,6 +451,15 @@ async function boot() {
       .lerp(sunWarm, 0.55)
       .lerp(sunCool, camState.underwater * 0.55);
 
+    const envUnder = camState.underwater > 0.5;
+    const envNow = envUnder ? envMaps.below : envMaps.above;
+    for (const m of dolphinMaterials) {
+      if (m.envMap !== envNow) m.envMap = envNow;
+      // Skin against water reflects far less than skin against air.
+      m.envMapIntensity = envUnder ? 0.12 : 0.8;
+    }
+    dolphin.tailUniforms.waterLevel.value = ocean.getWaterHeight(dolphin.position.x, dolphin.position.z);
+
     const seabedStart = performance.now();
     seabed.update(dt, dolphin, camera, fogColor, fogDensity);
     const seabedMs = performance.now() - seabedStart;
@@ -479,6 +500,7 @@ async function boot() {
     emitSurfSpray(dt, camState.underwater);
     emitSurfBubbles(dt, camState.underwater);
     effects.update(dt, camera, fogColor, fogDensity, current);
+    effects.updateBodyShed(dt, dolphin);
     snow.update(dt, camera, fogColor, fogDensity, camState.underwater);
     motes.update(dt, camera, fogColor, fogDensity, camState.underwater);
     shafts.update(camera, total, camState.underwater);

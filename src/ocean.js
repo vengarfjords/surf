@@ -84,18 +84,32 @@ const FULLSCREEN_VERT = /* glsl */ `
 `;
 
 /**
- * Small GPU heightfield for surface contact and propagating wakes. The large
- * sea is the analytic WaveField; this only parts the surface around the body.
+ * Small GPU heightfield for surface contact and propagating wakes, plus the
+ * foam the dolphin leaves on the water. The large sea is the analytic
+ * WaveField; this only parts the surface around the body.
+ *
+ * State: r = height, g = vertical speed, b = foam (lace that lingers and
+ * thins), a = fresh whitewater (dense, turns into foam within a second).
+ *
+ * The grid rides with the water under the player: its origin moves with
+ * the local surface velocity each step (a wake on a 70 m/s mega face is
+ * carried along with that water), and it is shifted by whole texels to
+ * stay centred on the player, so nothing is resampled between texels.
  */
+const MAX_SPLATS = 24;
+
 class SurfaceSimulation {
   constructor(renderer) {
     this.renderer = renderer;
     this.size = TUNING.waves.simResolution;
     this.extent = TUNING.waves.simExtent;
+    this.texel = this.extent / this.size;
     this.center = new THREE.Vector2(99999, 99999);
     this.splats = [];
     this.enabled = true;
     this.accumulator = 0;
+    this.drift = new THREE.Vector2();
+    this._shift = new THREE.Vector2();
 
     const opts = {
       type: THREE.HalfFloatType,
@@ -113,55 +127,69 @@ class SurfaceSimulation {
       new THREE.WebGLRenderTarget(this.size, this.size, opts),
     ];
     this.index = 0;
-    for (const t of this.targets) {
-      this.renderer.setRenderTarget(t);
-      this.renderer.setClearColor(0x000000, 0);
-      this.renderer.clear(true, false, false);
-    }
-    this.renderer.setRenderTarget(null);
+    this._clear();
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    this.splatData = Array.from({ length: 8 }, () => new THREE.Vector4());
+    this.splatData = Array.from({ length: MAX_SPLATS }, () => new THREE.Vector4());
+    this.splatFoam = Array.from({ length: MAX_SPLATS }, () => new THREE.Vector4());
     this.material = new THREE.ShaderMaterial({
       vertexShader: FULLSCREEN_VERT,
       fragmentShader: /* glsl */ `
         precision highp float;
+        #define MAX_SPLATS ${MAX_SPLATS}
         varying vec2 vUv;
         uniform sampler2D uState;
         uniform vec2 uTexel;
+        uniform vec2 uShift;
         uniform float uDamping;
         uniform float uWaveSpeed;
-        uniform float uTime;
-        uniform float uExtent;
-        uniform vec2 uCenter;
+        uniform float uDt;
+        uniform float uFoamLife;
         uniform int uSplatCount;
-        uniform vec4 uSplats[8];
+        uniform vec4 uSplats[MAX_SPLATS];
+        uniform vec4 uSplatFoam[MAX_SPLATS];
 
-        vec2 stateAt(vec2 uv) {
-          return texture2D(uState, clamp(uv, vec2(0.001), vec2(0.999))).rg;
+        vec4 stateAt(vec2 uv) {
+          // Water that scrolls in from outside the grid is undisturbed.
+          if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec4(0.0);
+          return texture2D(uState, uv);
         }
 
         void main() {
-          vec2 st = texture2D(uState, vUv).rg;
+          vec2 uv = vUv + uShift;
+          vec4 st = stateAt(uv);
           float h = st.r;
           float v = st.g;
+          float foam = st.b;
+          float fresh = st.a;
 
-          float n = stateAt(vUv + vec2(0.0, uTexel.y)).r;
-          float s = stateAt(vUv - vec2(0.0, uTexel.y)).r;
-          float e = stateAt(vUv + vec2(uTexel.x, 0.0)).r;
-          float w = stateAt(vUv - vec2(uTexel.x, 0.0)).r;
-          float laplacian = n + s + e + w - 4.0 * h;
-
-          vec2 cur = vec2(0.0022, -0.0014) * uTexel;
-          float carried = stateAt(vUv - cur).r;
-          h = mix(h, carried, 0.006);
+          vec4 n = stateAt(uv + vec2(0.0, uTexel.y));
+          vec4 s = stateAt(uv - vec2(0.0, uTexel.y));
+          vec4 e = stateAt(uv + vec2(uTexel.x, 0.0));
+          vec4 w = stateAt(uv - vec2(uTexel.x, 0.0));
+          float laplacian = n.r + s.r + e.r + w.r - 4.0 * h;
 
           v += laplacian * uWaveSpeed;
           v *= uDamping;
           h += v;
+          // Water fills a hole: a body held at the surface parts it, but it
+          // does not dig a trench that follows it around.
+          h -= h * 0.018;
 
-          for (int i = 0; i < 8; i++) {
+          // Foam spreads a little, is torn thin where the ripples stretch
+          // the surface, and slowly bursts. Whitewater turns into foam.
+          float spread = (n.b + s.b + e.b + w.b) * 0.25;
+          foam = mix(foam, spread, 0.05);
+          float freshSpread = (n.a + s.a + e.a + w.a) * 0.25;
+          fresh = mix(fresh, freshSpread, 0.08);
+          float conv = clamp(-laplacian * 4.0, -0.5, 0.5);
+          float settle = 1.0 - exp(-uDt / 0.7);
+          foam += fresh * settle * 0.8;
+          fresh -= fresh * settle;
+          foam *= exp(-uDt / uFoamLife) * (1.0 + conv * uDt);
+
+          for (int i = 0; i < MAX_SPLATS; i++) {
             if (i >= uSplatCount) break;
             vec4 sp = uSplats[i];
             vec2 d = vUv - sp.xy;
@@ -170,23 +198,28 @@ class SurfaceSimulation {
             float ring = exp(-pow((length(d) - r * 1.5) / (r * 0.75), 2.0));
             h += sp.z * (fall - ring * 0.3);
             v += sp.z * 0.025 * fall;
+            vec4 sf = uSplatFoam[i];
+            // Foam is stamped with a ragged edge, never a clean disc.
+            foam += sf.x * fall;
+            fresh += sf.y * fall;
           }
 
-          h = clamp(h, -1.8, 1.8);
+          h = clamp(h, -0.7, 0.7);
           v = clamp(v, -1.2, 1.2);
-          gl_FragColor = vec4(h, v, 0.0, 1.0);
+          gl_FragColor = vec4(h, v, clamp(foam, 0.0, 1.6), clamp(fresh, 0.0, 1.6));
         }
       `,
       uniforms: {
         uState: { value: null },
         uTexel: { value: new THREE.Vector2(1 / this.size, 1 / this.size) },
+        uShift: { value: new THREE.Vector2() },
         uDamping: { value: TUNING.waves.simDamping },
         uWaveSpeed: { value: TUNING.waves.simWaveSpeed },
-        uTime: { value: 0 },
-        uExtent: { value: this.extent },
-        uCenter: { value: new THREE.Vector2() },
+        uDt: { value: 1 / 60 },
+        uFoamLife: { value: 7 },
         uSplatCount: { value: 0 },
         uSplats: { value: this.splatData },
+        uSplatFoam: { value: this.splatFoam },
       },
       depthTest: false,
       depthWrite: false,
@@ -195,34 +228,50 @@ class SurfaceSimulation {
     this.quad.frustumCulled = false;
     this.scene.add(this.quad);
 
-    this._texel = new THREE.Vector2(1 / this.size, 1 / this.size);
     this.renderer.getContext().canvas.addEventListener("webglcontextlost", () => {
       this.enabled = false;
     });
   }
 
-  addSplat(x, z, strength, radius) {
-    if (this.splats.length >= 8) return;
-    this.splats.push({ x, z, strength, radius });
+  _clear() {
+    for (const t of this.targets) {
+      this.renderer.setRenderTarget(t);
+      this.renderer.setClearColor(0x000000, 0);
+      this.renderer.clear(true, false, false);
+    }
+    this.renderer.setRenderTarget(null);
   }
 
-  update(dt, playerPos) {
+  addSplat(x, z, strength, radius, foam = 0, fresh = 0) {
+    if (this.splats.length >= MAX_SPLATS) return;
+    this.splats.push({ x, z, strength, radius, foam, fresh });
+  }
+
+  /** drift: horizontal surface velocity of the water under the player. */
+  update(dt, playerPos, drift) {
     if (!this.enabled) return;
-    const maxDist = this.extent * 0.36;
-    if (this.center.x > 9999 || this.center.distanceTo(new THREE.Vector2(playerPos.x, playerPos.z)) > maxDist) {
-      this.center.set(playerPos.x, playerPos.z);
-      for (const t of this.targets) {
-        this.renderer.setRenderTarget(t);
-        this.renderer.setClearColor(0x000000, 0);
-        this.renderer.clear(true, false, false);
-      }
-      this.renderer.setRenderTarget(null);
+    const px = playerPos.x;
+    const pz = playerPos.z;
+    if (this.center.x > 9999 || Math.hypot(this.center.x - px, this.center.y - pz) > this.extent * 0.6) {
+      // Teleport or first frame: start from calm water.
+      this.center.set(px, pz);
+      this._clear();
     }
+    if (drift) this.drift.set(drift.x || 0, drift.z || 0);
 
     this.accumulator = Math.min(this.accumulator + dt, 1 / 20);
     const step = 1 / 60;
     while (this.accumulator >= step) {
       this.accumulator -= step;
+      // The water carries the field.
+      this.center.x += this.drift.x * step;
+      this.center.y += this.drift.y * step;
+      // Shift by whole texels toward the player.
+      const sx = Math.round((px - this.center.x) / this.texel);
+      const sz = Math.round((pz - this.center.y) / this.texel);
+      this._shift.set(sx / this.size, sz / this.size);
+      this.center.x += sx * this.texel;
+      this.center.y += sz * this.texel;
       this._step(step);
     }
   }
@@ -232,14 +281,12 @@ class SurfaceSimulation {
     const dst = this.targets[1 - this.index];
     const mat = this.material;
     mat.uniforms.uState.value = src.texture;
-    mat.uniforms.uTime.value += dt;
+    mat.uniforms.uShift.value.copy(this._shift);
+    mat.uniforms.uDt.value = dt;
     mat.uniforms.uDamping.value = TUNING.waves.simDamping;
     mat.uniforms.uWaveSpeed.value = TUNING.waves.simWaveSpeed;
-    mat.uniforms.uCenter.value.copy(this.center);
-    mat.uniforms.uExtent.value = this.extent;
-    mat.uniforms.uTexel.value.copy(this._texel);
 
-    const count = Math.min(this.splats.length, 8);
+    const count = Math.min(this.splats.length, MAX_SPLATS);
     for (let i = 0; i < count; i++) {
       const s = this.splats[i];
       const nx = (s.x - this.center.x) / this.extent + 0.5;
@@ -250,6 +297,7 @@ class SurfaceSimulation {
         clamp(s.strength, -0.9, 0.9),
         clamp(s.radius / this.extent, 0.0025, 0.3)
       );
+      this.splatFoam[i].set(clamp(s.foam, 0, 1.5), clamp(s.fresh, 0, 1.5), 0, 0);
     }
     mat.uniforms.uSplatCount.value = count;
     this.renderer.setRenderTarget(dst);
@@ -281,6 +329,8 @@ export class Ocean {
     this._solverSurface = {};
     this._solver3D = {};
     this._foamSample = {};
+    this._driftSample = {};
+    this._drift = { x: 0, z: 0 };
     this._underwater = 1;
     this._wetness = 0;
     this._tempColor = new THREE.Color();
@@ -517,6 +567,10 @@ export class Ocean {
         uniform float uWhitecaps;
         uniform float uFoamStreaks;
         uniform float uHorizonFog;
+        uniform sampler2D uSimState;
+        uniform vec2 uSimCenter;
+        uniform float uSimExtent;
+        uniform float uSimScale;
 
         varying vec3 vWorld;
         varying vec3 vNormalW;
@@ -559,6 +613,118 @@ export class Ocean {
           return 1.0 - smoothstep(0.0, 0.35, sqrt(d2) - sqrt(d1));
         }
 
+        // Distance from the nearest Voronoi cell wall: 0 on a wall, about
+        // 0.5 in the middle of a cell.
+        float foamEdge(vec2 p) {
+          vec2 n = floor(p);
+          vec2 f = fract(p);
+          float d1 = 8.0;
+          float d2 = 8.0;
+          for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+              vec2 g = vec2(float(i), float(j));
+              vec2 o = vec2(hash21(n + g), hash21(n + g + 19.7));
+              vec2 r = g + o - f;
+              float d = dot(r, r);
+              if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) { d2 = d; }
+            }
+          }
+          return sqrt(d2) - sqrt(d1);
+        }
+
+        // One layer of a bubble raft seen up close. Each Voronoi cell may hold
+        // a bubble: a clear dome with a thin wall, a bright window highlight
+        // toward the sky and a darker, see-through middle. Empty cells are
+        // gaps where the water shows. Returns a brightness factor around 1.
+        float bubbleLayer(vec2 p, float fill) {
+          vec2 n = floor(p);
+          vec2 f = fract(p);
+          float d1 = 8.0;
+          float d2 = 8.0;
+          vec2 r1 = vec2(0.0);
+          vec2 c1 = vec2(0.0);
+          for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+              vec2 g = vec2(float(i), float(j));
+              vec2 o = vec2(hash21(n + g), hash21(n + g + 19.7));
+              vec2 r = g + o - f;
+              float d = dot(r, r);
+              if (d < d1) { d2 = d1; d1 = d; r1 = r; c1 = n + g; } else if (d < d2) { d2 = d; }
+            }
+          }
+          float edge = sqrt(d2) - sqrt(d1);
+          float h = hash21(c1 + 3.3);
+          if (h > fill) return 0.86;
+          float size = 0.25 + 0.3 * hash21(c1 + 8.1);
+          float wall = 1.0 - smoothstep(0.0, 0.07, edge);
+          float core = 1.0 - smoothstep(0.0, size, length(r1));
+          float hl = 1.0 - smoothstep(0.0, size * 0.28, length(r1 - vec2(-0.3, 0.35) * size));
+          return 1.0 - 0.1 * wall - 0.14 * core + 0.45 * hl;
+        }
+
+        // Foam as a raft of bubbles. Thin foam is a translucent, marbled
+        // lace of bubble walls that wind and break; thicker foam fills the
+        // cells in until it is an opaque white sheet with a few holes.
+        // Returns coverage and a shading term (bright where it is thick).
+        vec2 foamPattern(vec2 p, float density, float dist) {
+          // Pixel footprint in metres, taken before any branch.
+          float foot = length(fwidth(p));
+          if (density < 0.01) return vec2(0.0, 0.5);
+          float near = 1.0 - smoothstep(30.0, 170.0, dist);
+          float patchN = fbm2(p * 0.45 + vec2(uTime * 0.02, -uTime * 0.015));
+          float d = density * (0.45 + 1.1 * patchN);
+          float s = 0.5 + 0.3 * patchN;
+          if (near > 0.01) {
+            // Large, slow domain warp so nothing lines up.
+            vec2 q = p + vec2(fbm2(p * 0.32 + 1.7), fbm2(p * 0.32 - 4.3)) * 2.6;
+            q += vec2(vnoise(q * 1.9 + 3.0), vnoise(q * 1.9 - 5.0)) * 0.45;
+            // Blotches: foam gathers in irregular patches.
+            float blotch = fbm2(q * 1.15 + vec2(uTime * 0.03, 2.0)) * 0.6 + fbm2(q * 3.6 - vec2(1.0, uTime * 0.04)) * 0.4;
+            // Thin foam is drawn out into marbled strings: the winding,
+            // branching lines along which a dying raft of bubbles gathers.
+            // Ridges of a warped noise give open, curving lines rather than
+            // the closed polygons of a cell net.
+            vec2 sq = q * 0.9 + vec2(uTime * 0.03, -uTime * 0.02);
+            sq += vec2(vnoise(sq * 2.7 + 9.0), vnoise(sq * 2.7 - 2.0)) * 0.55;
+            float r1 = 1.0 - abs(2.0 * vnoise(sq) - 1.0);
+            float r2 = 1.0 - abs(2.0 * vnoise(sq * 2.6 + 4.1) - 1.0);
+            float aw = clamp(foot * 5.0, 0.0, 0.2);
+            float strings = smoothstep(0.82 - aw, 0.97, r1) * 0.85;
+            strings = max(strings, smoothstep(0.88 - aw, 0.985, r2) * 0.55 * smoothstep(0.35, 0.75, r1));
+            float thin = 1.0 - smoothstep(0.2, 0.6, d);
+            float pattern = mix(blotch, max(blotch * 0.7, strings), thin * 0.6);
+            // Up close the foam is visibly made of bubbles of every size, most
+            // a few millimetres across and a few up to two centimetres, in
+            // clumps with gaps of water between. Each size fades to its mean
+            // before it is smaller than about five pixels, so it never turns
+            // into a mesh or a shimmer.
+            if (dist < 10.0) {
+              vec2 bq = q + vec2(vnoise(q * 9.0), vnoise(q * 9.0 + 4.0)) * 0.03;
+              float clump = smoothstep(0.3, 0.75, fbm2(q * 7.0 + 2.0));
+              float fillB = 0.35 * clump;
+              float fillM = 0.4 + 0.5 * clump;
+              // Mean of a layer: about 0.86 for a gap, 0.97 for a bubble.
+              float mB = 0.86 + 0.11 * fillB;
+              float mM = 0.86 + 0.11 * fillM;
+              float mF = 0.86 + 0.11 * 0.85;
+              float big = mix(mB, bubbleLayer(bq * 48.0 + 7.0, fillB), 1.0 - smoothstep(0.003, 0.0055, foot));
+              float mid = mix(mM, bubbleLayer(bq * 130.0 - 3.0, fillM), 1.0 - smoothstep(0.0011, 0.002, foot));
+              float fine = mix(mF, bubbleLayer(bq * 330.0 + 11.0, 0.85), 1.0 - smoothstep(0.00045, 0.0008, foot));
+              float bub = (big / mB) * (mid / mM) * (fine / mF);
+              pattern *= mix(1.0, bub, 1.0 - smoothstep(4.0, 10.0, dist));
+            }
+            s = mix(s, pattern, near);
+          }
+          float cover = clamp(d * (0.3 + 0.95 * s) + d * d * 0.55, 0.0, 1.0);
+          cover = smoothstep(0.12, 0.9, cover);
+          // Even thick foam keeps some open holes and darker hollows between
+          // the bubble ridges.
+          float holes = (1.0 - s) * smoothstep(0.55, 0.85, vnoise(p * 3.1 + uTime * 0.1));
+          cover *= 1.0 - 0.35 * holes * near;
+          float shade = clamp(0.25 + 0.4 * smoothstep(0.2, 1.0, d) + 0.45 * s - 0.2 * holes, 0.0, 1.0);
+          return vec2(cover, shade);
+        }
+
         float foamTexture(vec2 p, float dist) {
           float near = 1.0 - smoothstep(25.0, 140.0, dist);
           // Warp the cells so the lace never reads as a regular net.
@@ -570,17 +736,45 @@ export class Ocean {
           return clamp(t, 0.0, 1.0);
         }
 
-        vec3 skyReflection(vec3 d) {
-          d.y = abs(d.y);
-          // A wind-roughened sea reflects a blurred, slightly darker sky.
-          return skyColor(d, uSunDir, uTime, 0.4) * 0.82;
+        // Foam (b) and whitewater (a) the dolphin has left on the water.
+        vec2 simFoamAt(vec2 world) {
+          vec2 uv0 = (world - uSimCenter) / uSimExtent + 0.5;
+          if (uv0.x < -0.02 || uv0.x > 1.02 || uv0.y < -0.02 || uv0.y > 1.02) return vec2(0.0);
+          // A warp of up to a metre gives every patch and trail a ragged,
+          // irregular edge instead of the round shape it was stamped with.
+          vec2 warp = vec2(vnoise(world * 0.55 + 3.1), vnoise(world * 0.55 - 7.7)) - 0.5;
+          warp += (vec2(vnoise(world * 2.3), vnoise(world * 2.3 + 5.0)) - 0.5) * 0.4;
+          vec2 uv = (world + warp * 2.2 - uSimCenter) / uSimExtent + 0.5;
+          vec2 edge = min(uv, 1.0 - uv);
+          float m = smoothstep(0.0, 0.08, min(edge.x, edge.y));
+          if (m <= 0.0) return vec2(0.0);
+          return texture2D(uSimState, uv).ba * m * uSimScale;
         }
 
-        vec2 detailSlope(vec2 p, float dist) {
+        vec3 skyReflection(vec3 d) {
+          // A ray reflected downward meets the next wave, not the sky: it
+          // sees sea and haze, about the colour of the horizon.
+          float down = smoothstep(0.0, -0.05, d.y);
+          d.y = abs(d.y);
+          // A wind-roughened sea reflects a blurred, slightly darker sky.
+          vec3 c = skyColor(d, uSunDir, uTime, 0.4);
+          c = mix(c, skyHorizonColor(d, uSunDir) * 0.95, down);
+          return c * 0.82;
+        }
+
+        vec2 detailSlope(vec2 p, float dist, float foot) {
           // Three non-commensurate cascades. The far fade is a cheap normal
           // filter: sub-pixel ripple slopes are removed before they shimmer.
           float fadeNear = 1.0 - smoothstep(120.0, 1100.0, dist);
           float fadeFar = 1.0 - smoothstep(1800.0, 4200.0, dist);
+          // A pixel seen at a grazing angle covers a long strip of sea, far
+          // longer than the mip and anisotropic filter can average, so the
+          // ripples alias into dark dashes. Fade each cascade out once a
+          // pixel spans a good part of its ripple wavelength; what is left
+          // reflects the horizon, as the far sea does seen from low down.
+          vec3 fr = 1.0 - smoothstep(uDetailScale / 24.0, uDetailScale / 6.0, vec3(foot));
+          float fr3 = 1.0 - smoothstep(210.0 / 24.0, 210.0 / 6.0, foot);
+          float fr4 = 1.0 - smoothstep(640.0 / 24.0, 640.0 / 6.0, foot);
           vec2 drift = uWindDir * uTime;
           vec2 uv0 = p / uDetailScale.x + drift * 0.009;
           vec2 uv1 = p / uDetailScale.y + vec2(-uWindDir.y, uWindDir.x) * uTime * 0.011;
@@ -593,8 +787,8 @@ export class Ocean {
           vec2 s3 = texture2D(uDetail1, p / 210.0 + drift * 0.004).rg * 2.0 - 1.0;
           vec2 s4 = texture2D(uDetail2, p / 640.0 - drift * 0.002).rg * 2.0 - 1.0;
           float fadeBig = smoothstep(60.0, 600.0, dist);
-          vec2 s = s0 * 0.52 * fadeNear + s1 * 0.32 * fadeNear + s2 * 0.2 * fadeFar;
-          s += (s3 * 0.42 + s4 * 0.3) * fadeBig;
+          vec2 s = s0 * 0.52 * fadeNear * fr.x + s1 * 0.32 * fadeNear * fr.y + s2 * 0.2 * fadeFar * fr.z;
+          s += (s3 * 0.42 * fr3 + s4 * 0.3 * fr4) * fadeBig;
           return s * uDetailStrength;
         }
 
@@ -608,7 +802,8 @@ export class Ocean {
         void main() {
           vec3 n = normalize(vNormalW);
           vec3 view = normalize(uCameraPos - vWorld);
-          vec2 detail = detailSlope(vWorld.xz, vDistance);
+          float footW = length(fwidth(vWorld.xz));
+          vec2 detail = detailSlope(vWorld.xz, vDistance, footW);
           float microHeight = detailHeight(vWorld.xz, vDistance);
           vec3 microN = normalize(vec3(n.x + detail.x * 0.3, n.y, n.z + detail.y * 0.3));
           if (microN.y < 0.0) microN = -microN;
@@ -702,20 +897,42 @@ export class Ocean {
           }
           foam = max(foam, streaks * 0.42 * uFoamStreaks);
 
-          // Meniscus/foam collar hugging the dolphin at the waterline.
-          float bodyDist = length(vWorld.xz - uBodyPos.xz);
-          float bodyRing = exp(-pow((bodyDist - uBodyRadius) / 0.3, 2.0));
-          float bodyFoam = bodyRing * uBodyActive * clamp(uBodySpeed / 7.0, 0.0, 1.1);
-          foam = max(foam, bodyFoam * 0.9);
-          float foamTex = foamTexture(p, vDistance);
-          // Thin foam is lace; thick foam closes up into a white sheet.
-          float foamCover = clamp(foam * (0.45 + 0.9 * foamTex) + foam * foam * 0.4, 0.0, 1.0);
-          foamCover = smoothstep(0.08, 0.85, foamCover);
+          // Wake foam (b) and fresh whitewater (a) from the dolphin. Fresh
+          // whitewater is dense and lumpy; as it settles it becomes foam that
+          // thins into bubble walls and fragments before it is gone.
+          vec2 wake = vDistance < 120.0 ? simFoamAt(p) : vec2(0.0);
+          float freshCover = smoothstep(0.1, 0.55, wake.y);
+          float foamDensity = max(foam, max(wake.x * 1.05, wake.y * 1.7));
+          vec2 fp = foamPattern(p, foamDensity, vDistance);
+          float foamCover = fp.x;
+          float foamTex = fp.y;
           // Far foam is unresolved: softer and thinner, never paint flecks.
           foamCover *= 1.0 - 0.45 * smoothstep(200.0, 1200.0, vDistance);
+          if (wake.x + wake.y > 0.004) {
+            float f = clamp(wake.y, 0.0, 1.4);
+            float d = clamp(wake.x, 0.0, 1.4);
+            aeration = max(aeration, clamp(f * 0.9 + d * 0.3, 0.0, 0.9));
+            // Whitewater is a churned, lumpy surface, not a mirror.
+            vec2 wp = p * 5.0;
+            vec2 bump = vec2(
+              vnoise(wp + uTime * 0.6) - vnoise(wp + vec2(0.37, 0.0) + uTime * 0.6),
+              vnoise(wp + vec2(5.1, 2.3) - uTime * 0.5) - vnoise(wp + vec2(5.1, 2.67) - uTime * 0.5)
+            );
+            microN = normalize(microN + vec3(bump.x, 0.0, bump.y) * 2.2 * clamp(f + d * 0.4, 0.0, 1.0));
+          }
 
           float nearSurface = clamp(1.0 - abs(uUnderwater - 0.5) * 2.0, 0.0, 1.0);
-          float localAbove = smoothstep(-0.08, 0.08, uCameraPos.y - vWorld.y);
+          // Which side of the surface the camera sees here. The rendered
+          // triangle knows: its upper side is its front face. The shading
+          // normal carries chop the mesh cannot resolve, so far ripples seen
+          // at a grazing angle often face away from the camera although their
+          // triangle faces it, and testing the normal turned them into dark
+          // flecks of underside. A back face is the underside, unless it is a
+          // sliver folded over by the crest's sideways displacement: those
+          // still face the camera, or lie below it, and stay lit from above.
+          float facing = smoothstep(-0.04, 0.04, dot(view, n));
+          float lower = smoothstep(-0.06, 0.06, uCameraPos.y - vWorld.y);
+          float localAbove = gl_FrontFacing ? 1.0 : max(facing, lower);
           float aboveWeight = mix(clamp(1.0 - uUnderwater, 0.0, 1.0), localAbove, nearSurface);
 
           // ---- above the surface ----------------------------------------
@@ -723,6 +940,15 @@ export class Ocean {
           vec3 above = vec3(0.0);
           vec3 aboveFog = vec3(0.0);
           if (aboveWeight > 0.001) {
+            // Ripple slopes that face away from the eye are hidden behind the
+            // ripples in front of them, so they are never seen. At a grazing
+            // view (riding low on the water) they used to reflect the wrong
+            // part of the sky as dark flecks; tip them back until they just
+            // face the camera, where they reflect the horizon behind them.
+            vec3 shadeN = microN;
+            float nv = dot(view, shadeN);
+            if (nv < 0.06) shadeN = normalize(shadeN + view * (0.06 - nv));
+            vec3 microN = shadeN;
             float cosView = clamp(dot(view, microN), 0.0, 1.0);
             float fres = 0.02 + 0.98 * pow(1.0 - cosView, 5.0);
             // A rough sea never reaches mirror reflectance at grazing angles.
@@ -773,6 +999,21 @@ export class Ocean {
             // Foam: lit by the sky, slightly shadowed in its own cell walls.
             vec3 foamLit = mix(ambient * 0.86, ambient * 1.18 + SKY_HORIZON_SUN * 0.08, foamTex);
             foamLit *= 1.0 + faceSun * 0.08;
+            // Fresh whitewater is brighter than settled foam, and foam is
+            // never darker than the water it floats on (it scatters the same
+            // bright sky the water reflects).
+            foamLit *= 1.0 + 0.12 * freshCover;
+            // Fresh whitewater is a heap of churned lumps: tops that face the
+            // sky are brighter, creases between them darker and greyer.
+            if (freshCover > 0.01 && vDistance < 60.0) {
+              float lump = fbm2(p * 2.4 + vec2(uTime * 0.35, -uTime * 0.2)) * 0.55
+                + vnoise(p * 7.5 - vec2(uTime * 0.6, uTime * 0.4)) * 0.3
+                + vnoise(p * 19.0 + uTime * 0.9) * 0.15;
+              float crease = smoothstep(0.42, 0.18, lump);
+              float lumpShade = 0.84 + 0.34 * smoothstep(0.3, 0.8, lump) - 0.12 * crease;
+              foamLit *= mix(1.0, lumpShade, freshCover * (1.0 - smoothstep(25.0, 60.0, vDistance)));
+            }
+            foamLit = max(foamLit, above * mix(0.95, 1.1, foamTex));
             above = mix(above, foamLit, foamCover * 0.94);
 
 
@@ -818,6 +1059,8 @@ export class Ocean {
             // Foam seen from below: a dark-edged, bright lace ceiling.
             below = mix(below, vec3(0.46, 0.6, 0.58), foamCover * foamCover * 0.3);
             below = mix(below, vec3(0.45, 0.62, 0.58), aeration * 0.45);
+            // Whitewater seen from below glows with the light it diffuses.
+            below = mix(below, vec3(0.6, 0.76, 0.74), freshCover * 0.45);
             below = applyWaterFog(below, vDistance, uFogColor, uFogDensity * 0.72);
           }
 
@@ -825,7 +1068,6 @@ export class Ocean {
           float meniscus = exp(-pow(camGap / 0.05, 2.0)) * nearSurface;
           vec3 color = mix(below, aboveFog, aboveWeight);
           color = mix(color, vec3(0.92, 0.99, 0.97), meniscus * 0.22);
-          color = mix(color, vec3(0.9, 0.99, 0.95), bodyRing * uBodyActive * 0.06);
           foam = foamCover;
 
           // ---- debug overlays ------------------------------------------
@@ -1124,6 +1366,11 @@ export class Ocean {
     this.sim.addSplat(x, z, clamp(force, -0.8, 0.8), radius);
   }
 
+  /** Stamp foam (lingering lace) and fresh whitewater onto the surface. */
+  addFoam(x, z, radius, foam, fresh = 0) {
+    this.sim.addSplat(x, z, 0, radius, foam, fresh);
+  }
+
   update(dt, playerPos, camera, underwater, wetness, context = {}) {
     this.time += dt * TUNING.water.timeScale;
     this.solver.enabled = TUNING.water.solverEnabled;
@@ -1147,7 +1394,11 @@ export class Ocean {
     u.uFogColor.value.copy(context.fogColor || this.fogColor);
     u.uFogDensity.value = context.fogDensity ?? TUNING.visuals.underwaterDensity;
 
-    this.sim.update(dt, playerPos);
+    // The contact field rides with the surface water under the player.
+    const drift = this.water.sampleForForces(playerPos.x, bodySurf.height - 0.05, playerPos.z, this._driftSample);
+    this._drift.x = Number.isFinite(drift.velocityX) ? drift.velocityX : 0;
+    this._drift.z = Number.isFinite(drift.velocityZ) ? drift.velocityZ : 0;
+    this.sim.update(dt, playerPos, this._drift);
     u.uSimState.value = this.sim.texture;
     u.uSimCenter.value.copy(this.sim.center);
     u.uSimExtent.value = this.sim.extent;

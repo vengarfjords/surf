@@ -22,6 +22,7 @@ const FilmShader = {
     uPixelRatio: { value: 1 },
     uSunScreen: { value: new THREE.Vector2(0.5, 1.1) },
     uSunPower: { value: 0 },
+    uDropSeed: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -45,6 +46,7 @@ const FilmShader = {
     uniform float uPixelRatio;
     uniform vec2 uSunScreen;
     uniform float uSunPower;
+    uniform float uDropSeed;
 
     float hash12(vec2 p) {
       vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -67,6 +69,47 @@ const FilmShader = {
       return col;
     }
 
+    // Water left on the lens port after the camera comes up: drops of
+    // several sizes, each an irregular little lens that bends and blurs the
+    // view behind it, with a darker edge. They are out of focus, so they are
+    // soft distortions, not circles. Returns the refraction offset (xy) and
+    // the drop coverage (z). As the port dries the smaller and less likely
+    // drops go first.
+    vec3 lensWater(vec2 uv, float wet) {
+      vec2 p = uv * vec2(uResolution.x / max(uResolution.y, 1.0), 1.0);
+      vec3 acc = vec3(0.0);
+      for (int L = 0; L < 3; L++) {
+        float fl = float(L);
+        float scale = L == 0 ? 5.0 : (L == 1 ? 9.0 : 17.0);
+        vec2 g = p * scale + vec2(fl * 3.7 + uDropSeed * 1.31, fl * 1.9 - uDropSeed * 0.77);
+        vec2 cell = floor(g);
+        vec2 f = fract(g) - 0.5;
+        float h = hash(cell + fl * 17.0 + uDropSeed * 3.3);
+        float keep = wet * (L == 0 ? 0.18 : (L == 1 ? 0.28 : 0.38));
+        if (h > keep) continue;
+        vec2 c = (vec2(hash(cell + 3.1 + fl), hash(cell + 7.7 - fl)) - 0.5) * 0.45;
+        vec2 d = f - c;
+        float r = 0.14 + 0.2 * hash(cell + 1.3 + fl * 2.0);
+        // Shrink as it dries.
+        r *= 0.55 + 0.45 * smoothstep(h, h + 0.35, keep + 0.15);
+        float ang = atan(d.y, d.x);
+        float wob = 1.0 + 0.16 * sin(ang * 3.0 + h * 21.0) + 0.09 * sin(ang * 5.0 + h * 9.0);
+        // Gravity drags the bigger drops into a teardrop.
+        wob *= 1.0 + 0.25 * smoothstep(0.0, -1.0, sin(ang)) * (1.0 - fl * 0.4);
+        float dist = length(d) / (r * wob);
+        if (dist >= 1.0) continue;
+        // A drop on the lens is far out of focus: its edge is a wide, soft
+        // falloff, never a cut-out outline.
+        float m = 1.0 - smoothstep(0.3, 1.0, dist);
+        m *= m;
+        float dome = sqrt(max(0.0, 1.0 - dist * dist));
+        vec2 off = -(d / (r * wob)) * (1.0 - dome * 0.6) * (0.012 / scale) * 5.0;
+        acc.xy += off * m;
+        acc.z = max(acc.z, m);
+      }
+      return acc;
+    }
+
     void main() {
       float under = uUnderwater;
       float wet = uWetness;
@@ -76,23 +119,26 @@ const FilmShader = {
       // looking through a moving medium.
       vec2 centered = uv * 2.0 - 1.0;
       float r2 = dot(centered, centered);
-      vec2 lens = uv + centered * (0.003 + under * 0.008) * r2;
+      // Barrel curvature, zoomed in just enough that the corners never
+      // sample outside the frame (which smears the edge pixels into bands).
+      float curve = 0.003 + under * 0.008;
+      vec2 lens = 0.5 + (uv + centered * curve * r2 - 0.5) / (1.0 + curve * 2.0 + 0.006);
       if (under > 0.01) {
         lens.x += sin(uv.y * 31.0 + uTime * 1.1) * 0.0005 * under;
         lens.y += cos(uv.x * 27.0 + uTime * 0.9) * 0.0004 * under;
       }
 
-      // Water drops on the lens after a breach.
+      // Water on the lens after the camera comes up.
       float dropMask = 0.0;
-      if (wet > 0.01) {
-        vec2 grid = uv * vec2(14.0, 9.0);
-        vec2 cell = floor(grid);
-        vec2 local = fract(grid) - 0.5;
-        float h = hash(cell + floor(uTime * 0.6) * 0.13);
-        vec2 offs = vec2(h - 0.5, hash(cell.yx) - 0.5) * 0.35;
-        float drop = smoothstep(0.3, 0.08, length(local + offs));
-        dropMask = drop * step(0.7, h) * wet;
-        lens += normalize(local + offs + 0.0001) * dropMask * 0.006;
+      if (wet > 0.01 && under < 0.5) {
+        vec3 lw = lensWater(uv, wet);
+        dropMask = lw.z;
+        lens += lw.xy;
+        // Right out of the water a film runs down the port and ripples
+        // the whole view for a moment.
+        float film = smoothstep(0.75, 1.0, wet);
+        lens.x += sin(uv.y * 23.0 + uTime * 4.0 + sin(uv.x * 9.0) * 2.0) * 0.004 * film;
+        lens.y += sin(uv.x * 17.0 - uTime * 3.0) * 0.002 * film + film * 0.004;
       }
 
       vec2 uvA = clamp(lens, vec2(0.001), vec2(0.999));
@@ -139,9 +185,17 @@ const FilmShader = {
         color = mix(aboveC, color, under);
       }
 
-      // Lens drops: refraction only (above), plus a faint rim.
+      // Lens drops are out of focus: what they show is soft, and their
+      // edges are a little darker where the light bends away.
       if (dropMask > 0.001) {
-        color *= 1.0 + dropMask * (1.0 - dropMask) * 0.25;
+        vec2 bo = vec2(0.004, 0.003);
+        vec3 soft = texture2D(tDiffuse, clamp(uvA + bo, 0.001, 0.999)).rgb
+          + texture2D(tDiffuse, clamp(uvA - bo, 0.001, 0.999)).rgb
+          + texture2D(tDiffuse, clamp(uvA + vec2(-bo.x, bo.y), 0.001, 0.999)).rgb
+          + texture2D(tDiffuse, clamp(uvA + vec2(bo.x, -bo.y), 0.001, 0.999)).rgb;
+        color = mix(color, soft * 0.25, dropMask * 0.45);
+        float edge = dropMask * (1.0 - dropMask) * 4.0;
+        color *= 1.0 - edge * 0.05;
       }
 
       // Fine film grain, mostly in the shadows.
@@ -376,6 +430,9 @@ const VolumetricShader = {
         float camDepthNow = max(0.0, uWaterLevel - uCameraPos.y);
         float mediumDensity = uFogDensity * (0.85 + 0.25 * uScatter);
         float mediumAmount = 1.0 - exp(-pow(rayLength * mediumDensity, 1.6));
+        // Past the visibility limit everything is the water itself, so the
+        // far seabed melts into the water instead of meeting it in a line.
+        mediumAmount = max(mediumAmount, smoothstep(35.0, 80.0, rayLength));
         vec3 medium = waterMedium(rayDir, camDepthNow);
         medium += uSunColor * 0.05 * pow(max(dot(rayDir, uSunDir), 0.0), 4.0) * exp(-camDepthNow * 0.04);
         color = mix(color, medium, clamp(mediumAmount, 0.0, 1.0) * uUnderwater);
@@ -399,8 +456,11 @@ const VolumetricShader = {
         float belowGap = smoothstep(0.3, 2.2, belowSurface);
         float lightFacing = clamp(dot(surfaceNormal, uSunDir) * 0.55 + 0.45, 0.0, 1.0);
         float causticDepth = exp(-belowSurface * 0.022);
+        // Caustics are light on a surface: they fade with the surface into
+        // the water, or the far seabed glows as a pale band at the horizon.
         float causticMask =
-          upFacing * belowGap * lightFacing * causticDepth * uCaustic * uUnderwater;
+          upFacing * belowGap * lightFacing * causticDepth * uCaustic * uUnderwater *
+          (1.0 - clamp(mediumAmount, 0.0, 1.0));
         if (causticMask > 0.0005) {
           float caustic = clamp(
             causticNetwork(
@@ -582,7 +642,11 @@ export class Post {
     const time = performance.now() * 0.001;
     this.film.material.uniforms.uTime.value = time;
     this.film.material.uniforms.uUnderwater.value = state.underwater;
-    this.film.material.uniforms.uWetness.value = Math.max(state.wetness, 0);
+    // A fresh soaking leaves a fresh pattern of drops.
+    const wetNow = Math.max(state.wetness, 0);
+    if (wetNow > (this._lastWet ?? 0) + 0.25) this.film.material.uniforms.uDropSeed.value = Math.floor(Math.random() * 97);
+    this._lastWet = wetNow;
+    this.film.material.uniforms.uWetness.value = wetNow;
     this.film.material.uniforms.uSpeed.value = state.speedNorm;
 
     this.camera.getWorldDirection(this._forward);

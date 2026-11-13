@@ -1478,6 +1478,11 @@ function makeSeagrassMaterial() {
           float bend = bladeT * bladeT;
           transformed.x += sway * bend;
           transformed.z += cos(uOceanTime * 0.71 + phase * 1.2) * bend * 0.09;
+          // Blades thinner than a pixel only alias into specks: past a
+          // few tens of metres they shrink away and the meadow colour on
+          // the sand carries the field.
+          float grassDist = distance(rootWorld, cameraPosition);
+          transformed *= 1.0 - smoothstep(14.0, 28.0, grassDist);
         `
       );
     shader.fragmentShader =

@@ -55,7 +55,7 @@ export const glslSky = /* glsl */ `
     return r * scale;
   }
 
-  vec3 skyLand(vec3 d, vec3 col, vec3 horizon) {
+  vec3 skyLand(vec3 d, vec3 col, vec3 horizon, float detail) {
     float az = atan(d.z, d.x);
     // Sector of the horizon the coast occupies: down-swell and toward the
     // low sun, so it sits backlit in the warm band, with soft ends that
@@ -65,7 +65,10 @@ export const glslSky = /* glsl */ `
     float farRidge = (0.006 + skyRidge(az, 4.0, 0.03)) * sector;
     float nearRidge = (skyRidge(az, 11.0, 0.05) - 0.012) * smoothstep(0.1, 0.6, sector);
     float y = d.y;
-    float aa = 0.0016;
+    // Seen directly the coast is crisp. In a reflection off a rough sea
+    // (lower detail) it is smeared over a couple of degrees, so wave backs
+    // never pick out its outline as dark flecks.
+    float aa = mix(0.03, 0.0016, detail * detail);
     float farMask = 1.0 - smoothstep(farRidge - aa, farRidge + aa, y);
     float nearMask = 1.0 - smoothstep(nearRidge - aa, nearRidge + aa, y);
     vec3 farCol = mix(SKY_LAND, horizon, 0.62);
@@ -104,7 +107,7 @@ export const glslSky = /* glsl */ `
     vec3 sunTint = mix(SKY_HORIZON_SUN, vec3(1.0, 0.93, 0.8), 0.5);
     col += sunTint * (pow(sd, 5.0) * 0.14 + pow(sd, 28.0) * 0.22 + pow(sd, 260.0) * 0.45) * (1.0 - deck * 0.4);
 
-    col = skyLand(d, col, horizon);
+    col = skyLand(d, col, horizon, detail);
     // Below the horizon the dome only ever shows as reflection: hold it at
     // the horizon colour so a rough sea never reflects "ground".
     col = mix(col, horizon, smoothstep(0.0, -0.06, d.y));
