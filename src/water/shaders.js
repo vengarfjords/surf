@@ -122,7 +122,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
         float n = n0 + float(k);
         float xi = d - n * L;
         float lam = xi > 0.0 ? uMegaB.x : uMegaB.y;
-        float g = n + uMegaA.y;
+        float g = n - uMegaA.y;
         float Hn = uMegaA.w * (1.0 + uMegaB.z * (0.5 + 0.5 * sin(g * 2.39996 + 0.7)))
           * (1.0 + uMegaB.w * sin(c / 700.0 + g * 1.3));
         float a = min(20.0, abs(xi) / lam);

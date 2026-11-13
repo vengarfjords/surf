@@ -262,7 +262,9 @@ export class WaveField {
     for (let n = n0 - 1; n <= n0 + 2; n++) {
       const xi = d - n * L;
       const lam = xi > 0 ? cfg.megaFront : cfg.megaBack;
-      const g = n + this.megaIndex;
+      // Crest identity: crest positions are crest - (megaIndex - n) L, so
+      // n - megaIndex stays fixed for a physical crest when megaCrestMod wraps.
+      const g = n - this.megaIndex;
       const Hn =
         cfg.megaHeight *
         (1 + cfg.megaVariation * (0.5 + 0.5 * Math.sin(g * 2.39996 + 0.7))) *
@@ -522,6 +524,7 @@ export class WaveField {
     // the wave being surfed whenever it is up.
     let megaH = 0;
     let megaDs = 0;
+    let megaCrestH = 0;
     let phaseSpeed = this.stats.peakPhaseSpeed / ratio;
     if (TUNING.water.megaWave) {
       const m = this.megaAt(px, pz, this._megaS);
@@ -530,6 +533,7 @@ export class WaveField {
       h += megaH;
       dhdx += megaDs * this.peakDirX;
       dhdz += megaDs * this.peakDirZ;
+      megaCrestH = m.H;
       if (m.H > 0) {
         const cfg = TUNING.water;
         const L = Math.max(100, cfg.megaWavelength);
@@ -606,6 +610,7 @@ export class WaveField {
     out.phaseSpeed = phaseSpeed;
     out.megaH = megaH;
     out.megaDs = megaDs;
+    out.megaCrestH = megaCrestH;
     out.stillDepth = state.depth - state.megaH;
     out.wavelength = this.stats.peakWavelength / ratio;
     out.crest = crest;
@@ -701,6 +706,7 @@ export class WaveField {
     // sees the face as a slope to slide down; pressure += rho g eta makes
     // the hull's Wheeler-stretched dynamic term vanish for this part.
     let megaFk = 0;
+    let megaFkY = 0;
     if (surf.megaH > 0) {
       const eta = surf.megaH;
       // The train's own reference depth (the one its speed is set by), not
@@ -721,21 +727,44 @@ export class WaveField {
       ax += aS * this.peakDirX;
       az += aS * this.peakDirZ;
       pressure += RHO * G * eta;
-      // This flow is not hydrostatic: on the toe of the face (and the tail
-      // of the back) the water accelerates far harder than g times the
-      // slope, so a body pushed only by the hydrostatic slope lags the water
-      // and the rising face buries it tens of metres deep. Where the water's
-      // own acceleration is the larger, the body gets the difference as a
-      // Froude-Krylov correction, so it is picked up with the water. Higher
-      // on the face the slope push is the larger and is left alone: that is
-      // the gravity slide a surfer rides down.
-      const slide = -G * etaS;
-      if (Math.abs(aS) > Math.abs(slide) && aS * slide >= 0) {
-        megaFk = aS - slide;
+      // Steep faces are not hydrostatic either. Hydrostatic pressure grows
+      // by g per metre of *vertical* depth, so its gradient under a 60 degree
+      // face is 2 g, normal to the face: a submerged body was shoved out
+      // through the face at g tan(theta) while the water itself was not.
+      // Under a steep free surface the pressure grows by about g cos(theta)
+      // per metre of depth normal to it, i.e. g cos^2(theta) per vertical
+      // metre. With that, the body's weight and buoyancy leave g sin(theta)
+      // straight down the face: the inclined-plane slide a surfer rides.
+      const cos2 = 1 / (1 + etaS * etaS);
+      pressure -= RHO * G * (1 - cos2) * Math.max(0, h - y);
+      // This flow is not hydrostatic. On the toe of the face the water is
+      // flung forward and upward far harder than the slope's pressure push
+      // explains, so a body pushed only by that lags the water and the
+      // rising face buries it tens of metres deep. On the toe the wetted
+      // body is given the water parcel's own acceleration instead (the
+      // Froude-Krylov principle: a neutrally buoyant body moves with the
+      // fluid), so it is picked up with the water. From about a quarter of
+      // the way up, the face's gravity slide is left alone: that is what a
+      // surfer rides down. The parcel acceleration is a short finite
+      // difference along its path through the steady, travelling field.
+      const toe = 1 - smoothstep(0.08, 0.25, eta / Math.max(1, surf.megaCrestH || eta));
+      if (toe > 0) {
+        const dt = 0.02;
+        const ds = (u - c) * dt;
+        const m2 = this.megaAt(surf.parameterX + ds * this.peakDirX, surf.parameterZ + ds * this.peakDirZ, _megaFd);
+        const col2 = hb + m2.h;
+        const u2 = (c * m2.h) / col2;
+        const y2 = y + wM * dt;
+        const w2 = -clamp(y2 + hb, 0, col2) * ((c * hb) / (col2 * col2)) * m2.ds;
+        const slideS = -G * etaS * cos2;
+        const slideY = -G * (1 - cos2);
+        megaFk = toe * ((u2 - u) / dt - slideS);
+        megaFkY = toe * ((w2 - wM) / dt - slideY);
       }
     }
     out.megaFkX = megaFk * this.peakDirX;
     out.megaFkZ = megaFk * this.peakDirZ;
+    out.megaFkY = megaFkY;
 
     // Breaker jet: near a breaking crest, water near the surface is thrown
     // forward at roughly the local phase speed. This is the force that can
@@ -850,6 +879,7 @@ const _surf = {};
 const _batch = {};
 const _depth = {};
 const _depthP = {};
+const _megaFd = {};
 const _height = {};
 
 export { G as GRAVITY, RHO as WATER_DENSITY };

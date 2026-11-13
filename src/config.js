@@ -159,6 +159,12 @@ export const TUNING = {
     dragNormal: 0.65,
     dragTangential: 0.003,
     axialDragScale: 0.15,
+    // Planing (hull.js): at the surface, above `planeSpeed` m/s through the
+    // water, axial and skin drag fall off by up to `planeDragCut` over the
+    // next `planeSpeedRange` m/s.
+    planeSpeed: 18,
+    planeSpeedRange: 14,
+    planeDragCut: 0.85,
     airDragNormal: 0.05,
     airDragTangential: 0.004,
     slamDrag: 2.4,
@@ -272,7 +278,7 @@ export const TUNING = {
     megaWavelength: 3000,
     megaFront: 200,
     megaBack: 500,
-    megaDepthRef: 40,
+    megaDepthRef: 15,
     megaLateral: 0.12,
     // Centre of the big-wave reef (mirrors REEF_X/Z in utils.seabedHeight).
     surfZoneX: 700,
@@ -563,6 +569,8 @@ export const TUNE_CONTROLS = [
   { path: "hydro.dragNormal", label: "panel normal drag", min: 0.1, max: 2.5, step: 0.01 },
   { path: "hydro.dragTangential", label: "skin drag", min: 0.0005, max: 0.02, step: 0.0005 },
   { path: "hydro.axialDragScale", label: "axial form drag", min: 0, max: 1, step: 0.01 },
+  { path: "hydro.planeDragCut", label: "planing drag cut", min: 0, max: 0.95, step: 0.01 },
+  { path: "hydro.planeSpeed", label: "planing speed", min: 10, max: 40, step: 0.5 },
   { path: "hydro.finLiftSlope", label: "fin lift", min: 0, max: 6, step: 0.05 },
   { path: "hydro.slamDrag", label: "slam drag", min: 0, max: 8, step: 0.1 },
   { path: "hydro.surfaceTrimRate", label: "surface trim", min: 0, max: 4, step: 0.05 },

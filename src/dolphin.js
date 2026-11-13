@@ -830,12 +830,20 @@ export class Dolphin {
     // Stay inside the surveyed 3 x 3 km shelf.
     const limit = TUNING.world.boundary;
     const edge = Math.max(Math.abs(this.position.x), Math.abs(this.position.z));
+    // A ride on a mega wave is not stopped at the line: shoving the body
+    // back up-wave into a 500 m face buries it. Out past the edge the push
+    // is a gentle drift home (at most 6 m/s), not a teleport.
+    const onMega = TUNING.water.megaWave && ocean.water.megaAt
+      ? ocean.water.megaAt(this.position.x, this.position.z, this._megaProbe || (this._megaProbe = {})).h > 30
+      : false;
     if (edge > limit) {
-      const push = (edge - limit) * 0.8;
+      const push = onMega ? 0 : Math.min((edge - limit) * 0.8, 1.2);
       if (Math.abs(this.position.x) > limit) this.position.x += -Math.sign(this.position.x) * push * dt * 5;
       if (Math.abs(this.position.z) > limit) this.position.z += -Math.sign(this.position.z) * push * dt * 5;
-      this.velocity.x *= 0.998;
-      this.velocity.z *= 0.998;
+      if (!onMega) {
+        this.velocity.x *= 0.998;
+        this.velocity.z *= 0.998;
+      }
       this.edgeWarning = true;
     } else {
       this.edgeWarning = false;
@@ -1013,10 +1021,24 @@ export class Dolphin {
       }
       effects.bubbleBurst(this.position.x, this.position.y - 0.2, this.position.z, 22, 1.4, 0.7);
       // Water entry takes energy, but keep most of the horizontal momentum so
-      // a long leap can skip or carry through instead of stopping dead.
-      this.velocity.x *= 0.92;
-      this.velocity.z *= 0.92;
-      this.velocity.y *= 0.68;
+      // a long leap can skip or carry through instead of stopping dead. The
+      // loss is on velocity relative to the water and scales with how hard
+      // the body drops into the surface: a dive from a leap pays it in full,
+      // while skimming back onto a wave face at 70 m/s (the conveyor already
+      // moves the water with the body) loses nothing.
+      const plunge = Math.max(0, (this.surfaceRate || 0) - this.velocity.y);
+      const hit = smoothstep(1, 5, plunge);
+      if (hit > 0) {
+        const wv = this.hull.waterVel;
+        const wx = Number.isFinite(wv.x) ? wv.x : 0;
+        const wy = Number.isFinite(wv.y) ? wv.y : 0;
+        const wz = Number.isFinite(wv.z) ? wv.z : 0;
+        const keepH = 1 - 0.08 * hit;
+        const keepV = 1 - 0.32 * hit;
+        this.velocity.x = wx + (this.velocity.x - wx) * keepH;
+        this.velocity.z = wz + (this.velocity.z - wz) * keepH;
+        this.velocity.y = wy + (this.velocity.y - wy) * keepV;
+      }
       this.impact = Math.max(this.impact, 0.55);
       this.wetness = 1;
     }
@@ -1288,7 +1310,15 @@ export class Dolphin {
     const wvx = wv ? wv.x : 0;
     const wvy = wv ? wv.y : 0;
     const wvz = wv ? wv.z : 0;
-    const speed = Math.hypot(this.velocity.x - wvx, this.velocity.y - wvy, this.velocity.z - wvz);
+    // Only the dolphin's own pace along its body counts: water rushing past
+    // a passive body (a mega face lifting it) is not riding speed, and
+    // pitching a drifting body up only slices it down through the water.
+    const speed = Math.max(
+      0,
+      (this.velocity.x - wvx) * this.forward.x +
+        (this.velocity.y - wvy) * this.forward.y +
+        (this.velocity.z - wvz) * this.forward.z
+    );
     const near =
       smoothstep(-0.7, -0.15, depth) * (1 - smoothstep(cfg.rideTrimDepth * 0.6, cfg.rideTrimDepth, depth));
     const fast = smoothstep(cfg.rideTrimSpeed * 0.6, cfg.rideTrimSpeed, speed);
@@ -1298,7 +1328,9 @@ export class Dolphin {
     const surfaceRate = this.surfaceRate || 0;
     const wantVy = surfaceRate + clamp((depth - cfg.rideDepth) * cfg.rideDepthGain, -4, 4) - wvy;
     const lead = wantVy + (wantVy - (this.velocity.y - wvy)) * cfg.rideDamping;
-    const cmd = clamp(Math.asin(clamp(lead / Math.max(3, speed), -0.95, 0.95)), -0.9, 0.9);
+    // Up to about 72 degrees: a 500 m face is steeper than 60 degrees, and a
+    // body that cannot point down it planes on its belly and is pushed off.
+    const cmd = Math.asin(clamp(lead / Math.max(3, speed), -0.95, 0.95));
 
     const release = cfg.rideRelease;
     const free = Math.abs(this.rideOffset) > release;

@@ -253,6 +253,24 @@ export class Hull {
     }
     const batch = this.batch;
 
+    // Planing. Running fast along the surface, a body rides up onto the
+    // water: the wetted area shrinks and resistance stops growing with v^2,
+    // as a planing hull's does. Fully submerged, or below `planeSpeed`
+    // through the water, nothing changes, so swimming and the reef waves
+    // keep their feel. Down a 500 m face gravity takes the dolphin past it,
+    // and the speed it then carries is what lets it carve back up. Only the
+    // along-body (axial and skin) resistance is cut: crossflow still grips
+    // like a rail, so turns hold. Uses last frame's centre sample.
+    let planing = 0;
+    if (cfg.planeDragCut > 0 && this.centerSample.height !== undefined && this.waterVelAt.x !== Infinity) {
+      const centerDepth = this.centerSample.height - pos.y;
+      const surfaceBand = 1 - smoothstep(1.2, 2.5, centerDepth);
+      const vRel = Math.hypot(vel.x - this.waterVel.x, vel.y - this.waterVel.y, vel.z - this.waterVel.z);
+      planing = surfaceBand * smoothstep(cfg.planeSpeed, cfg.planeSpeed + cfg.planeSpeedRange, vRel);
+    }
+    const planeKeep = 1 - cfg.planeDragCut * planing;
+    this.result.planing = planing;
+
     for (let i = 0; i < this.panels.length; i++) {
       const p = this.panels[i];
       p.worldNormal.copy(p.normal).applyQuaternion(q);
@@ -326,10 +344,10 @@ export class Hull {
       const axial = rx * fx + ry * fy + rz * fz;
       const vnAxial = axial * (p.worldNormal.x * fx + p.worldNormal.y * fy + p.worldNormal.z * fz);
       const vnCross = vn - vnAxial;
-      const axialScale = cfg.axialDragScale ?? 1;
+      const axialScale = (cfg.axialDragScale ?? 1) * planeKeep;
       const normalDrag =
         0.5 * rhoMix * cdN * p.area * wet * (Math.abs(vnCross) * vnCross + axialScale * Math.abs(vnAxial) * vnAxial);
-      const tangentDrag = 0.5 * rhoMix * cdT * p.area * wet * tSpeed;
+      const tangentDrag = 0.5 * rhoMix * cdT * p.area * wet * tSpeed * planeKeep;
       dragForce += Math.abs(normalDrag) + Math.abs(tangentDrag) * tSpeed;
       p.force.addScaledVector(p.worldNormal, -normalDrag);
       p.force.x -= tx * tangentDrag;
@@ -452,8 +470,9 @@ export class Hull {
     // Non-hydrostatic part of the mega wave's pressure gradient
     // (WaveField._sample megaFk): the wetted body is carried with the water
     // where the water accelerates harder than the surface slope implies.
-    if (c.megaFkX || c.megaFkZ) {
+    if (c.megaFkX || c.megaFkZ || c.megaFkY) {
       this.accel.x += c.megaFkX * wetFraction;
+      this.accel.y += (c.megaFkY || 0) * wetFraction;
       this.accel.z += c.megaFkZ * wetFraction;
     }
 

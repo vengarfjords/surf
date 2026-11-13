@@ -536,16 +536,50 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let yMax = -Infinity;
       let vMax = 0;
       let aMax = 0;
+      let aMaxAt = null;
+      const spikes = [];
+      const prevSpikeV = dolphin.velocity.clone();
       let finite = true;
       let prevV = dolphin.velocity.clone();
+      const carveHi = api.carveHi ?? 300;
+      const carveLo = api.carveLo ?? 90;
+      let carveDown = true;
+      let lastDown = true;
+      let turns = 0;
+      let hMin = Infinity;
+      let onWaveMin = Infinity;
+      let onWaveMax = -Infinity;
       let elapsed = 0;
       for (; elapsed < seconds; elapsed += dt) {
         const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
         const rel = dolphin.position.y - q.height;
         water.megaAt(dolphin.position.x, dolphin.position.z, m);
         const faceUp = m.h > 25;
+        // "carve": once on the face, turn down the line until low on the
+        // face, then back up it until high, like a surfer's bottom turn and
+        // top turn. `angle` is the side (sign) and the down-line angle off
+        // straight shoreward; the up-line heading is mirrored past the
+        // along-crest direction.
+        let aim = yaw;
+        if (mode === "carve") {
+          const side = Math.sign(angle) || 1;
+          const off = Math.abs(angle) || 0.5;
+          if (m.h > carveHi) carveDown = true;
+          else if (m.h < carveLo && m.xi > 0) carveDown = false;
+          if (m.h > 15 && m.xi > 0 && elapsed > lead) aim = sp.heading + side * (carveDown ? off : Math.PI - off);
+          else aim = sp.heading;
+          if (carveDown !== lastDown) {
+            turns++;
+            lastDown = carveDown;
+          }
+          hMin = Math.min(hMin, m.h);
+          if (turns > 0) {
+            onWaveMin = Math.min(onWaveMin, m.h);
+            onWaveMax = Math.max(onWaveMax, m.h);
+          }
+        }
         if (mode !== "hands") {
-          let err = yaw - dolphin.targetYaw;
+          let err = aim - dolphin.targetYaw;
           err = Math.atan2(Math.sin(err), Math.cos(err));
           control.mdx = (-err / sens) * 0.1;
           control.forward = true;
@@ -563,7 +597,20 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         }
         const acc = prevV.distanceTo(v) / dt;
         prevV.copy(v);
-        aMax = Math.max(aMax, acc);
+        if (api.megaDebug && acc > 120 && spikes.length < 12) {
+          const dv = v.clone().sub(prevSpikeV);
+          const hy = dolphin.hydro;
+          spikes.push({ t: +elapsed.toFixed(2), acc: Math.round(acc), dv: [dv.x, dv.y, dv.z].map((q) => +q.toFixed(2)),
+            hacc: hy ? [hy.accel.x, hy.accel.y, hy.accel.z].map((q) => +q.toFixed(1)) : null,
+            wet: hy ? +hy.wetFraction.toFixed(2) : null, h: Math.round(m.h), rel: +rel.toFixed(2),
+            wv: [dolphin.hull.waterVel.x, dolphin.hull.waterVel.y, dolphin.hull.waterVel.z].map((q) => +q.toFixed(1)),
+            pos: [dolphin.position.x, dolphin.position.y, dolphin.position.z].map((q) => Math.round(q)) });
+        }
+        prevSpikeV.copy(v);
+        if (acc > aMax) {
+          aMax = acc;
+          aMaxAt = [+elapsed.toFixed(2), Math.round(m.h), +rel.toFixed(2)];
+        }
         vMax = Math.max(vMax, v.length());
         yMax = Math.max(yMax, dolphin.position.y);
         if (m.xi > 0 && m.xi < 2.5 * front && m.h > 25 && Math.abs(rel) < 3) onFace += dt;
@@ -583,7 +630,19 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
             +(wv.x * dx() + wv.z * dz()).toFixed(1),
             +wv.y.toFixed(1),
             ...(api.megaDebug && dolphin.hydro
-              ? [+dolphin.hydro.accel.y.toFixed(1), Math.round(dolphin.hydro.liftForce), +dolphin.pitch.toFixed(2), +dolphin.forward.y.toFixed(2)]
+              ? [
+                  +dolphin.hydro.accel.y.toFixed(1),
+                  Math.round(dolphin.hydro.liftForce),
+                  +dolphin.pitch.toFixed(2),
+                  +dolphin.forward.y.toFixed(2),
+                  +dolphin.hydro.accel.dot(dolphin.forward).toFixed(1),
+                  Math.round(dolphin.hydro.dragForce),
+                  Math.round(dolphin.hydro.pressureForwardForce),
+                  +(dolphin.velocity.clone().sub(dolphin.hull.waterVel).length()).toFixed(1),
+                  +(dolphin.velocity.clone().sub(dolphin.hull.waterVel).normalize().dot(dolphin.forward)).toFixed(2),
+                  +dolphin.hydroControl.thrustAccel.toFixed(1),
+                  +(dolphin.hydro.planing || 0).toFixed(2),
+                ]
               : []),
           ]);
         }
@@ -606,7 +665,11 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         heightMax: yMax,
         speedMax: vMax,
         accelMax: aMax,
+        accelMaxAt: aMaxAt,
+        spikes,
         finite,
+        turns,
+        carveRange: turns > 0 ? [onWaveMin, onWaveMax] : null,
         end,
         camera: cameraReport(),
         trace,
