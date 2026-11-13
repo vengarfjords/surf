@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { TUNING } from "./config.js";
+import { TUNING, SUN_DIRECTION } from "./config.js";
+import { FluidParticles, SplashSheets } from "./spray.js";
 import { clamp, glslFog, glslNoise, seabedHeight, smoothstep } from "./utils.js";
 
 const POINT_VERT = /* glsl */ `
@@ -246,6 +247,21 @@ function colorTint(base, variance) {
   return c;
 }
 
+const rand = (a, b) => a + Math.random() * (b - a);
+
+/** Terminal fall speed of a water drop of diameter d (m) in air. */
+function dropTerminal(d) {
+  return clamp(2.5 + 900 * d, 2.5, 9.2);
+}
+
+/** Splash drop diameters: mostly a few millimetres, a few torn-off blobs. */
+function dropSize(scale = 1) {
+  const r = Math.random();
+  if (r < 0.1) return rand(0.014, 0.035) * scale;
+  if (r < 0.4) return rand(0.006, 0.014) * scale;
+  return rand(0.0025, 0.006) * scale;
+}
+
 export class ParticleFX {
   constructor(scene) {
     this.scene = scene;
@@ -253,33 +269,45 @@ export class ParticleFX {
       softness: 0.5,
       opacity: 0.52,
     });
-    this.splash = new CPUParticles(scene, 760, {
-      softness: 0.32,
-      additive: false,
-      opacity: 0.8,
-    });
-    this.bubbles = new CPUParticles(scene, 380, {
-      softness: 0.42,
-      ring: true,
-      additive: true,
-      opacity: 0.7,
-    });
-    this.foam = new CPUParticles(scene, 1000, {
-      softness: 0.55,
-      additive: false,
-      opacity: 0.55,
-    });
-    this.surf = new CPUParticles(scene, 320, {
-      softness: 0.5,
-      additive: false,
-      opacity: 0.55,
-    });
-    this.surfBubbles = new CPUParticles(scene, 360, {
-      softness: 0.42,
-      ring: true,
-      additive: true,
-      opacity: 0.65,
-    });
+    const sunDir = new THREE.Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
+    this.sunDir = sunDir;
+    // Splash droplets, spray mist, bubbles and underwater aeration.
+    this.drops = new FluidParticles(scene, 9000, "drop", { sunDir, renderOrder: 4 });
+    this.mist = new FluidParticles(scene, 700, "mist", { sunDir, renderOrder: 5 });
+    this.bubbles = new FluidParticles(scene, 4000, "bubble", { sunDir, renderOrder: 4 });
+    this.clouds = new FluidParticles(scene, 260, "cloud", { sunDir, renderOrder: 5 });
+    this.sheets = new SplashSheets(scene, sunDir, 10);
+    this.pools = [this.drops, this.mist, this.bubbles, this.clouds];
+    const viewport = new THREE.Vector4();
+    for (const pool of this.pools) {
+      // The scene is drawn into the composer's scaled target; streak widths
+      // are in that target's pixels.
+      pool.mesh.onBeforeRender = (renderer) => {
+        renderer.getCurrentViewport(viewport);
+        pool.uniforms.uResolution.value.set(viewport.z, viewport.w);
+      };
+    }
+    this.env = {
+      resolution: new THREE.Vector2(960, 540),
+      camVel: new THREE.Vector3(),
+      fogColor: new THREE.Color(),
+      fogDensity: 0.03,
+      surfaceY: 0,
+      horizonFog: 1,
+      visible: true,
+    };
+    this._camLast = new THREE.Vector3();
+    this._camInit = false;
+    this._air = { x: 0, y: 0, z: 0 };
+    this._still = { x: 0, y: 0, z: 0 };
+    this._windAccum = 0;
+    this._windSample = {};
+    this._windForward = new THREE.Vector3();
+    this._shedAccum = 0;
+    this._airTime = 0;
+    this._tmpA = new THREE.Vector3();
+    this._tmpB = new THREE.Vector3();
+    this._tmpC = new THREE.Vector3();
     this.tmp = new THREE.Color();
     this.ocean = null;
     this.stats = { spray: 0, foam: 0, bubbles: 0, crowns: 0, tails: 0, surfSpray: 0, surfBubbles: 0, surfAeration: 0 };
@@ -309,298 +337,488 @@ export class ParticleFX {
     };
   }
 
-  _foamParticle(x, y, z, vx, vy, vz, size, life, alpha) {
-    // Foam rides the water it sits on (on a mega face that is 60-70 m/s).
-    const water = this.waterVel(x, y, z, 1);
-    const wx = water ? water.x : 0;
-    const wy = water ? water.y : 0;
-    const wz = water ? water.z : 0;
-    this.foam.spawn({
-      x,
-      y,
-      z,
-      vx: vx + wx,
-      vy: vy + wy,
-      vz: vz + wz,
-      bx: wx,
-      by: wy,
-      bz: wz,
-      life,
-      size,
-      drag: 0.55,
-      gravity: -0.03,
-      wobble: 0.03,
-      alpha,
-      r: 0.86,
-      g: 0.94,
-      b: 0.91,
-    });
+  /** The wind the spray is blown along. */
+  airVelocity(speed = 6) {
+    const dir = TUNING.water.windSeaDirection;
+    this._air.x = Math.cos(dir) * speed;
+    this._air.z = Math.sin(dir) * speed;
+    this._air.y = 0;
+    return this._air;
+  }
+
+  /** Foam and whitewater stamped into the surface itself. */
+  _stampFoam(x, z, radius, foam, fresh) {
+    if (this.ocean && this.ocean.addFoam) this.ocean.addFoam(x, z, radius, foam, fresh);
     this.stats.foam++;
   }
 
-  /**
-   * Breaker mist at the surf line: a small puff carried onshore by the wave
-   * direction and the local surface velocity. Deliberately separate from the
-   * dolphin splash pool so a breach cannot starve the ambient surf.
-   */
-  surfMist(x, y, z, strength, dirX, dirZ) {
-    const water = this.waterVel(x, y, z, 0.25);
-    const n = strength > 0.55 ? 2 : 1;
-    for (let i = 0; i < n; i++) {
-      this.surf.spawn({
-        x: x + (Math.random() - 0.5) * 1.2,
-        y: y + Math.random() * 0.24,
-        z: z + (Math.random() - 0.5) * 1.2,
-        vx:
-          dirX * (0.5 + Math.random() * 1.1) +
-          (water ? water.x : 0) +
-          (Math.random() - 0.5) * 0.5,
-        vy: (1.6 + Math.random() * 2.2) * (0.6 + strength * 0.7) + (water ? water.y : 0),
-        vz:
-          dirZ * (0.5 + Math.random() * 1.1) +
-          (water ? water.z : 0) +
-          (Math.random() - 0.5) * 0.5,
-        life: 1.5 + Math.random() * 1.4,
-        size: 0.5 + Math.random() * 0.8,
-        drag: 0.5,
-        gravity: 1.6,
-        wobble: 0.06,
-        alpha: 0.12 + strength * 0.2,
-        r: 0.88,
-        g: 0.95,
-        b: 0.93,
-      });
-    }
-    this.stats.surfSpray += n;
+  _drop(x, y, z, vx, vy, vz, floorY, floorV, size = dropSize(), alpha = 0.9, life = rand(1.2, 2.4)) {
+    this.drops.spawn({
+      x,
+      y,
+      z,
+      vx,
+      vy,
+      vz,
+      size,
+      life,
+      terminal: dropTerminal(size),
+      gravity: -9.81,
+      alpha,
+      air: this._air,
+      floor: floorY,
+      floorV,
+    });
+    this.stats.spray++;
   }
 
-  /** Subsurface bubble plume under a breaking crest. */
-  surfBubbleBurst(x, surfaceY, z, depth, strength) {
-    const n = strength > 0.55 ? 2 : 1;
-    const c = colorTint(0xb6f1e2, 0.05);
-    for (let i = 0; i < n; i++) {
-      this.surfBubbles.spawn({
-        x: x + (Math.random() - 0.5) * 0.9,
-        y: surfaceY - 0.3 - Math.random() * depth,
-        z: z + (Math.random() - 0.5) * 0.9,
-        vx: (Math.random() - 0.5) * 0.16,
-        vy: 0.18 + Math.random() * 0.35,
-        vz: (Math.random() - 0.5) * 0.16,
-        life: 2.4 + Math.random() * 3.0,
-        size: 0.28 + Math.random() * 0.3,
-        drag: 0.2,
+  _mist(x, y, z, vx, vy, vz, size, alpha, life = rand(1.4, 3.2)) {
+    this.mist.spawn({
+      x,
+      y,
+      z,
+      vx,
+      vy,
+      vz,
+      size,
+      grow: rand(2.2, 3.6),
+      life,
+      drag: 1.6,
+      gravity: -0.35,
+      wobble: 0.35,
+      alpha,
+      air: this._air,
+    });
+  }
+
+  /**
+   * A burst of droplets thrown from where a body cuts or leaves the surface.
+   * (vx, vz) is the body's velocity.
+   */
+  splashBurst(x, y, z, intensity, vx = 0, vz = 0) {
+    const I = clamp(intensity, 0, 2.2);
+    const water = this.waterVel(x, y - 0.2, z, 1);
+    const wx = water ? water.x : 0;
+    const wy = water ? water.y : 0;
+    const wz = water ? water.z : 0;
+    const floorY = water ? water.height : y;
+    this.airVelocity();
+    const relX = vx - wx;
+    const relZ = vz - wz;
+    const count = Math.round(clamp(30 + I * 260, 20, 560));
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const out = rand(0.3, 2.8) * (0.55 + 0.5 * I);
+      const up = rand(1.2, 5.2) * (0.5 + 0.42 * I);
+      const carry = rand(0.25, 0.75);
+      this._drop(
+        x + rand(-0.45, 0.45),
+        y + Math.random() * 0.2,
+        z + rand(-0.45, 0.45),
+        wx + Math.cos(a) * out + relX * carry,
+        wy + up,
+        wz + Math.sin(a) * out + relZ * carry,
+        floorY,
+        wy
+      );
+    }
+    const puffs = Math.round(1 + I * 3);
+    for (let i = 0; i < puffs; i++) {
+      this._mist(
+        x + rand(-0.5, 0.5),
+        y + rand(0.2, 0.6),
+        z + rand(-0.5, 0.5),
+        wx + relX * 0.3 + rand(-0.6, 0.6),
+        rand(0.6, 1.8) * (0.5 + 0.5 * I),
+        wz + relZ * 0.3 + rand(-0.6, 0.6),
+        rand(0.35, 0.8) * (0.7 + 0.4 * I),
+        rand(0.08, 0.16) * Math.min(1, 0.4 + I)
+      );
+    }
+    this._stampFoam(x, z, 0.55 + 0.45 * I, 0.25 * I, 0.65 * I);
+    // Sand only clouds up where the splash is close to the bottom; a splash
+    // at the surface over open water should not trail a beige haze.
+    const sandReach = 1 - smoothstep(1.2, 3.0, y - seabedHeight(x, z));
+    const sandCount = Math.floor(clamp(14 + I * 38, 8, 110) * 0.4 * sandReach);
+    for (let i = 0; i < sandCount; i++) {
+      const c = colorTint(0xc6b68f, 0.08);
+      this.sediment.spawn({
+        x: x + (Math.random() - 0.5) * 2.2,
+        y: y - 0.2 + Math.random() * 0.7,
+        z: z + (Math.random() - 0.5) * 2.2,
+        vx: (Math.random() - 0.5) * 1.6,
+        vy: 0.2 + Math.random() * 1.1,
+        vz: (Math.random() - 0.5) * 1.6,
+        life: 2 + Math.random() * 3,
+        size: 0.15 + Math.random() * 0.6,
+        drag: 1.0,
         gravity: -0.02,
-        wobble: 0.12,
-        alpha: 0.8 + strength * 0.2,
+        wobble: 0.06,
+        alpha: 0.2,
         r: c.r,
         g: c.g,
         b: c.b,
       });
     }
+  }
+
+  /** Entry splash: a crown sheet that sheds droplets from its rim. */
+  splashCrown(x, y, z, intensity, vx = 0, vz = 0) {
+    const I = clamp(intensity, 0, 2);
+    const water = this.waterVel(x, y, z, 1);
+    const drift = new THREE.Vector3(water ? water.x : 0, water ? water.y : 0, water ? water.z : 0);
+    const relX = vx - drift.x;
+    const relZ = vz - drift.z;
+    // A fast, shallow entry throws its splash forward along its path; a
+    // steep, slow one throws a round crown.
+    const relSpeed = Math.hypot(relX, relZ);
+    const s = this.sheets.spawn({
+      x,
+      y,
+      z,
+      energy: 0.25 + I * 0.55,
+      dirX: relX || 1,
+      dirZ: relZ,
+      kind: 0,
+      aspect: 1.15 + Math.min(1.3, relSpeed * 0.11),
+      bias: clamp(relSpeed * 0.05, 0.1, 0.55),
+      drift,
+    });
+    s.shed = 0;
+    s.floorY = water ? water.height : y;
+    this.airVelocity();
+    const puffs = Math.round(4 + I * 7);
+    for (let i = 0; i < puffs; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = rand(0.6, 1.6) * (0.6 + 0.4 * I);
+      this._mist(
+        x + Math.cos(a) * r,
+        y + rand(0.3, 1.2) * (0.6 + 0.4 * I),
+        z + Math.sin(a) * r,
+        drift.x + Math.cos(a) * rand(0.5, 1.6),
+        rand(0.6, 2.2),
+        drift.z + Math.sin(a) * rand(0.5, 1.6),
+        rand(0.5, 1.1) * (0.7 + 0.35 * I),
+        rand(0.07, 0.15)
+      );
+    }
+    this._stampFoam(x, z, 1.0 + 0.7 * I, 0.6, 1.0);
+    this.stats.crowns++;
+  }
+
+  /** The fluke slapping down onto the surface. */
+  tailSlap(x, y, z, power, dirX, dirZ) {
+    // A fluke cutting down through the surface throws a low fan of spray
+    // off its trailing edge, not a crown.
+    const P = clamp(power, 0, 1.4);
+    const water = this.waterVel(x, y, z, 1);
+    const wx = water ? water.x : 0;
+    const wy = water ? water.y : 0;
+    const wz = water ? water.z : 0;
+    const floorY = water ? water.height : y;
+    this.airVelocity();
+    const count = Math.round(30 + P * 110);
+    for (let i = 0; i < count; i++) {
+      const side = rand(-1, 1);
+      this._drop(
+        x - dirZ * side * 0.35 + rand(-0.15, 0.15),
+        y + 0.04,
+        z + dirX * side * 0.35 + rand(-0.15, 0.15),
+        wx - dirZ * side * rand(0.4, 1.6) * P - dirX * rand(0.2, 1.2),
+        wy + rand(0.8, 2.6) * P,
+        wz + dirX * side * rand(0.4, 1.6) * P - dirZ * rand(0.2, 1.2),
+        floorY,
+        wy
+      );
+    }
+    this._mist(x, y + 0.25, z, wx, rand(0.4, 0.9), wz, rand(0.35, 0.6), 0.07);
+    this._stampFoam(x, z, 0.6 + 0.35 * P, 0.25 * P, 0.5 * P);
+    this.stats.tails++;
+  }
+
+  /**
+   * A body leaving the water: a skirt of water falls off along its length,
+   * and the water it drags up streams off it.
+   */
+  spraySheet(points, intensity, vx, vy, vz) {
+    const I = clamp(intensity, 0, 1.4);
+    const mid = points[1] || points[0];
+    const head = points[0];
+    const tail = points[points.length - 1];
+    const water = this.waterVel(mid.x, mid.y, mid.z, 1);
+    const drift = new THREE.Vector3(water ? water.x : 0, water ? water.y : 0, water ? water.z : 0);
+    const floorY = water ? water.height : mid.y;
+    const s = this.sheets.spawn({
+      x: mid.x,
+      y: floorY,
+      z: mid.z,
+      energy: 0.3 + I * 0.7,
+      dirX: head.x - tail.x || 1,
+      dirZ: head.z - tail.z,
+      kind: 1,
+      aspect: 2.3,
+      bias: 0.2,
+      drift,
+    });
+    s.shed = 0;
+    s.floorY = floorY;
+    this.airVelocity();
+    const count = Math.round(80 + I * 320);
+    for (let i = 0; i < count; i++) {
+      const t = Math.random();
+      const p = t < 0.5 ? this._tmpA.lerpVectors(head, mid, t * 2) : this._tmpA.lerpVectors(mid, tail, t * 2 - 1);
+      // Water clings to the body and leaves it a little slower.
+      const keep = rand(0.55, 0.95);
+      this._drop(
+        p.x + rand(-0.25, 0.25),
+        Math.max(floorY, p.y - rand(0.0, 0.25)),
+        p.z + rand(-0.25, 0.25),
+        drift.x + (vx - drift.x) * keep + rand(-1, 1),
+        drift.y + (vy - drift.y) * keep * rand(0.6, 1.0) + rand(-0.5, 0.8),
+        drift.z + (vz - drift.z) * keep + rand(-1, 1),
+        floorY,
+        drift.y,
+        dropSize(1.2)
+      );
+    }
+    for (let i = 0; i < 4; i++) {
+      const p = this._tmpA.lerpVectors(head, tail, Math.random());
+      this._mist(p.x, floorY + rand(0.2, 0.6), p.z, drift.x + vx * 0.2, rand(0.6, 1.6), drift.z + vz * 0.2, rand(0.5, 1.0), 0.1);
+    }
+    this._stampFoam(mid.x, mid.z, 1.2 + 0.6 * I, 0.5, 0.9);
+  }
+
+  /**
+   * The bow wave of a body running just under the surface: whitewater
+   * pushed aside by the head, and at speed a fan of spray off it.
+   */
+  bowWave(x, z, surfaceY, strength, rightX, rightZ, dirX, dirZ) {
+    if (strength <= 0.02) return;
+    const S = clamp(strength, 0, 1.6);
+    this._stampFoam(x + rightX * 0.4, z + rightZ * 0.4, 0.42, 0.1 * S, 0.22 * S);
+    this._stampFoam(x - rightX * 0.4, z - rightZ * 0.4, 0.42, 0.1 * S, 0.22 * S);
+    if (S < 0.55) return;
+    const water = this.waterVel(x, surfaceY, z, 1);
+    const wx = water ? water.x : 0;
+    const wy = water ? water.y : 0;
+    const wz = water ? water.z : 0;
+    this.airVelocity();
+    const n = Math.round((S - 0.5) * 14);
+    for (let i = 0; i < n; i++) {
+      const side = Math.random() < 0.5 ? 1 : -1;
+      const out = rand(0.8, 2.6) * S;
+      this._drop(
+        x + rightX * side * rand(0.25, 0.5),
+        surfaceY + 0.05,
+        z + rightZ * side * rand(0.25, 0.5),
+        wx + rightX * side * out + dirX * rand(0.2, 1.2),
+        wy + rand(0.8, 2.6) * S,
+        wz + rightZ * side * out + dirZ * rand(0.2, 1.2),
+        surfaceY,
+        wy
+      );
+    }
+  }
+
+  /** Whitewater and foam left in the wake behind the flukes. */
+  wakeTrail(x, z, surfaceY, strength, dirX, dirZ, width = 1.0) {
+    if (strength <= 0.01) return;
+    const S = clamp(strength, 0, 1.6);
+    this._stampFoam(x - dirX * 0.3, z - dirZ * 0.3, 0.3 + 0.35 * width, 0.14 * S, 0.12 * S);
+  }
+
+  /** The boil the fluke stroke pushes up behind the animal. */
+  tailBoil(x, z, surfaceY, strength, dirX, dirZ, stroke) {
+    if (strength <= 0.02) return;
+    const S = clamp(strength, 0, 1.6);
+    const side = Math.sin(stroke) > 0 ? 1 : 0.75;
+    this._stampFoam(x, z, 0.55 + 0.25 * S, 0.08 * S * side, 0.16 * S * side);
+  }
+
+  /**
+   * Breaker mist at the surf line: fine spray carried onshore by the wave
+   * and the local surface velocity.
+   */
+  surfMist(x, y, z, strength, dirX, dirZ) {
+    const water = this.waterVel(x, y, z, 1);
+    const wx = water ? water.x : 0;
+    const wy = water ? water.y : 0;
+    const wz = water ? water.z : 0;
+    this.airVelocity();
+    this._mist(
+      x + rand(-0.6, 0.6),
+      y + rand(0.2, 0.6),
+      z + rand(-0.6, 0.6),
+      wx * 0.5 + dirX * rand(0.5, 1.6),
+      rand(0.8, 2.0) * (0.6 + 0.6 * strength),
+      wz * 0.5 + dirZ * rand(0.5, 1.6),
+      rand(0.6, 1.4),
+      0.06 + strength * 0.1
+    );
+    const n = Math.round(4 + strength * 10);
+    for (let i = 0; i < n; i++) {
+      this._drop(
+        x + rand(-0.8, 0.8),
+        y + Math.random() * 0.2,
+        z + rand(-0.8, 0.8),
+        wx + dirX * rand(0.5, 2.0) + rand(-0.6, 0.6),
+        wy + rand(1.5, 4.0) * (0.6 + 0.6 * strength),
+        wz + dirZ * rand(0.5, 2.0) + rand(-0.6, 0.6),
+        y,
+        wy
+      );
+    }
+    this.stats.surfSpray += 1 + n;
+  }
+
+  /**
+   * Spray torn off crests by the wind, in a cone in front of the camera:
+   * a short downwind puff of mist and a scatter of drops.
+   */
+  updateWindSpray(dt, camera, underwater) {
+    const strength = TUNING.visuals.whitecaps;
+    if (!this.ocean || underwater > 0.5 || strength <= 0) {
+      this._windAccum = 0;
+      return;
+    }
+    const water = this.ocean.water;
+    const wdir = TUNING.water.windSeaDirection;
+    const wx = Math.cos(wdir);
+    const wz = Math.sin(wdir);
+    camera.getWorldDirection(this._windForward);
+    const f = this._windForward;
+    const fl = Math.hypot(f.x, f.z) || 1;
+    const fx = f.x / fl;
+    const fz = f.z / fl;
+    this._windAccum = Math.min(this._windAccum + dt, 0.1);
+    const period = 1 / (26 * strength);
+    let tries = 0;
+    this.airVelocity(7);
+    while (this._windAccum >= period && tries < 8) {
+      this._windAccum -= period;
+      tries++;
+      const dist = 8 + Math.pow(Math.random(), 0.7) * 150;
+      const lateral = (Math.random() - 0.5) * dist * 1.3;
+      const x = camera.position.x + fx * dist - fz * lateral;
+      const z = camera.position.z + fz * dist + fx * lateral;
+      const s = water.sampleSurface(x, z, this._windSample);
+      const crest = s.crest || 0;
+      const brk = s.breakMask || 0;
+      const score = Math.max(crest * 0.9 + (Math.random() - 0.5) * 0.5, brk * 1.4);
+      if (score < 0.55) continue;
+      const vel = this.waterVel(x, s.height, z, 1);
+      const bx = vel ? vel.x : 0;
+      const bz = vel ? vel.z : 0;
+      const by = vel ? vel.y : 0;
+      const gust = rand(3, 8);
+      this._mist(
+        x + rand(-0.8, 0.8),
+        s.height + rand(0.15, 0.45),
+        z + rand(-0.8, 0.8),
+        bx + wx * gust,
+        rand(0.6, 1.8),
+        bz + wz * gust,
+        rand(0.5, 1.1) * (1 + dist * 0.004),
+        rand(0.07, 0.15),
+        rand(0.9, 2.0)
+      );
+      // Beyond ~60 m single drops are far below a pixel and invisible; only
+      // the mist they are torn off with reads, so the pool is kept for the
+      // spray close to the camera.
+      const near = Math.max(0, Math.min(1, (70 - dist) / 25));
+      const n = Math.round((4 + Math.floor(Math.random() * 6 + brk * 8)) * near);
+      for (let i = 0; i < n; i++) {
+        this._drop(
+          x + rand(-0.8, 0.8),
+          s.height + 0.1 + Math.random() * 0.25,
+          z + rand(-0.8, 0.8),
+          bx + wx * rand(2, 7) + rand(-0.5, 0.5),
+          by + rand(1.0, 3.2),
+          bz + wz * rand(2, 7) + rand(-0.5, 0.5),
+          s.height,
+          by
+        );
+      }
+    }
+  }
+
+  /** Subsurface bubble plume under a breaking crest. */
+  surfBubbleBurst(x, surfaceY, z, depth, strength) {
+    const n = Math.round(6 + strength * 10);
+    for (let i = 0; i < n; i++) this._bubble(x + rand(-0.6, 0.6), surfaceY - 0.3 - Math.random() * depth, z + rand(-0.6, 0.6), rand(0.15, 0.45), surfaceY);
     this.stats.surfBubbles += n;
-    // A soft aeration puff makes the plume read as turbid water rather than
-    // a handful of isolated rings.
-    this.surf.spawn({
-      x: x + (Math.random() - 0.5) * 2.4,
-      y: surfaceY - 0.6 - Math.random() * 1.6,
-      z: z + (Math.random() - 0.5) * 2.4,
-      vx: (Math.random() - 0.5) * 0.18,
-      vy: 0.08 + Math.random() * 0.16,
-      vz: (Math.random() - 0.5) * 0.18,
-      life: 2.4 + Math.random() * 1.8,
-      size: 1.2 + Math.random() * 1.6,
-      drag: 0.5,
-      gravity: -0.01,
+    // Entrained air under the breaker reads as a pale, turbid cloud rather
+    // than as separate bubbles.
+    this.clouds.spawn({
+      x: x + rand(-1.2, 1.2),
+      y: surfaceY - rand(0.5, 2.0),
+      z: z + rand(-1.2, 1.2),
+      vx: rand(-0.15, 0.15),
+      vy: rand(0.05, 0.2),
+      vz: rand(-0.15, 0.15),
+      size: rand(1.2, 2.6),
+      grow: rand(1.4, 2.0),
+      life: rand(2.4, 4.2),
+      drag: 0.6,
       wobble: 0.04,
-      alpha: 0.07 + strength * 0.08,
-      r: 0.62,
-      g: 0.88,
-      b: 0.92,
+      alpha: 0.08 + strength * 0.08,
     });
     this.stats.surfAeration++;
   }
 
-  wakeTrail(x, z, surfaceY, strength, dirX, dirZ, width = 1.0) {
-    if (strength <= 0.01) return;
-    const count = clamp(Math.round(1 + strength * 1.4), 1, 2);
-    for (let i = 0; i < count; i++) {
-      const side = (Math.random() - 0.5) * width;
-      const px = x + Math.cos(Math.atan2(dirZ, dirX) + Math.PI * 0.5) * side;
-      const pz = z + Math.sin(Math.atan2(dirZ, dirX) + Math.PI * 0.5) * side;
-      this._foamParticle(
-        px,
-        surfaceY + 0.03 + Math.random() * 0.08,
-        pz,
-        -dirX * 0.35 + side * 0.4,
-        0.06 + Math.random() * 0.18,
-        -dirZ * 0.35 + side * 0.4,
-        0.18 + Math.random() * 0.5,
-        1.8 + Math.random() * 2.2,
-        0.12 + strength * 0.18
-      );
-    }
+  _bubble(x, y, z, rise, surfaceY = 1e9, size = rand(0.0025, 0.009)) {
+    this.bubbles.spawn({
+      ceil: surfaceY - 0.03,
+      x,
+      y,
+      z,
+      vx: rand(-0.12, 0.12),
+      vy: rise,
+      vz: rand(-0.12, 0.12),
+      size,
+      life: rand(2.0, 5.5),
+      // Bubbles rise at their terminal speed and zig-zag.
+      air: { x: 0, y: 0.18 + size * 40, z: 0 },
+      drag: 1.2,
+      wobble: 0.5,
+      alpha: rand(0.55, 0.9),
+      stretch: 0.6,
+    });
   }
 
-  bowWave(x, z, surfaceY, strength, rightX, rightZ, dirX, dirZ) {
-    if (strength <= 0.02) return;
-    const count = clamp(Math.round(1 + strength * 3), 1, 4);
-    for (let i = 0; i < count; i++) {
-      const side = i % 2 === 0 ? 1 : -1;
-      const px = x + rightX * side * (0.35 + Math.random() * 0.45);
-      const pz = z + rightZ * side * (0.35 + Math.random() * 0.45);
-      this._foamParticle(
-        px,
-        surfaceY + 0.04,
-        pz,
-        rightX * side * (0.4 + strength * 0.7) + dirX * 0.3,
-        0.2 + strength * 0.35,
-        rightZ * side * (0.4 + strength * 0.7) + dirZ * 0.3,
-        0.16 + Math.random() * 0.38,
-        1.2 + Math.random() * 1.5,
-        0.16 + strength * 0.22
-      );
-    }
-  }
-
-  tailBoil(x, z, surfaceY, strength, dirX, dirZ, stroke) {
-    if (strength <= 0.02) return;
-    const count = clamp(Math.round(1 + strength * 2.5), 1, 4);
-    const side = Math.sin(stroke) > 0 ? 1 : -1;
-    for (let i = 0; i < count; i++) {
-      this._foamParticle(
-        x + (Math.random() - 0.5) * 0.8,
-        surfaceY + 0.02,
-        z + (Math.random() - 0.5) * 0.8,
-        -dirX * 0.5 + (Math.random() - 0.5) * 0.9,
-        0.25 + Math.random() * 0.55,
-        -dirZ * 0.5 + (Math.random() - 0.5) * 0.9,
-        0.2 + Math.random() * 0.55,
-        1.6 + Math.random() * 2.4,
-        (0.1 + strength * 0.2) * (side > 0 ? 1 : 0.75)
-      );
-    }
-  }
-
-  spraySheet(points, intensity, vx, vy, vz) {
-    const n = clamp(Math.round(10 + intensity * 30), 8, 70);
+  bubbleBurst(x, y, z, count = 6, spread = 0.4, rise = 0.7) {
+    this.stats.bubbles += count;
+    const n = Math.round(count * 6);
+    const surfaceY = this.ocean ? this.ocean.getWaterHeight(x, z) : 1e9;
     for (let i = 0; i < n; i++) {
-      const p = points[i % points.length];
-      const a = Math.random() * Math.PI * 2;
-      const out = 0.8 + Math.random() * 2.6 * intensity;
-      const water = this.waterVel(p.x, p.y, p.z, 0.4);
-      this.splash.spawn({
-        x: p.x + (Math.random() - 0.5) * 0.7,
-        y: p.y + (Math.random() - 0.5) * 0.7,
-        z: p.z + (Math.random() - 0.5) * 0.7,
-        vx: Math.cos(a) * out + vx * 0.35 + (water ? water.x : 0),
-        vy: (1.2 + Math.random() * 3.8) * intensity + vy * 0.22 + (water ? water.y : 0),
-        vz: Math.sin(a) * out + vz * 0.35 + (water ? water.z : 0),
-        life: 0.55 + Math.random() * 1.2,
-        size: 0.05 + Math.random() * 0.25,
-        drag: 0.35,
-        gravity: 7.5,
-        alpha: 0.55 + Math.random() * 0.45,
-        r: 0.82,
-        g: 0.94,
-        b: 0.9,
-      });
-      this.stats.spray++;
-    }
-    for (let i = 0; i < n * 0.32; i++) {
-      const p = points[i % points.length];
-      this._foamParticle(
-        p.x + (Math.random() - 0.5) * 1.2,
-        p.y + (Math.random() - 0.5) * 0.6,
-        p.z + (Math.random() - 0.5) * 1.2,
-        (Math.random() - 0.5) * 1.4,
-        (0.2 + Math.random() * 1.0) * intensity,
-        (Math.random() - 0.5) * 1.4,
-        0.2 + Math.random() * 0.55,
-        1.8 + Math.random() * 2.8,
-        0.12 + intensity * 0.16
+      this._bubble(
+        x + (Math.random() - 0.5) * spread,
+        y + (Math.random() - 0.5) * spread,
+        z + (Math.random() - 0.5) * spread,
+        rise * rand(0.4, 1.4),
+        surfaceY
       );
     }
-  }
-
-  splashCrown(x, y, z, intensity, dirX, dirZ) {
-    const n = clamp(Math.round(14 + intensity * 38), 12, 80);
-    const water = this.waterVel(x, y, z, 0.5);
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2 + Math.random() * 0.12;
-      const out = (1.0 + Math.random() * 2.8) * intensity;
-      this.splash.spawn({
-        x: x + Math.cos(a) * 0.45,
-        y: y + 0.08 + Math.random() * 0.2,
-        z: z + Math.sin(a) * 0.45,
-        vx: Math.cos(a) * out + dirX * 0.35 + (water ? water.x : 0),
-        vy: (1.6 + Math.random() * 4.0) * intensity + (water ? water.y : 0),
-        vz: Math.sin(a) * out + dirZ * 0.35 + (water ? water.z : 0),
-        life: 0.65 + Math.random() * 1.4,
-        size: 0.06 + Math.random() * 0.3,
-        drag: 0.3,
-        gravity: 7.5,
-        alpha: 0.55 + Math.random() * 0.45,
-        r: 0.82,
-        g: 0.94,
-        b: 0.9,
-      });
-      this.stats.spray++;
+    // A big entry drags down a cloud of air with it.
+    if (count >= 10) {
+      const puffs = Math.round(count / 5);
+      for (let i = 0; i < puffs; i++) {
+        this.clouds.spawn({
+          x: x + (Math.random() - 0.5) * spread * 1.5,
+          y: y + (Math.random() - 0.5) * spread,
+          z: z + (Math.random() - 0.5) * spread * 1.5,
+          vx: rand(-0.2, 0.2),
+          vy: rand(0.1, 0.4),
+          vz: rand(-0.2, 0.2),
+          size: rand(0.35, 0.8),
+          grow: rand(1.8, 2.8),
+          life: rand(1.4, 2.8),
+          drag: 1.0,
+          wobble: 0.08,
+          alpha: rand(0.07, 0.14),
+        });
+      }
     }
-    // Crown foam ring, slightly larger and longer-lived.
-    for (let i = 0; i < n * 0.38; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = 0.5 + Math.random() * 1.6 * intensity;
-      this._foamParticle(
-        x + Math.cos(a) * r,
-        y + 0.03,
-        z + Math.sin(a) * r,
-        Math.cos(a) * (0.2 + Math.random() * 0.6),
-        0.12 + Math.random() * 0.4,
-        Math.sin(a) * (0.2 + Math.random() * 0.6),
-        0.22 + Math.random() * 0.6,
-        2.4 + Math.random() * 3.5,
-        0.16 + intensity * 0.12
-      );
-    }
-    this.stats.crowns++;
-  }
-
-  tailSlap(x, y, z, power, dirX, dirZ) {
-    const n = clamp(Math.round(12 + power * 35), 8, 70);
-    for (let i = 0; i < n; i++) {
-      const a = Math.random() * Math.PI * 2;
-      this.splash.spawn({
-        x: x + (Math.random() - 0.5) * 1.4,
-        y: y + 0.05,
-        z: z + (Math.random() - 0.5) * 1.4,
-        vx: Math.cos(a) * (0.8 + Math.random() * 2.2) * power + dirX * 0.25,
-        vy: (1.2 + Math.random() * 3.4) * power,
-        vz: Math.sin(a) * (0.8 + Math.random() * 2.2) * power + dirZ * 0.25,
-        life: 0.5 + Math.random() * 1.1,
-        size: 0.05 + Math.random() * 0.26,
-        drag: 0.4,
-        gravity: 7.5,
-        alpha: 0.5 + Math.random() * 0.45,
-        r: 0.82,
-        g: 0.94,
-        b: 0.9,
-      });
-      this.stats.spray++;
-    }
-    for (let i = 0; i < n * 0.6; i++) {
-      this._foamParticle(
-        x + (Math.random() - 0.5) * 2.2,
-        y + 0.02,
-        z + (Math.random() - 0.5) * 2.2,
-        (Math.random() - 0.5) * 1.4,
-        0.1 + Math.random() * 0.4,
-        (Math.random() - 0.5) * 1.4,
-        0.25 + Math.random() * 0.7,
-        2.5 + Math.random() * 3.0,
-        0.14 + power * 0.12
-      );
-    }
-    this.stats.tails++;
   }
 
   sandPlume(x, z, amount, radius, surfaceY) {
@@ -677,83 +895,64 @@ export class ParticleFX {
     }
   }
 
-  bubbleBurst(x, y, z, count = 6, spread = 0.4, rise = 0.7) {
-    this.stats.bubbles += count;
-    for (let i = 0; i < count; i++) {
-      const c = colorTint(0xb6f1e2, 0.05);
-      this.bubbles.spawn({
-        x: x + (Math.random() - 0.5) * spread,
-        y: y + (Math.random() - 0.5) * spread,
-        z: z + (Math.random() - 0.5) * spread,
-        vx: (Math.random() - 0.5) * 0.18,
-        vy: rise * (0.5 + Math.random()),
-        vz: (Math.random() - 0.5) * 0.18,
-        life: 1.8 + Math.random() * 4.5,
-        size: 0.035 + Math.random() * 0.12,
-        drag: 0.25,
-        gravity: -0.02,
-        wobble: 0.16,
-        alpha: 0.7,
-        r: c.r,
-        g: c.g,
-        b: c.b,
-      });
+  /**
+   * Water streaming off the animal while it is in the air: drips from the
+   * flukes, flippers and belly, heaviest just after it leaves the water.
+   * Reads the dolphin's state only.
+   */
+  updateBodyShed(dt, dolphin) {
+    if (!this.ocean || !dolphin) return;
+    const p = dolphin.position;
+    const surf = this.ocean.getWaterHeight(p.x, p.z);
+    if (p.y > surf + 0.25) this._airTime += dt;
+    else {
+      this._airTime = 0;
+      this._shedAccum = 0;
+      return;
     }
-  }
-
-  splashBurst(x, y, z, intensity, directionX = 0, directionZ = 0) {
-    const count = clamp(Math.floor(14 + intensity * 38), 8, 110);
-    // Droplets leave with the water they came from, plus half the body's
-    // speed through that water (directionX/Z is the body's velocity).
-    const water = this.waterVel(x, y - 0.2, z, 1);
-    const wx = water ? water.x : 0;
-    const wy = water ? water.y : 0;
-    const wz = water ? water.z : 0;
-    for (let i = 0; i < count; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const outward = (0.4 + Math.random() * 2.6) * (0.6 + intensity * 0.4);
-      this.splash.spawn({
-        x: x + (Math.random() - 0.5) * 0.8,
-        y: y + Math.random() * 0.35,
-        z: z + (Math.random() - 0.5) * 0.8,
-        vx: wx + Math.cos(a) * outward + (directionX - wx) * 0.5,
-        vy: wy + (1.2 + Math.random() * 3.8) * (0.6 + intensity * 0.32),
-        vz: wz + Math.sin(a) * outward + (directionZ - wz) * 0.5,
-        bx: wx,
-        by: wy,
-        bz: wz,
-        life: 0.6 + Math.random() * 1.25,
-        size: 0.06 + Math.random() * 0.3,
-        drag: 0.6,
-        gravity: 7.5,
-        alpha: 0.5 + Math.random() * 0.5,
-        r: 0.72,
-        g: 0.92,
-        b: 0.88,
-      });
-    }
-    // Sand only clouds up where the splash is close to the bottom; a splash
-    // at the surface over open water should not trail a beige haze.
-    const sandReach = 1 - smoothstep(1.2, 3.0, y - seabedHeight(x, z));
-    for (let i = 0; i < count * 0.4 * sandReach; i++) {
-      const c = colorTint(0xc6b68f, 0.08);
-      this.sediment.spawn({
-        x: x + (Math.random() - 0.5) * 2.2,
-        y: y - 0.2 + Math.random() * 0.7,
-        z: z + (Math.random() - 0.5) * 2.2,
-        vx: (Math.random() - 0.5) * 1.6,
-        vy: 0.2 + Math.random() * 1.1,
-        vz: (Math.random() - 0.5) * 1.6,
-        life: 2 + Math.random() * 3,
-        size: 0.15 + Math.random() * 0.6,
-        drag: 1.0,
-        gravity: -0.02,
-        wobble: 0.06,
-        alpha: 0.2,
-        r: c.r,
-        g: c.g,
-        b: c.b,
-      });
+    const rate = 420 * Math.exp(-this._airTime / 0.55) + 50 * Math.exp(-this._airTime / 2.5);
+    this._shedAccum += rate * dt;
+    if (this._shedAccum < 1) return;
+    const parts = dolphin.bodyParts;
+    const q = dolphin.orientation;
+    const v = dolphin.velocity;
+    const head = this._tmpA.copy(parts[0].offset).applyQuaternion(q).add(p);
+    const tail = this._tmpB.copy(parts[2].offset).applyQuaternion(q).add(p);
+    const joints = dolphin.spine && dolphin.spine.joints;
+    const fluke = joints && joints.length ? joints[joints.length - 1] : tail;
+    this.airVelocity();
+    let n = Math.min(60, Math.floor(this._shedAccum));
+    this._shedAccum -= n;
+    const pt = this._tmpC;
+    while (n-- > 0) {
+      const r = Math.random();
+      if (r < 0.3) {
+        pt.copy(fluke);
+        pt.x += rand(-0.3, 0.3);
+        pt.z += rand(-0.3, 0.3);
+      } else if (r < 0.45) {
+        const fin = parts[Math.random() < 0.5 ? 3 : 4];
+        pt.copy(fin.offset).applyQuaternion(q).add(p);
+      } else {
+        pt.lerpVectors(head, tail, Math.random());
+        pt.y -= rand(0.1, 0.25);
+        pt.x += rand(-0.15, 0.15);
+        pt.z += rand(-0.15, 0.15);
+      }
+      const keep = rand(0.9, 0.99);
+      this._drop(
+        pt.x,
+        pt.y,
+        pt.z,
+        v.x * keep + rand(-0.3, 0.3),
+        v.y * keep - rand(0.1, 0.6),
+        v.z * keep + rand(-0.3, 0.3),
+        surf,
+        0,
+        rand(0.002, 0.007),
+        0.85,
+        rand(0.8, 1.6)
+      );
     }
   }
 
@@ -761,11 +960,75 @@ export class ParticleFX {
     this.scene.userData.renderHeight =
       window.innerHeight * Math.min(window.devicePixelRatio || 1, 1.5);
     this.sediment.update(dt, camera, fogColor, fogDensity, current);
-    this.splash.update(dt, camera, fogColor, fogDensity, current);
-    this.bubbles.update(dt, camera, fogColor, fogDensity, current);
-    this.foam.update(dt, camera, fogColor, fogDensity, current);
-    this.surf.update(dt, camera, fogColor, fogDensity, current);
-    this.surfBubbles.update(dt, camera, fogColor, fogDensity, current);
+
+    const env = this.env;
+    if (!this._camInit) {
+      this._camLast.copy(camera.position);
+      this._camInit = true;
+    }
+    const cv = this._tmpA.copy(camera.position).sub(this._camLast).divideScalar(Math.max(dt, 1e-4));
+    this._camLast.copy(camera.position);
+    if (cv.length() > 160) cv.set(0, 0, 0);
+    env.camVel.lerp(cv, 1 - Math.exp(-dt * 20));
+    env.fogColor.copy(fogColor);
+    env.fogDensity = fogDensity;
+    env.horizonFog = TUNING.visuals.horizonFog;
+    const camSurf = this.ocean ? this.ocean.getWaterHeight(camera.position.x, camera.position.z) : 0;
+    env.surfaceY = camSurf;
+    const camUnder = camera.position.y < camSurf;
+
+    // Crown and skirt rims shed droplets while they rise.
+    this.airVelocity();
+    for (const s of this.sheets.sheets) {
+      if (!s.active || s.shed === undefined) continue;
+      const t = s.age;
+      const apex = (s.rimSpeed * (1 + s.bias)) / 9.81;
+      if (t > apex * 1.1) continue;
+      s.shed += dt * (s.kind === 1 ? 500 : 900) * s.energy * (1 - t / (apex * 1.1));
+      let n = Math.min(160, Math.floor(s.shed));
+      s.shed -= n;
+      const R0 = 0.3 + 0.22 * s.energy;
+      const ex = Math.exp(-t * 2.8);
+      const lean = s.kind === 1 ? 0.25 : 0.5;
+      while (n-- > 0) {
+        const a = Math.random() * Math.PI * 2;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        const along = ca * s.dx + sa * s.dz;
+        const bias = 1 + s.bias * along;
+        const Vr = s.rimSpeed * bias * rand(0.72, 1.28);
+        const H = Math.max(0.05, Vr * t - 4.905 * t * t);
+        const dH = Vr - 9.81 * t;
+        const R = R0 + s.spread * bias * (1 - ex);
+        const dR = s.spread * bias * 2.8 * ex;
+        const rr = R + lean * H;
+        // Elliptical crown: stretch along the axis.
+        const across = sa * s.dx - ca * s.dz;
+        const ox = (s.dx * along * s.aspect - s.dz * across) * rr;
+        const oz = (s.dz * along * s.aspect + s.dx * across) * rr;
+        const len = Math.hypot(ox, oz) || 1;
+        const outV = dR + lean * Math.max(0, dH);
+        this._drop(
+          s.x + s.drift.x * t + ox,
+          s.y + s.drift.y * t + H * rand(0.85, 1.05),
+          s.z + s.drift.z * t + oz,
+          s.drift.x + (ox / len) * outV * rand(0.8, 1.5) + rand(-0.3, 0.3),
+          s.drift.y + Math.max(0, dH) * rand(0.6, 1.15) + rand(0, 0.8),
+          s.drift.z + (oz / len) * outV * rand(0.8, 1.5) + rand(-0.3, 0.3),
+          s.floorY,
+          s.drift.y,
+          dropSize(1.1)
+        );
+      }
+    }
+    this.sheets.update(dt, !camUnder);
+
+    env.visible = !camUnder;
+    this.drops.update(dt, env);
+    this.mist.update(dt, env);
+    env.visible = true;
+    this.bubbles.update(dt, env);
+    this.clouds.update(dt, env);
   }
 }
 

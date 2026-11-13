@@ -451,6 +451,14 @@ button {
   transform: translate(-50%, 0);
 }
 
+/* The film grain, vignette and lens edge now live in the post chain, at a
+   photographic strength; these camcorder overlays are kept off. */
+.grain-overlay,
+.vignette-overlay,
+.lens-edge {
+  display: none;
+}
+
 .grain-overlay,
 .vignette-overlay {
   position: absolute;
