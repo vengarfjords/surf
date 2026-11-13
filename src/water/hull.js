@@ -266,7 +266,11 @@ export class Hull {
       const centerDepth = this.centerSample.height - pos.y;
       const surfaceBand = 1 - smoothstep(1.2, 2.5, centerDepth);
       const vRel = Math.hypot(vel.x - this.waterVel.x, vel.y - this.waterVel.y, vel.z - this.waterVel.z);
-      planing = surfaceBand * smoothstep(cfg.planeSpeed, cfg.planeSpeed + cfg.planeSpeedRange, vRel);
+      // Gliding on a wave with Space held, the body is held flat on the
+      // surface like a board, so it starts to plane at a lower speed.
+      const glide = (dolphin.surfGlide || 0) * (dolphin.surfLock || 0);
+      const p0 = cfg.planeSpeed + (cfg.planeSpeedGlide - cfg.planeSpeed) * glide;
+      planing = surfaceBand * smoothstep(p0, p0 + cfg.planeSpeedRange, vRel);
     }
     const planeKeep = 1 - cfg.planeDragCut * planing;
     this.result.planing = planing;
@@ -460,11 +464,16 @@ export class Hull {
 
     // Anisotropic effective mass. Added mass is large sideways and vertically
     // (the animal pushes a lot of water when it slips), small along the body.
+    // It is water the body has to move, so it fades out as the body leaves
+    // the water: in the air a leaping dolphin falls at g, not at about half
+    // of it. Only in a real leap (clear of the water, or a leap off the
+    // surface lock): skimming hops along a face keep their feel.
     this.fBody.copy(this.force).applyQuaternion(this.qInv);
+    const wetAdded = dolphin.leapFlight || dolphin.leaping ? smoothstep(0, 0.08, wetFraction) : 1;
     this.aBody.set(
-      this.fBody.x / (this.mass * (1 + cfg.addedMassLateral)),
-      this.fBody.y / (this.mass * (1 + cfg.addedMassVertical)),
-      this.fBody.z / (this.mass * (1 + cfg.addedMassForward))
+      this.fBody.x / (this.mass * (1 + cfg.addedMassLateral * wetAdded)),
+      this.fBody.y / (this.mass * (1 + cfg.addedMassVertical * wetAdded)),
+      this.fBody.z / (this.mass * (1 + cfg.addedMassForward * wetAdded))
     );
     this.accel.copy(this.aBody).applyQuaternion(q);
     // Non-hydrostatic part of the mega wave's pressure gradient

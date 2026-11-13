@@ -212,10 +212,11 @@ export class HUD {
       this.el.coords.textContent = `X ${cX >= 0 ? "+" : "−"}${String(Math.abs(cX)).padStart(4, "0")} · Z ${cZ >= 0 ? "+" : "−"}${String(Math.abs(cZ)).padStart(4, "0")}`;
       if (this.started) {
         const locked = (telemetry.surfLock || 0) > 0.5;
-        this.el.surfaceLabel.textContent = locked ? "ON THE SURFACE" : telemetry.underwater ? "SURFACE" : "AIR";
+        const label = (telemetry.surfGlide || 0) > 0.5 ? "SURFING" : telemetry.porpoising ? "PORPOISING" : "ON THE SURFACE";
+        this.el.surfaceLabel.textContent = locked || telemetry.porpoising ? label : telemetry.underwater ? "SURFACE" : "AIR";
         this.el.surfaceIndicator.classList.toggle(
           "is-visible",
-          locked || telemetry.depth < 1.35 || !telemetry.underwater
+          locked || telemetry.porpoising || telemetry.depth < 1.35 || !telemetry.underwater
         );
       }
     }

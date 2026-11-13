@@ -114,7 +114,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
    */
   function stepWorld(dt, control) {
     // `S.lock = true`: every scenario holds Space (the surface lock).
-    if (api.lock) control.rise = true;
+    if (api.lock && !control.manualRise) control.rise = true;
     ocean.time += dt;
     water.setTime(ocean.time);
     ocean.foamField.update(dt, ocean.time);
@@ -540,6 +540,23 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let aMax = 0;
       let aMaxAt = null;
       let lockTime = 0;
+      let unlockedTime = 0;
+      let stillTime = 0;
+      let leapRelMax = -Infinity;
+      const leaps0 = dolphin.leapCount || 0;
+      // Each leap: speed through the water and along the wave before and
+      // after the push (the wave's own speed is water.megaSpeed), launch
+      // angle above the face, air time, height, how far it gains on the
+      // crest (xi) and the nose at entry.
+      const leapLog = [];
+      let leapRec = null;
+      let leapSeen = leaps0;
+      const relVel = () => {
+        const w = dolphin.hull.waterVel;
+        return Number.isFinite(w.x) ? dolphin.velocity.clone().sub(w) : dolphin.velocity.clone();
+      };
+      let preRel = 0;
+      let preAlong = 0;
       const spikes = [];
       const prevSpikeV = dolphin.velocity.clone();
       let finite = true;
@@ -587,15 +604,84 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
           control.mdx = (-err / sens) * 0.1;
           control.forward = true;
           control.boost = faceUp;
+          // api.coast: once up on the face, let go of W/Shift and coast.
+          if (api.coast && m.h > 30) control.forward = control.boost = false;
           if (mode === "ride") {
             const wantPitch = ridePitch(rel, -0.4, hold, dt);
             control.mdy = ((dolphin.targetPitch - wantPitch) / (sens * 0.78)) * 0.15;
           } else control.mdy = 0;
         }
-        // api.lock: hold Space (surface lock) the whole run.
-        control.rise = !!api.lock;
+        // api.lock: hold Space (surface lock) the whole run, letting go
+        // for `api.releaseFor` s at each time in `api.releaseAt` (a leap,
+        // then Space again to land back into the ride).
+        const releasing = (api.releaseAt || []).some((t0) => elapsed >= t0 && elapsed < t0 + (api.releaseFor ?? 0.3));
+        control.manualRise = true;
+        control.rise = !!api.lock && !releasing;
+        preRel = relVel().length();
+        preAlong = dolphin.velocity.x * dx() + dolphin.velocity.z * dz();
+        const xiPre = m.xi;
         stepWorld(dt, control);
+        if ((dolphin.leapCount || 0) !== leapSeen) {
+          leapSeen = dolphin.leapCount || 0;
+          if (leapRec && leapLog.length < 12) leapLog.push(leapRec);
+          const rv = relVel();
+          const q1 = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
+          const nl = Math.hypot(q1.slopeX || 0, 1, q1.slopeZ || 0);
+          const upN = (-(q1.slopeX || 0) * rv.x + rv.y - (q1.slopeZ || 0) * rv.z) / nl;
+          leapRec = {
+            t: +elapsed.toFixed(1),
+            h: Math.round(m.h),
+            relBefore: +preRel.toFixed(1),
+            relAfter: +rv.length().toFixed(1),
+            alongBefore: +preAlong.toFixed(1),
+            alongAfter: +(dolphin.velocity.x * dx() + dolphin.velocity.z * dz()).toFixed(1),
+            launchDeg: +((Math.asin(Math.max(-1, Math.min(1, upN / Math.max(0.1, rv.length())))) * 180) / Math.PI).toFixed(1),
+            xi0: xiPre,
+            air: 0,
+            top: -Infinity,
+            age: 0,
+          };
+        }
+        if (leapRec && leapRec.age < 4) {
+          leapRec.age += dt;
+          const dry = dolphin.hydro && dolphin.hydro.wetFraction < 0.02;
+          if (dry) leapRec.air += dt;
+          const relY = dolphin.position.y - ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) - (dolphin.surfaceLead || 0);
+          leapRec.top = Math.max(leapRec.top, relY);
+          if (!dry && leapRec.air > 0 && leapRec.pitchEntry === undefined) {
+            water.megaAt(dolphin.position.x, dolphin.position.z, m);
+            leapRec.gainOnCrest = Math.round(m.xi - leapRec.xi0);
+            leapRec.pitchEntry = +dolphin.pitch.toFixed(2);
+            leapRec.relEntry = +relVel().length().toFixed(1);
+          }
+          if (leapRec.relock === undefined && dolphin.surfLock > 0.9) leapRec.relock = +leapRec.age.toFixed(2);
+          // After the fluke stroke has been delivered.
+          if (leapRec.stroke === undefined && leapRec.age >= (TUNING.hydro.surfaceLeapStroke || 0) + 0.03) {
+            leapRec.stroke = true;
+            leapRec.relAfter = +relVel().length().toFixed(1);
+            leapRec.alongAfter = +(dolphin.velocity.x * dx() + dolphin.velocity.z * dz()).toFixed(1);
+          }
+          if (api.megaDebug && Math.round(leapRec.age * 60) % 6 === 1) {
+            const w = dolphin.hull.waterVel;
+            (leapRec.trace = leapRec.trace || []).push([
+              +leapRec.age.toFixed(2),
+              +dolphin.velocity.length().toFixed(1),
+              +(dolphin.velocity.x * dx() + dolphin.velocity.z * dz()).toFixed(1),
+              +(w.x * dx() + w.z * dz()).toFixed(1),
+              +relVel().length().toFixed(1),
+              +relY.toFixed(1),
+              +(dolphin.hydro ? dolphin.hydro.wetFraction : 0).toFixed(2),
+              +dolphin.pitch.toFixed(2),
+              +dolphin.velocity.y.toFixed(1),
+            ]);
+          }
+        }
         if (dolphin.surfLock > 0.9) lockTime += dt;
+        if ((dolphin.tailStill || 0) > 0.8) stillTime += dt;
+        if (dolphin.surfLock < 0.5 && api.lock && elapsed > 1) {
+          unlockedTime += dt;
+          leapRelMax = Math.max(leapRelMax, rel);
+        }
         const v = dolphin.velocity;
         if (![v.x, v.y, v.z, dolphin.position.y].every(Number.isFinite)) {
           finite = false;
@@ -673,6 +759,11 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         accelMax: aMax,
         accelMaxAt: aMaxAt,
         lockTime,
+        unlockedTime,
+        stillTime,
+        leaps: (dolphin.leapCount || 0) - leaps0,
+        leapRelMax,
+        leapLog: (leapRec ? [...leapLog, leapRec] : leapLog).map((r) => ({ ...r, air: +r.air.toFixed(2), top: +r.top.toFixed(1), xi0: undefined, age: undefined, stroke: undefined })),
         spikes,
         finite,
         turns,
@@ -713,9 +804,13 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let relMin = Infinity;
       let relMax = -Infinity;
       let breaches0 = dolphin.breachCount;
+      const porp0 = dolphin.porpoiseCount || 0;
+      let lockedRelMax = -Infinity;
       for (let t = 0; t < seconds; t += dt) {
         stepWorld(dt, control);
         if (lockedAt === null && dolphin.surfLock > 0.99) lockedAt = t;
+        if (lockedAt !== null)
+          lockedRelMax = Math.max(lockedRelMax, dolphin.position.y - ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) - dolphin.surfaceLead);
         if (lockedAt !== null && t > lockedAt + 1) {
           const rel = dolphin.position.y - ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) - dolphin.surfaceLead;
           relMin = Math.min(relMin, rel);
@@ -723,7 +818,67 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         }
       }
       const speedLocked = dolphin.velocity.length();
+      const porpoises = (dolphin.porpoiseCount || 0) - porp0;
       const breaches = dolphin.breachCount - breaches0;
+      // Let go of Space: the leap. Then hold it again to land into the ride.
+      control.rise = false;
+      let leapMax = -Infinity;
+      let leapAir = 0;
+      const leapTrace = [];
+      // Shape of the leap: speed through the water before and just after
+      // the push, the launch angle above the surface, how far it flies,
+      // and the nose (pitch) at launch, apex and entry.
+      const relSpeed = () => {
+        const w = dolphin.hull.waterVel;
+        return Number.isFinite(w.x)
+          ? Math.hypot(dolphin.velocity.x - w.x, dolphin.velocity.y - w.y, dolphin.velocity.z - w.z)
+          : dolphin.velocity.length();
+      };
+      const leap = { relBefore: +relSpeed().toFixed(1), worldBefore: +dolphin.velocity.length().toFixed(1) };
+      let airStart = null;
+      let apexPitch = null;
+      let apexRel = -Infinity;
+      for (let t = 0; t < 1.6; t += dt) {
+        stepWorld(dt, control);
+        const rel = dolphin.position.y - ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) - dolphin.surfaceLead;
+        if (leap.relAfter === undefined && t >= (TUNING.hydro.surfaceLeapStroke || 0) + 0.02) {
+          leap.relAfter = +relSpeed().toFixed(1);
+          leap.worldAfter = +dolphin.velocity.length().toFixed(1);
+          const s0 = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
+          const w = dolphin.hull.waterVel;
+          const ok = Number.isFinite(w.x);
+          const rx = dolphin.velocity.x - (ok ? w.x : 0);
+          const ry = dolphin.velocity.y - (ok ? w.y : 0);
+          const rz = dolphin.velocity.z - (ok ? w.z : 0);
+          const nl = Math.hypot(s0.slopeX || 0, 1, s0.slopeZ || 0);
+          const up = (-(s0.slopeX || 0) * rx + ry - (s0.slopeZ || 0) * rz) / nl;
+          leap.launchDeg = +((Math.asin(Math.max(-1, Math.min(1, up / Math.hypot(rx, ry, rz)))) * 180) / Math.PI).toFixed(1);
+          leap.pitchLaunch = +dolphin.pitch.toFixed(2);
+        }
+        if (rel > apexRel) {
+          apexRel = rel;
+          apexPitch = dolphin.pitch;
+        }
+        leapMax = Math.max(leapMax, rel);
+        const dry = dolphin.hydro && dolphin.hydro.wetFraction < 0.02;
+        if (dry) {
+          leapAir += dt;
+          if (airStart === null) airStart = { x: dolphin.position.x, z: dolphin.position.z };
+        } else if (airStart && leap.flyDist === undefined) {
+          leap.flyDist = +Math.hypot(dolphin.position.x - airStart.x, dolphin.position.z - airStart.z).toFixed(1);
+          leap.pitchEntry = +dolphin.pitch.toFixed(2);
+          leap.relEntry = +relSpeed().toFixed(1);
+        }
+        if (api.megaDebug && Math.round(t * 60) % 6 === 0)
+          leapTrace.push([+t.toFixed(2), +rel.toFixed(2), +dolphin.velocity.y.toFixed(2), +dolphin.pitch.toFixed(2), +(dolphin.hydro ? dolphin.hydro.wetFraction : 0).toFixed(2), +(dolphin.hydro ? dolphin.hydro.accel.y : 0).toFixed(1)]);
+      }
+      leap.pitchApex = apexPitch === null ? null : +apexPitch.toFixed(2);
+      control.rise = true;
+      let relockAt = null;
+      for (let t = 0; t < 3; t += dt) {
+        stepWorld(dt, control);
+        if (relockAt === null && dolphin.surfLock > 0.99) relockAt = t;
+      }
       control.rise = false;
       control.dive = true;
       const y0 = dolphin.position.y;
@@ -738,7 +893,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       freeze(false);
       water.setPreset(savedPreset);
       cameraReport();
-      return { lockedAt, relMin, relMax, speedLocked, breaches, diveDrop, lockAfter };
+      return { lockedAt, relMin, relMax, speedLocked, porpoises, lockedRelMax, breaches, leapMax, leapAir, leap, relockAt, diveDrop, lockAfter, ...(api.megaDebug ? { leapTrace } : {}) };
     },
 
     /**
