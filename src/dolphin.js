@@ -131,9 +131,13 @@ function addDolphinMaterialShader(material, uniforms) {
           `
         );
 
+    // Surface height at the animal, so caustics only play on it underwater.
+    if (!uniforms.waterLevel) uniforms.waterLevel = { value: -1e5 };
+    shader.uniforms.uWaterLevel = uniforms.waterLevel;
     shader.fragmentShader =
       /* glsl */ `
         uniform float uCausticTime;
+        uniform float uWaterLevel;
         varying vec3 vDolphinLocal;
         varying vec3 vDolphinWorld;
         ${glslCaustics}
@@ -142,32 +146,62 @@ function addDolphinMaterialShader(material, uniforms) {
         "#include <color_fragment>",
         /* glsl */ `
           #include <color_fragment>
-          // The geometry has been baked upright, so local Y is dorsal.
-          float dorsalAmount = smoothstep(-0.2, 0.65, vDolphinLocal.y);
-          float bellyMix = 1.0 - smoothstep(-1.2, 0.7, vDolphinLocal.y);
-          vec3 darkBack = vec3(0.13, 0.23, 0.27);
-          vec3 paleBelly = vec3(1.35, 1.26, 1.05);
-          diffuseColor.rgb *= mix(darkBack, paleBelly, bellyMix);
-          float mottle = sin(vDolphinLocal.z * 8.0 + vDolphinLocal.x * 3.3) * 0.5 + 0.5;
-          float speckle = smoothstep(0.72, 0.94, sin(vDolphinLocal.z * 24.0 + vDolphinLocal.x * 5.1) * 0.5 + 0.5);
-          diffuseColor.rgb *= 0.86 + mottle * 0.13 - speckle * 0.05;
-          float flankSheen = smoothstep(0.1, 0.9, abs(vDolphinLocal.x) / 0.6);
-          diffuseColor.rgb += vec3(0.015, 0.04, 0.042) * flankSheen;
+          // Bottlenose colouring, anatomical (it follows the body whatever
+          // its pose): a dark slate cape over the back that dips behind the
+          // dorsal fin, mid grey flanks, a pale belly and throat, and dark
+          // fins and flukes. The baked geometry has head +Z, dorsal +Y.
+          vec3 dl = vDolphinLocal;
+          float s = (dl.y + 0.17) / 0.33;
+          float capeLine = 0.3 - 0.42 * exp(-pow((dl.z + 0.2) / 0.55, 2.0)) - 0.15 * smoothstep(0.6, 1.4, dl.z);
+          float cape = smoothstep(capeLine - 0.22, capeLine + 0.22, s);
+          float throat = 0.32 * smoothstep(0.6, 1.25, dl.z);
+          float belly = 1.0 - smoothstep(-0.78, -0.4, s - throat);
+          float pecFin = smoothstep(0.3, 0.42, abs(dl.x)) * smoothstep(0.15, 0.3, dl.z) * (1.0 - smoothstep(0.9, 1.05, dl.z));
+          float flukes = 1.0 - smoothstep(-1.32, -1.12, dl.z);
+          float appendage = max(pecFin, flukes);
+          vec3 backC = vec3(0.028, 0.031, 0.036);
+          vec3 flankC = vec3(0.085, 0.09, 0.096);
+          vec3 bellyC = vec3(0.36, 0.345, 0.335);
+          vec3 albedo = mix(flankC, backC, max(cape, appendage * 0.8));
+          albedo = mix(albedo, bellyC, belly * (1.0 - appendage * 0.75));
+          // A soft blaze of lighter grey on the flank below the fin.
+          float blaze = exp(-pow((s + 0.15) / 0.25, 2.0)) * exp(-pow((dl.z + 0.55) / 0.45, 2.0));
+          albedo = mix(albedo, flankC * 1.5, blaze * 0.35 * (1.0 - appendage));
+          // The texture only carries detail (eyes, mouth line, scars).
+          #ifdef USE_MAP
+            float texL = dot(sampledDiffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+            float detail = clamp(pow(texL / 0.26, 0.75), 0.25, 1.6);
+          #else
+            float detail = 1.0;
+          #endif
+          float mottle = sin(dl.z * 7.0 + dl.x * 3.3 + sin(dl.y * 9.0)) * 0.5 + 0.5;
+          diffuseColor.rgb = albedo * detail * (0.94 + 0.08 * mottle);
         `
       );
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <emissivemap_fragment>",
       /* glsl */ `
         #include <emissivemap_fragment>
+        // Caustics only under the water, fading with depth.
+        float dolphinDepth = uWaterLevel - vDolphinWorld.y;
+        float underMask = smoothstep(0.0, 0.25, dolphinDepth) * exp(-max(dolphinDepth, 0.0) * 0.07);
         float dolphinCaustic = causticNetwork(vDolphinWorld.xz + 2.0, uCausticTime);
-        totalEmissiveRadiance += vec3(0.6, 0.82, 0.7) * dolphinCaustic * 0.12;
+        vec3 upInView = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+        float topLit = clamp(dot(normal, upInView) * 0.5 + 0.5, 0.0, 1.0);
+        totalEmissiveRadiance += vec3(0.5, 0.75, 0.68) * dolphinCaustic * 0.07 * underMask * topLit;
       `
     );
     shader.fragmentShader = shader.fragmentShader.replace(
       "vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;",
       /* glsl */ `
-        vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;
-        outgoingLight *= mix(vec3(0.17, 0.25, 0.29), vec3(1.03, 0.99, 0.9), 1.0 - dorsalAmount * 0.88);
+        // Skin against water barely reflects: their refractive indices are
+        // close, so a submerged dolphin loses nearly all of its sheen.
+        float submerged = smoothstep(0.0, 0.4, dolphinDepth);
+        vec3 outgoingLight = totalDiffuse + totalSpecular * (1.0 - 0.8 * submerged) + totalEmissiveRadiance;
+        // Under the water the light reaching the skin has lost much of its
+        // strength and most of its red on the way down.
+        vec3 waterLight = vec3(0.4, 0.55, 0.6) * exp(-max(dolphinDepth, 0.0) * 0.03);
+        outgoingLight *= mix(vec3(1.0), waterLight, submerged);
       `
     );
   };
@@ -376,12 +410,15 @@ export class Dolphin {
         ? sourceMesh.material[0]
         : sourceMesh.material;
       const material = srcMat.clone();
-      material.roughness = 0.36;
-      material.metalness = 0.055;
-      material.color = new THREE.Color(TUNING.dolphin.skin);
-      material.emissive = new THREE.Color(0x041719);
-      material.emissiveIntensity = 0.35;
-      if (material.map) material.color.multiplyScalar(1.12);
+      // Wet skin: smooth and glossy, no metal. Colour comes from the
+      // anatomical pattern in the shader; the sky reflection comes from the
+      // environment map main.js assigns.
+      material.roughness = 0.3;
+      material.metalness = 0;
+      material.color = new THREE.Color(0xffffff);
+      material.emissive = new THREE.Color(0x000000);
+      material.emissiveIntensity = 0;
+      material.envMapIntensity = 1;
       addDolphinMaterialShader(material, this.tailUniforms);
 
       // Two influence skinning based on the vertex's position along the spine.

@@ -10,6 +10,9 @@ import { Input } from "./input.js";
 import { OceanAudio } from "./audio.js";
 import { HUD } from "./hud.js";
 import { Post } from "./post.js";
+import { Spindrift } from "./spindrift.js";
+import { buildEnvironments } from "./environment.js";
+import { WaterRefraction, REFRACTION_LAYER } from "./refraction.js";
 import { WaterDebug } from "./water/debug.js";
 import { createScenarios } from "./water/scenarios.js";
 import { clamp, lerp, smoothstep } from "./utils.js";
@@ -75,6 +78,7 @@ async function boot() {
   const snow = new MarineSnow(scene, 3400);
   const motes = new NearMotes(scene, 240);
   const shafts = new SunShafts(scene);
+  const spindrift = new Spindrift(scene, ocean);
   const audio = new OceanAudio();
   audio.prepare();
   const input = new Input(canvas);
@@ -82,6 +86,28 @@ async function boot() {
   await frame();
 
   const dolphin = await Dolphin.create(scene);
+  // Wet skin reflects the sky above the water and the lit surface below it.
+  const envMaps = buildEnvironments(renderer, ocean.sunDir);
+  dolphin.tailUniforms.waterLevel = dolphin.tailUniforms.waterLevel || { value: -1e5 };
+  const dolphinMaterials = [];
+  (dolphin.model || dolphin.root).traverse((o) => {
+    if (o.isMesh && o.material && o.material.isMeshStandardMaterial) {
+      o.material.envMap = envMaps.above;
+      o.material.envMapIntensity = 1;
+      dolphinMaterials.push(o.material);
+    }
+  });
+  // The dolphin (and the lights on it) also go into the pass that lets the
+  // water show what is under its surface.
+  const refraction = new WaterRefraction(renderer);
+  for (const part of [dolphin.model, dolphin.root]) {
+    part?.traverse((o) => {
+      if (o.isMesh) o.layers.enable(REFRACTION_LAYER);
+    });
+  }
+  scene.traverse((o) => {
+    if (o.isLight) o.layers.enable(REFRACTION_LAYER);
+  });
   const cameraRig = new CameraRig(camera, ocean);
   const post = new Post(renderer, scene, camera);
   const waterDebug = new WaterDebug(scene, ocean, dolphin);
@@ -149,7 +175,7 @@ async function boot() {
     },
   });
 
-  const fogAbove = new THREE.Color(0x9fb3b8);
+  const fogAbove = new THREE.Color(PALETTE.skyHorizonAway);
   const fogShallow = new THREE.Color(PALETTE.fogShallow);
   const fogDeep = new THREE.Color(PALETTE.fogDeep);
   const skyHorizon = new THREE.Color(PALETTE.skyHorizon);
@@ -435,7 +461,16 @@ async function boot() {
     lights.sun.color
       .copy(skyHorizon)
       .lerp(sunWarm, 0.55)
-      .lerp(sunCool, camState.underwater * 0.78);
+      .lerp(sunCool, camState.underwater * 0.55);
+
+    const envUnder = camState.underwater > 0.5;
+    const envNow = envUnder ? envMaps.below : envMaps.above;
+    for (const m of dolphinMaterials) {
+      if (m.envMap !== envNow) m.envMap = envNow;
+      // Skin against water reflects far less than skin against air.
+      m.envMapIntensity = envUnder ? 0.12 : 0.8;
+    }
+    dolphin.tailUniforms.waterLevel.value = ocean.getWaterHeight(dolphin.position.x, dolphin.position.z);
 
     const seabedStart = performance.now();
     seabed.update(dt, dolphin, camera, fogColor, fogDensity);
@@ -477,9 +512,12 @@ async function boot() {
     emitSurfSpray(dt, camState.underwater);
     emitSurfBubbles(dt, camState.underwater);
     effects.update(dt, camera, fogColor, fogDensity, current);
+    effects.updateBodyShed(dt, dolphin);
     snow.update(dt, camera, fogColor, fogDensity, camState.underwater);
     motes.update(dt, camera, fogColor, fogDensity, camState.underwater);
     shafts.update(camera, total, camState.underwater);
+    spindrift.update(dt, camera, camState.underwater);
+    effects.updateWindSpray(dt, camera, camState.underwater);
     const effectsMs = performance.now() - effectsStart;
 
     hud.update(dt, telemetry, elapsed, camState.underwater, clamp(dolphin.speed / TUNING.movement.boostSpeed, 0, 1.2));
@@ -525,9 +563,32 @@ async function boot() {
       pendingGpuQuery = gl.createQuery();
       gl.beginQuery(timerExt.TIME_ELAPSED_EXT, pendingGpuQuery);
     }
+    // The lens gets wet when it breaks the surface, or when it is close
+    // enough to the dolphin to be caught by its spray; a breach seen from a
+    // few body lengths away leaves the lens dry, as it would a real camera.
+    const lensSpray = 1 - THREE.MathUtils.smoothstep(camera.position.distanceTo(dolphin.position), 2.5, 6);
+    // Seen from the air, the water shows the dolphin under its surface
+    // until it is too deep to make out.
+    const dolphinDepth = dolphin.tailUniforms.waterLevel.value - dolphin.position.y;
+    const refractionOn = camState.underwater < 0.5 && dolphinDepth > -1.5 && dolphinDepth < 14;
+    if (refractionOn) {
+      const t = post.composer.renderTarget1;
+      refraction.setSize(t.width * 0.5, t.height * 0.5);
+      // Under the water the skin reflects the water around it, not the sky.
+      for (const m of dolphinMaterials) {
+        m.envMap = envMaps.below;
+        m.envMapIntensity = 0.12;
+      }
+      refraction.render(scene, camera);
+      for (const m of dolphinMaterials) {
+        m.envMap = envMaps.above;
+        m.envMapIntensity = 0.8;
+      }
+    }
+    ocean.setRefraction(refraction, refractionOn, camera);
     post.render(dt, {
       underwater: camState.underwater,
-      wetness: Math.max(camState.wetness, dolphin.wetness * 0.6),
+      wetness: Math.max(camState.wetness, dolphin.wetness * 0.6 * lensSpray),
       speedNorm: camState.speedNorm,
       waterLevel: camState.waterHeight,
     });

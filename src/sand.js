@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
+import { meadowMap } from "./atmosphere.js";
 import {
   clamp,
   glslCaustics,
@@ -441,6 +442,8 @@ const SAND_FRAG = /* glsl */ `
   uniform vec2 uHoleCenter;
   uniform float uHoleRadius;
   uniform float uHasHole;
+  uniform sampler2D uMeadow;
+  uniform float uMeadowExtent;
   varying vec3 vWorld;
   varying vec3 vNormal;
   varying vec3 vColor;
@@ -530,6 +533,34 @@ const SAND_FRAG = /* glsl */ `
     sand *= 1.0 - pebble * 0.12;
     sand = mix(sand, vec3(0.17, 0.15, 0.09), detritus * 0.28);
     sand = mix(sand, sand * vec3(0.56, 0.68, 0.48), siltStain * 0.24);
+
+    // Seagrass carpet. Under a meadow the floor is a mat of short blades:
+    // strands in a few crossing directions, bright yellow-green where the
+    // tips catch the light, dark between them, with sand showing through
+    // thin patches. The instanced blades stand up out of it near the lens.
+    float meadow = texture2D(uMeadow, vWorld.xz / uMeadowExtent + 0.5).r;
+    if (meadow > 0.01) {
+      vec2 q = vWorld.xz;
+      float strandFade = 1.0 - smoothstep(5.0, 28.0, dist);
+      // Matted blades: fine, slightly stretched speckle (bright tips, dark
+      // gaps) over a softer clump pattern. Kept isotropic so it never
+      // shows a regular weave at grazing angles.
+      vec2 qa = vec2(q.x * 0.8 + q.y * 0.6, -q.x * 0.6 + q.y * 0.8);
+      float speck = vnoise(qa * vec2(15.0, 6.0) + uTime * 0.03);
+      speck = speck * 0.6 + vnoise(q * 31.0) * 0.4;
+      float clump = fbm2(q * 1.6 + 3.0);
+      float strands = mix(0.5, speck, strandFade) * 0.6 + clump * 0.55;
+      float tufts = fbm2(q * 0.9 + 2.0);
+      float lit = 0.38 + ndl * 0.62;
+      vec3 grassDark = vec3(0.035, 0.07, 0.03);
+      vec3 grassLit = vec3(0.19, 0.29, 0.1);
+      vec3 carpet = mix(grassDark, grassLit, smoothstep(0.3, 0.95, strands * 0.8 + tufts * 0.25));
+      carpet *= lit * (0.85 + 0.3 * tufts);
+      carpet += causticTint * vec3(0.7, 0.95, 0.45) * 0.8;
+      float thinPatch = smoothstep(0.62, 0.8, fbm2(q * 0.18 + 9.0)) * 0.6;
+      float cover = smoothstep(0.04, 0.5, meadow) * (1.0 - thinPatch) * (0.8 + 0.2 * strands);
+      sand = mix(sand, carpet, clamp(cover, 0.0, 1.0));
+    }
 
     // The water quickly eats warm wavelengths with depth.
     float absorb = smoothstep(2.0, 20.0, -height);
@@ -665,6 +696,8 @@ class SandSurface {
         uHoleCenter: { value: new THREE.Vector2() },
         uHoleRadius: { value: 0 },
         uHasHole: { value: 0 },
+        uMeadow: meadowMap.uniforms.uMeadow,
+        uMeadowExtent: meadowMap.uniforms.uMeadowExtent,
       },
       vertexShader: SAND_VERT,
       fragmentShader: SAND_FRAG,

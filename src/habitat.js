@@ -13,6 +13,7 @@ import {
   seabedHeight,
   smoothstep,
 } from "./utils.js";
+import { buildMeadowTexture } from "./atmosphere.js";
 
 export const sharedShader = {
   time: { value: 0 },
@@ -1316,7 +1317,7 @@ function bladeGeometry() {
   const rnd = mulberry32(99117);
   // Three blades of four segments still read as a dense tuft under the low-fi
   // grade and cut the grass vertex/triangle load by more than half.
-  const blades = 3;
+  const blades = 4;
   const segments = 4;
 
   for (let blade = 0; blade < blades; blade++) {
@@ -1327,8 +1328,8 @@ function bladeGeometry() {
     const facing = rnd() * Math.PI;
     const dirX = Math.cos(facing);
     const dirZ = Math.sin(facing);
-    const halfW = 0.012 + rnd() * 0.011;
-    const lean = 0.025 + rnd() * 0.1;
+    const halfW = 0.015 + rnd() * 0.013;
+    const lean = 0.05 + rnd() * 0.2;
     const twist = (rnd() - 0.5) * 0.65;
     const curl = (rnd() - 0.5) * 0.05;
     const tipSway = (rnd() - 0.5) * 0.1;
@@ -1357,12 +1358,12 @@ function bladeGeometry() {
         // Dark, cold roots; sunlit jade tips.
         const rootShade = 0.52 + t * 0.64;
         colors.push(
-          rootShade * 0.62,
-          rootShade * 0.84,
-          rootShade * 0.6,
-          rootShade * 0.66,
+          rootShade * 0.74,
           rootShade * 0.88,
-          rootShade * 0.62
+          rootShade * 0.5,
+          rootShade * 0.78,
+          rootShade * 0.9,
+          rootShade * 0.52
         );
       }
       for (let i = 0; i < segments; i++) {
@@ -1438,7 +1439,7 @@ function makeSeagrassTexture() {
 function makeSeagrassMaterial() {
   const grassTexture = makeSeagrassTexture();
   const mat = new THREE.MeshStandardMaterial({
-    color: 0xb8cdb1,
+    color: 0xd2dcb8,
     map: grassTexture,
     bumpMap: grassTexture,
     bumpScale: 0.025,
@@ -1446,10 +1447,10 @@ function makeSeagrassMaterial() {
     metalness: 0.0,
     vertexColors: true,
     side: THREE.DoubleSide,
-    emissive: 0x071f14,
+    emissive: 0x0d1f0a,
     emissiveIntensity: 0.6,
   });
-  injectCaustics(mat, 0.04, 0xddffcf);
+  injectCaustics(mat, 0.05, 0xf0ffd0);
   const prev = mat.onBeforeCompile;
   mat.onBeforeCompile = (shader) => {
     prev(shader);
@@ -1477,6 +1478,11 @@ function makeSeagrassMaterial() {
           float bend = bladeT * bladeT;
           transformed.x += sway * bend;
           transformed.z += cos(uOceanTime * 0.71 + phase * 1.2) * bend * 0.09;
+          // Blades thinner than a pixel only alias into specks: past a
+          // few tens of metres they shrink away and the meadow colour on
+          // the sand carries the field.
+          float grassDist = distance(rootWorld, cameraPosition);
+          transformed *= 1.0 - smoothstep(14.0, 28.0, grassDist);
         `
       );
     shader.fragmentShader =
@@ -1494,6 +1500,11 @@ function makeSeagrassMaterial() {
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.16, 0.08), bladeBrown * (0.15 + vGrassT * 0.35));
           float bladeSpecks = smoothstep(0.82, 0.95, vnoise(vCausticWorld.xz * 55.0 + vGrassT * 12.0));
           diffuseColor.rgb += vec3(0.08, 0.08, 0.05) * bladeSpecks;
+          // Past ten metres or so a blade is only a pixel or two wide; its
+          // colour settles toward the meadow's mean so the field reads as a
+          // soft mat instead of a scatter of bright specks.
+          float bladeFar = smoothstep(7.0, 22.0, distance(vCausticWorld, cameraPosition));
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.13, 0.19, 0.08), bladeFar * 0.7);
         `
       );
   };
@@ -1521,9 +1532,11 @@ export class Seagrass {
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
     const c = new THREE.Color();
-    const dark = new THREE.Color(0x1c4a36);
-    const light = new THREE.Color(0x728b5c);
-    const dead = new THREE.Color(0x66563a);
+    // Sunlit eelgrass in clear shallow water is a bright yellow-green at
+    // the tips over darker olive roots.
+    const dark = new THREE.Color(0x2c5532);
+    const light = new THREE.Color(0x9fb75a);
+    const dead = new THREE.Color(0x7a6a42);
 
     const nearMeadows = [
       { x: -6, z: 25, r: 27, n: 6200 },
@@ -1547,6 +1560,19 @@ export class Seagrass {
       if (depth < 2.8 || depth > 13.5) continue;
       meadows.push({ x, z, r: 10 + rnd() * 24, n: 80 + rnd() * 220 });
     }
+    // The carpet under every meadow (seabed shader) uses the same depth
+    // window and patch noise as the blades below.
+    for (const meadow of meadows) {
+      meadow.density = meadow.n / (Math.PI * meadow.r * meadow.r) / 1.5;
+    }
+    buildMeadowTexture(meadows, (x, z) => {
+      const depth = -seabedHeight(x, z);
+      const window = smoothstep(1.6, 2.6, depth) * (1 - smoothstep(14.5, 16, depth));
+      const patch = fbm(x * 0.042 + 4.3, z * 0.042 - 8.7, 2);
+      return window * (0.25 + 0.75 * smoothstep(0.26, 0.42, patch));
+    });
+    // Denser blades in the meadows the player starts among.
+    for (let i = 0; i < nearMeadows.length; i++) meadows[i] = { ...meadows[i], n: Math.round(meadows[i].n * 1.6) };
 
     for (const meadow of meadows) {
       for (let i = 0; i < meadow.n; i++) {
