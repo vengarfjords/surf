@@ -135,6 +135,9 @@ export const TUNING = {
     // How fast the automatic pitch (ride trim, surface lock) may turn the
     // nose just after a flight ends (rad/s).
     landingPitchRate: 3,
+    // Fastest the nose is turned up or down by anything other than the
+    // player's own input (leap, flight path, ride trim, surface lock), rad/s.
+    autoPitchRate: 5,
     airForwardDrag: 0.004,
     airForwardQuadraticDrag: 0.0004,
     airLateralDrag: 0.08,
@@ -216,6 +219,15 @@ export const TUNING = {
     surfaceLockGain: 8,
     surfaceLockRamp: 5,
     surfaceLockPitchRate: 12,
+    // Landing back into the ride from the air: a flukes-only touch lands the
+    // body from up to `surfaceLockReach` m above the surface, then for up to
+    // `surfaceLockSettleTime` s it settles in: drawn down at most
+    // `surfaceLockSettlePull` m/s^2 on top of gravity while above the lock
+    // depth, and braked at most `surfaceLockSettleBrake` m/s^2 below it.
+    surfaceLockReach: 2.5,
+    surfaceLockSettleTime: 2,
+    surfaceLockSettlePull: 15,
+    surfaceLockSettleBrake: 60,
     // Letting go of Space while on the surface leaps: a tail drive of
     // `surfaceLeapForward` m/s (+ `surfaceLeapDriveShare` x speed through the
     // water, up to +8) along the heading and `surfaceLeap` m/s (+ share, up
@@ -230,13 +242,21 @@ export const TUNING = {
     surfaceLeapSpeedShare: 0.1,
     surfaceLeapDriveShare: 0.3,
     surfaceLeapStroke: 0.12,
-    // With Space held: on a wave (surface slope above `surfGlideSlope`, or
-    // water under the body moving faster than `surfGlideFlow` m/s) the tail
-    // stops while coasting (no W) and the dolphin glides; on open water with W it porpoises,
-    // leaping at `porpoiseLift` x its speed through the water (m/s up)
-    // once above `porpoiseSpeed` m/s.
+    // On a wave (surface slope above `surfGlideSlope`, or water under the
+    // body moving faster than `surfGlideFlow` m/s) the tail stops while
+    // coasting (no W) and the dolphin glides. Heading down a face (the
+    // surface falling `glideDownSlope` m per m along the heading) it stops
+    // even with W or Shift held: gravity on the face does the work. Either
+    // way only on the surface: with Space held, or within
+    // `glideSurfaceDepth` m of it. The tail eases in and out of it at
+    // `glideRate` /s. With Space held on open water, W porpoises, leaping at
+    // `porpoiseLift` x its speed through the water (m/s up) once above
+    // `porpoiseSpeed` m/s.
     surfGlideSlope: 0.2,
     surfGlideFlow: 8,
+    glideDownSlope: 0.12,
+    glideSurfaceDepth: 2,
+    glideRate: 5,
     porpoise: 1,
     porpoiseSpeed: 4.5,
     porpoiseLift: 0.38,
@@ -301,6 +321,9 @@ export const TUNING = {
     // Lift toward the up-wave side so the face and the crest stay in frame.
     surfUpWave: 1.2,
     surfClearance: 0.9,
+    // Fastest the underwater waterline bands move the lens, m/s on top of
+    // the surface's own rise (camera.js).
+    bandSpeed: 6,
     surfLookAhead: 4.2,
     surfLookUp: 0.05,
     surfFov: 9,
@@ -636,6 +659,7 @@ export const TUNE_CONTROLS = [
   { path: "hydro.surfaceLock", label: "surface lock (Space)", min: 0, max: 1, step: 1 },
   { path: "hydro.surfaceLeap", label: "leap on release (m/s)", min: 0, max: 16, step: 0.5 },
   { path: "hydro.surfaceLeapForward", label: "leap drive on a wave (m/s)", min: 0, max: 30, step: 0.5 },
+  { path: "hydro.glideDownSlope", label: "coast down a face from slope", min: 0.03, max: 0.5, step: 0.01 },
   { path: "hydro.porpoiseLift", label: "porpoise leap", min: 0, max: 0.8, step: 0.01 },
   { path: "hydro.surfaceCarveGrip", label: "surface carve grip", min: 0, max: 12, step: 0.5 },
   { path: "hydro.surfaceTurnResponse", label: "surface turn response", min: 4, max: 20, step: 0.5 },

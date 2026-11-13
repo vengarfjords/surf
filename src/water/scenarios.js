@@ -146,6 +146,32 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       cam.clearMin = Math.min(cam.clearMin, cameraRig.camera.position.y - cs.waterHeight);
     }
   }
+  // Is the tail swimming while the wave carries the body? Tallies time on
+  // the surface heading down a face (surface falling more than 0.15 m per m
+  // along the heading) and climbing one (rising more than 0.1), with the
+  // time the tail was driving (thrust above 0.5 m/s^2) and the mean tail
+  // heave (m) in each.
+  function tailTally() {
+    const T = { down: [0, 0, 0], up: [0, 0, 0] };
+    return {
+      step(dt) {
+        if (dolphin.leapFlight) return;
+        const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
+        const rel = dolphin.position.y - q.height - (dolphin.surfaceLead || 0);
+        if (rel < -1.5 || rel > 0.5) return;
+        const s = -((q.slopeX || 0) * Math.sin(dolphin.yaw) + (q.slopeZ || 0) * Math.cos(dolphin.yaw));
+        const k = s > 0.15 ? T.down : s < -0.1 ? T.up : null;
+        if (!k) return;
+        k[0] += dt;
+        if (dolphin.hydroControl.thrustAccel > 0.5) k[1] += dt;
+        k[2] += dolphin.tailHeave * dt;
+      },
+      report() {
+        const r = (k) => ({ t: +k[0].toFixed(1), stroking: +k[1].toFixed(1), heave: +(k[2] / Math.max(k[0], 1e-6)).toFixed(3) });
+        return { down: r(T.down), up: r(T.up) };
+      },
+    };
+  }
   function cameraReport() {
     if (!cam) return null;
     const out = {
@@ -252,6 +278,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let carveDown = true;
       let sprint = false;
       const hold = {};
+      const tail = tailTally();
       for (let t = 0; t < seconds; t += dt) {
         const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
         const along = dolphin.velocity.x * dirX + dolphin.velocity.z * dirZ;
@@ -315,6 +342,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         // Big waves outrun cruise speed: surge (Shift) to match them.
         control.boost = control.forward && c > TUNING.movement.cruiseSpeed * 0.85;
         stepWorld(dt, control);
+        tail.step(dt);
         maxSpeed = Math.max(maxSpeed, dolphin.speed);
         const s = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
         const relNow = dolphin.position.y - s.height;
@@ -361,6 +389,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         rideDrop: bestDrop,
         rideSpeed: bestSpeed,
         maxSpeed,
+        tail: tail.report(),
         camera: cameraReport(),
       };
     },
@@ -501,6 +530,304 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
     },
 
     /**
+     * Glitch probe. Drives the dolphin on a wave like a player would and
+     * records, frame by frame, anything that would read on screen as a
+     * glitch: a position step its velocity does not explain, a one-frame
+     * acceleration spike, a stall in the air, a body, head or view rotation
+     * spike, a camera jump. Steps the world in the main loop's order
+     * (dolphin, camera, then the water clock).
+     *   program: "fuzz" (random keys and mouse, re-rolled every 0.15-1.2 s),
+     *            "lock" (Space held, W, carving with the mouse, letting go
+     *            to leap and aiming in the air), "free" (no Space, W/Shift,
+     *            pitching up to breach off the face).
+     *   opts.dt: frame time in s, or "jitter" (mostly 1/60, with 1/30,
+     *            1/25 and 1/120 frames, as a real browser delivers).
+     *   opts.where: "mega" (trough ahead of a 500 m crest) or "reef".
+     *   opts.seed, opts.seconds, opts.lead.
+     */
+    async glitchProbe(program = "fuzz", opts = {}) {
+      if (!seabed || !freeze) return { error: "scenario needs seabed and freeze hooks" };
+      const seconds = opts.seconds ?? 40;
+      let seed = (opts.seed ?? 1) >>> 0;
+      const rnd = () => {
+        seed = (seed + 0x6d2b79f5) >>> 0;
+        let t = seed;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      const saved = saveState();
+      const savedTime = TUNING.water.timeScale;
+      const savedClock = ocean.time;
+      freeze(true);
+      TUNING.water.timeScale = 0;
+      const where = opts.where ?? (TUNING.water.megaWave ? "mega" : "reef");
+      let yaw;
+      if (where === "mega") {
+        const sp = water.megaSpawn(opts.lead ?? 6);
+        yaw = sp.heading;
+        setPose(sp.x, ocean.getWaterHeight(sp.x, sp.z) - 0.4, sp.z, yaw, 0);
+      } else {
+        yaw = yawAlong();
+        const x = TUNING.water.surfZoneX - dx() * 120;
+        const z = TUNING.water.surfZoneZ - dz() * 120;
+        setPose(x, ocean.getWaterHeight(x, z) - 0.4, z, yaw, 0);
+      }
+      const shore = yaw;
+      dolphin.targetYaw = dolphin.yaw = yaw;
+      dolphin.targetPitch = 0;
+      dolphin.velocity.set(0, 0, 0);
+      const control = botInput();
+      control.manualRise = true;
+      const sens = TUNING.movement.mouseSensitivity;
+      resetCamera();
+      if (cameraRig) cameraRig.update(1 / 60, dolphin, seabed, true);
+      const frameDt = () => {
+        if (opts.dt !== "jitter") return opts.dt ?? 1 / 60;
+        const r = rnd();
+        return r < 0.08 ? 1 / 30 : r < 0.1 ? 1 / 25 : r < 0.15 ? 1 / 120 : 1 / 60;
+      };
+      const bone = dolphin.skinnedMesh && dolphin.skinnedMesh.skeleton ? dolphin.skinnedMesh.skeleton.bones[0] : null;
+      const cam = cameraRig ? cameraRig.camera : null;
+      const V = () => dolphin.velocity.clone();
+      const prev = { p: dolphin.position.clone(), v: V(), q: dolphin.orientation.clone(), hq: null, cp: null, cd: null, cv: null, a: 0, dt: 1 / 60,
+        tp: dolphin.targetPitch, ty: dolphin.targetYaw, tr: 0, roll: dolphin.roll, pitch: dolphin.pitch, yaw: dolphin.yaw };
+      dolphin._subA = [];
+      const hq = bone ? bone.getWorldQuaternion(bone.quaternion.clone()) : null;
+      prev.hq = hq;
+      if (cam) {
+        prev.cp = cam.position.clone();
+        prev.cd = cam.getWorldDirection(cam.position.clone());
+      }
+      const flags = { step: [], accel: [], spike: [], airStall: [], body: [], head: [], camPos: [], camDir: [] };
+      const worst = { step: 0, accel: 0, body: 0, head: 0, camPos: 0, camDir: 0, airStall: 0 };
+      const counts = { step: 0, accel: 0, spike: 0, airStall: 0, body: 0, head: 0, camPos: 0, camDir: 0 };
+      let pending = null;
+      const tumble = { kicks: 0, max: 0, time: 0, at: [] };
+      let reroll = 0;
+      let mouseX = 0;
+      let mouseY = 0;
+      let carryX = 0;
+      let carryY = 0;
+      let state = { t: 0 };
+      let releaseAt = 3 + rnd() * 4;
+      let releaseFor = 0;
+      const keys = () =>
+        ["forward", "boost", "rise", "dive", "brake", "left", "right"].filter((k) => control[k]).map((k) => k[0]).join("");
+      const ctx = (t, dt) => {
+        const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
+        return {
+          t: +t.toFixed(2),
+          dt: +(dt * 1000).toFixed(1),
+          keys: keys(),
+          lock: +(dolphin.surfLock || 0).toFixed(2),
+          eng: dolphin.surfLockEngaged ? 1 : 0,
+          leap: dolphin.leapFlight ? 1 : 0,
+          lp: dolphin.leaping ? 1 : 0,
+          wet: +(dolphin.hydro ? dolphin.hydro.wetFraction : 0).toFixed(2),
+          rel: +(dolphin.position.y - q.height).toFixed(2),
+          v: +dolphin.velocity.length().toFixed(1),
+          vy: +dolphin.velocity.y.toFixed(1),
+          pitch: +dolphin.pitch.toFixed(2),
+          tp: +dolphin.targetPitch.toFixed(2),
+          slam: dolphin.hydro ? Math.round(dolphin.hydro.slamForce || 0) : 0,
+        };
+      };
+      const note = (kind, value, t, dt, extra) => {
+        counts[kind]++;
+        worst[kind] = Math.max(worst[kind], value);
+        const list = flags[kind];
+        const rec = { value: +value.toFixed(2), ...ctx(t, dt), ...(extra || {}) };
+        if (list.length < 6) list.push(rec);
+        else {
+          let lo = 0;
+          for (let i = 1; i < list.length; i++) if (list[i].value < list[lo].value) lo = i;
+          if (value > list[lo].value) list[lo] = rec;
+        }
+      };
+      let elapsed = 0;
+      let frames = 0;
+      let finite = true;
+      const m = {};
+      while (elapsed < seconds) {
+        const dt = frameDt();
+        // --- the player ---------------------------------------------------
+        reroll -= dt;
+        if (program === "fuzz" && reroll <= 0) {
+          reroll = 0.15 + rnd() * 1.05;
+          control.forward = rnd() < 0.6;
+          control.boost = rnd() < 0.3;
+          control.rise = rnd() < 0.55;
+          control.dive = rnd() < 0.08;
+          control.brake = rnd() < 0.06;
+          const turn = rnd();
+          control.left = turn < 0.15;
+          control.right = turn > 0.85;
+          mouseX = (rnd() - 0.5) * 1200;
+          mouseY = (rnd() - 0.5) * 600;
+          if (rnd() < 0.3) mouseX = mouseY = 0;
+        } else if (program === "lock") {
+          control.forward = true;
+          control.boost = rnd() < 0.02 ? !control.boost : control.boost;
+          if (where === "mega") water.megaAt(dolphin.position.x, dolphin.position.z, m);
+          // Let go of Space every few seconds (a leap), then hold it again.
+          if (elapsed > releaseAt) {
+            releaseFor = 0.1 + rnd() * 0.5;
+            releaseAt = elapsed + releaseFor + 2 + rnd() * 4;
+          }
+          releaseFor -= dt;
+          control.rise = releaseFor <= 0;
+          if (reroll <= 0) {
+            reroll = 0.3 + rnd() * 1.2;
+            // Carve: swing the heading down and back up the line.
+            const want = shore + (rnd() < 0.5 ? -1 : 1) * (0.3 + rnd() * 1.6);
+            let err = want - dolphin.targetYaw;
+            err = Math.atan2(Math.sin(err), Math.cos(err));
+            mouseX = (-err / sens) * 1.5;
+            mouseY = (rnd() - 0.5) * (dolphin.leapFlight ? 800 : 200);
+          }
+        } else if (program === "free") {
+          control.forward = true;
+          control.rise = false;
+          if (reroll <= 0) {
+            reroll = 0.4 + rnd() * 1.5;
+            control.boost = rnd() < 0.6;
+            const breach = rnd() < 0.35;
+            mouseY = breach ? -500 - rnd() * 400 : (rnd() - 0.5) * 300;
+            const want = shore + (rnd() - 0.5) * 2;
+            let err = want - dolphin.targetYaw;
+            err = Math.atan2(Math.sin(err), Math.cos(err));
+            mouseX = (-err / sens) * 1.2;
+          }
+        }
+        // Mouse deltas arrive on some frames and not others.
+        carryX += mouseX * dt;
+        carryY += mouseY * dt;
+        if (rnd() < 0.7) {
+          control.mdx = carryX;
+          control.mdy = carryY;
+          carryX = carryY = 0;
+        } else control.mdx = control.mdy = 0;
+
+        // --- one frame, in the main loop's order -------------------------
+        dolphin.update(dt, control, ocean, seabed, effects);
+        if (cameraRig) cameraRig.update(dt, dolphin, seabed, true);
+        ocean.time += dt;
+        water.setTime(ocean.time);
+        ocean.foamField.update(dt, ocean.time);
+        elapsed += dt;
+        frames++;
+
+        const p = dolphin.position;
+        const v = dolphin.velocity;
+        if (![p.x, p.y, p.z, v.x, v.y, v.z].every(Number.isFinite)) {
+          finite = false;
+          break;
+        }
+        // Position step the velocity does not explain (semi-implicit
+        // Euler moves by the substep velocities, within |dv| dt of v dt).
+        const dv = v.clone().sub(prev.v);
+        const step = p.clone().sub(prev.p).addScaledVector(v, -dt).length();
+        const stepAllow = 0.02 + dv.length() * dt;
+        if (step > stepAllow)
+          note("step", step - stepAllow, elapsed, dt, {
+            sub: (dolphin._subA || []).slice(0, 2).map((q) => q.map((x) => +x.toFixed(1))),
+            plane: +(dolphin.hydro.planing || 0).toFixed(2),
+            aer: +(dolphin.hydro.aeration || 0).toFixed(2),
+          });
+        const a = dv.length() / dt;
+        if (a > 150) note("accel", a, elapsed, dt, { dv: [dv.x, dv.y, dv.z].map((q) => +q.toFixed(2)) });
+        // One-frame spike: much harder than the frames either side.
+        if (pending) {
+          if (pending.a > 60 && pending.a > 3 * Math.max(prev.a0, a)) note("spike", pending.a, pending.t, pending.dt, { at: pending.ctx });
+          pending = null;
+        }
+        pending = { a, t: elapsed, dt, ctx: ctx(elapsed, dt) };
+        prev.a0 = prev.a;
+        prev.a = a;
+        // Losing speed in the air faster than drag can explain.
+        const dry = dolphin.hydro && dolphin.hydro.wetFraction < 0.02;
+        if (dry && prev.dry) {
+          const loss = (prev.v.length() - v.length()) / dt;
+          const g = 9.81 * Math.max(0, v.y) / Math.max(1, v.length());
+          const excess = loss - g - 0.01 * v.length() * v.length() * 0.05;
+          if (excess > 6) note("airStall", excess, elapsed, dt);
+        }
+        prev.dry = dry;
+        // Rotation rates: physical body, rendered head bone, camera.
+        const body = 2 * Math.acos(Math.min(1, Math.abs(prev.q.dot(dolphin.orientation)))) / dt;
+        if (body > 6)
+          note("body", body, elapsed, dt, {
+            dp: +(dolphin.pitch - prev.pitch).toFixed(3),
+            dy: +(dolphin.yaw - prev.yaw).toFixed(3),
+            droll: +(dolphin.roll - prev.roll).toFixed(3),
+            tilt: +dolphin.waterTilt.length().toFixed(3),
+          });
+        prev.q.copy(dolphin.orientation);
+        if (bone) {
+          dolphin.root.updateMatrixWorld(true);
+          const h = bone.getWorldQuaternion(prev.hq.clone());
+          const hr = 2 * Math.acos(Math.min(1, Math.abs(prev.hq.dot(h)))) / dt;
+          if (hr > 8)
+            note("head", hr, elapsed, dt, {
+              dtp: +(dolphin.targetPitch - prev.tp).toFixed(3),
+              dty: +(dolphin.targetYaw - prev.ty).toFixed(3),
+              dtr: +((dolphin.tumbleRoll || 0) - prev.tr).toFixed(3),
+              droll: +(dolphin.roll - prev.roll).toFixed(3),
+              mdy: +control.mdy.toFixed(0),
+              mdx: +control.mdx.toFixed(0),
+            });
+          prev.hq.copy(h);
+        }
+        if (cam) {
+          const cp = cam.position.clone();
+          const cd = cam.getWorldDirection(cam.position.clone());
+          const cv = cp.clone().sub(prev.cp).multiplyScalar(1 / dt);
+          if (prev.cv) {
+            const ca = cv.clone().sub(prev.cv).length() / dt;
+            if (ca > 400) note("camPos", ca, elapsed, dt, { cam: { ...(cameraRig.dbg || {}) }, camPrev: prev.cdbg });
+          }
+          const dr = Math.acos(Math.min(1, prev.cd.dot(cd))) / dt;
+          if (dr > 4) note("camDir", dr, elapsed, dt);
+          prev.cdbg = { ...(cameraRig.dbg || {}) };
+          prev.cp.copy(cp);
+          prev.cd.copy(cd);
+          prev.cv = cv;
+        }
+        // Whitewater tumble: random thrown-body kicks on the visible spine.
+        if ((dolphin.tumbleClock || 0) > (prev.tumbleClock ?? 0) + 0.3) {
+          tumble.kicks++;
+          if (tumble.at.length < 8) tumble.at.push({ ...ctx(elapsed, dt), aer: +(dolphin.hydro ? dolphin.hydro.aeration : 0).toFixed(2), imp: +(dolphin.impact || 0).toFixed(2) });
+        }
+        prev.tumbleClock = dolphin.tumbleClock || 0;
+        const tmag = Math.max(Math.abs(dolphin.tumbleRoll || 0), Math.abs(dolphin.tumblePitch || 0));
+        tumble.max = Math.max(tumble.max, tmag);
+        if (tmag > 0.15) tumble.time += dt;
+        prev.p.copy(p);
+        prev.v.copy(v);
+        prev.tp = dolphin.targetPitch;
+        prev.ty = dolphin.targetYaw;
+        prev.tr = dolphin.tumbleRoll || 0;
+        prev.roll = dolphin.roll;
+        prev.pitch = dolphin.pitch;
+        prev.yaw = dolphin.yaw;
+      }
+      dolphin._subA = null;
+      TUNING.water.timeScale = savedTime;
+      ocean.time = savedClock;
+      water.setTime(savedClock);
+      restoreState(saved);
+      for (const pn of dolphin.hull.panels) pn.prevWet = 0;
+      dolphin.waterTilt.set(0, 0, 0);
+      dolphin.waterTiltRate.set(0, 0, 0);
+      freeze(false);
+      const round = (o) => Object.fromEntries(Object.entries(o).map(([k, x]) => [k, +x.toFixed(2)]));
+      tumble.max = +tumble.max.toFixed(2);
+      tumble.time = +tumble.time.toFixed(1);
+      return { program, where, dt: opts.dt ?? 1 / 60, seed: opts.seed ?? 1, frames, finite, counts, worst: round(worst), tumble, flags };
+    },
+
+    /**
      * Mega wave ride. Starts in the trough `lead` seconds ahead of the next
      * 500 m+ crest (WaveField.megaSpawn), facing shore at `angle` from the
      * travel direction, and steps `seconds` of world time. `mode`:
@@ -569,6 +896,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let hMin = Infinity;
       let onWaveMin = Infinity;
       let onWaveMax = -Infinity;
+      const tail = tailTally();
       let elapsed = 0;
       for (; elapsed < seconds; elapsed += dt) {
         const q = ocean.getWaterSample(dolphin.position.x, dolphin.position.z);
@@ -621,6 +949,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         preAlong = dolphin.velocity.x * dx() + dolphin.velocity.z * dz();
         const xiPre = m.xi;
         stepWorld(dt, control);
+        if (api.onMegaStep) api.onMegaStep({ t: elapsed, control, m });
         if ((dolphin.leapCount || 0) !== leapSeen) {
           leapSeen = dolphin.leapCount || 0;
           if (leapRec && leapLog.length < 12) leapLog.push(leapRec);
@@ -678,6 +1007,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         }
         if (dolphin.surfLock > 0.9) lockTime += dt;
         if ((dolphin.tailStill || 0) > 0.8) stillTime += dt;
+        tail.step(dt);
         if (dolphin.surfLock < 0.5 && api.lock && elapsed > 1) {
           unlockedTime += dt;
           leapRelMax = Math.max(leapRelMax, rel);
@@ -761,6 +1091,7 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
         lockTime,
         unlockedTime,
         stillTime,
+        tail: tail.report(),
         leaps: (dolphin.leapCount || 0) - leaps0,
         leapRelMax,
         leapLog: (leapRec ? [...leapLog, leapRec] : leapLog).map((r) => ({ ...r, air: +r.air.toFixed(2), top: +r.top.toFixed(1), xi0: undefined, age: undefined, stroke: undefined })),

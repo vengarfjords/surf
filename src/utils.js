@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import { PALETTE } from "./config.js";
 
+// Longest frame the simulation steps in one go (a hitch beyond it is
+// dropped). The main loop and the dolphin must agree on it, or the water and
+// the body drift apart on a long frame.
+export const MAX_FRAME_DT = 1 / 25;
+
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
 export const invLerp = (a, b, v) => clamp((v - a) / (b - a), 0, 1);

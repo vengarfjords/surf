@@ -12,7 +12,7 @@ import { HUD } from "./hud.js";
 import { Post } from "./post.js";
 import { WaterDebug } from "./water/debug.js";
 import { createScenarios } from "./water/scenarios.js";
-import { clamp, lerp, smoothstep } from "./utils.js";
+import { clamp, lerp, MAX_FRAME_DT, smoothstep } from "./utils.js";
 
 const frame = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -369,7 +369,7 @@ async function boot() {
   function animate(now = performance.now()) {
     const rawDt = (now - lastFrameTime) / 1000;
     lastFrameTime = now;
-    const dt = Math.min(Math.max(rawDt, 0.0001), 1 / 25);
+    const dt = Math.min(Math.max(rawDt, 0.0001), MAX_FRAME_DT);
     total += dt;
     if (started) {
       elapsed += dt;

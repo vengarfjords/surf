@@ -170,6 +170,12 @@ export class Hull {
       slope: new Float32Array(n),
       phaseSpeed: new Float32Array(n),
     };
+    // What the last full water query returned, and where, so later substeps
+    // in the same frame can correct it for how far each panel has moved.
+    this.sampledPositions = new Float32Array(n * 3);
+    this.sampledHeight = new Float32Array(n);
+    this.sampledPressure = new Float32Array(n);
+    this.sampledValid = false;
 
     this.result = {
       accel: this.accel,
@@ -204,7 +210,7 @@ export class Hull {
    * @param {object} control  thrustAccel, reverseAccel, verticalAccel
    * @param {THREE.Vector3} current
    */
-  apply(dolphin, ocean, control, current, refreshWater = true) {
+  apply(dolphin, ocean, control, current, refreshWater = true, waterAge = 0) {
     const tStart = performance.now();
     const cfg = TUNING.hydro;
     const movement = TUNING.movement;
@@ -245,13 +251,43 @@ export class Hull {
       positions[i * 3 + 1] = p.world.y;
       positions[i * 3 + 2] = p.world.z;
     }
-    // The wave field is static within a render frame, so the expensive
-    // kinematic query runs once per frame and the second 120 Hz substep reuses
-    // it for force integration. Positions still update every substep.
-    if (refreshWater) {
-      ocean.sampleWaterBatch(positions, this.batch, 3, true);
-    }
+    // The expensive kinematic query runs once per frame and the later 120 Hz
+    // substeps reuse it. But within a frame neither the body nor the water
+    // stands still: at 80 m/s a panel moves 0.7 m in one substep, and a
+    // 500 m face rises 0.4 m under it in the same 8 ms. So each reused
+    // surface height is carried along the sampled slope to where the panel
+    // is now, and forward in time by `waterAge` s at the rate the surface
+    // rises there (the kinematic surface condition, w - u . grad eta),
+    // keeping the pressure's decay below the surface as sampled. Without
+    // that, every other substep saw the face where the body had been and
+    // as it had been, and the hull forces flickered between substeps (a
+    // body held on the face was dry in one substep of four).
     const batch = this.batch;
+    const n = this.panels.length;
+    if (refreshWater || !this.sampledValid) {
+      ocean.sampleWaterBatch(positions, batch, 3, true);
+      this.sampledPositions.set(positions);
+      this.sampledHeight.set(batch.height);
+      this.sampledPressure.set(batch.dynamicPressure);
+      this.sampledValid = true;
+    } else {
+      const P0 = this.sampledPositions;
+      const H0 = this.sampledHeight;
+      const D0 = this.sampledPressure;
+      const rhoG = RHO * movement.gravity;
+      for (let i = 0; i < n; i++) {
+        const ny = Math.max(0.05, batch.ny[i]);
+        const sx = -batch.nx[i] / ny;
+        const sz = -batch.nz[i] / ny;
+        const rise = batch.velocityY[i] - batch.velocityX[i] * sx - batch.velocityZ[i] * sz;
+        const dh =
+          sx * (positions[i * 3] - P0[i * 3]) +
+          sz * (positions[i * 3 + 2] - P0[i * 3 + 2]) +
+          Math.max(-150, Math.min(150, rise)) * waterAge;
+        batch.height[i] = H0[i] + dh;
+        batch.dynamicPressure[i] = D0[i] + rhoG * dh;
+      }
+    }
 
     // Planing. Running fast along the surface, a body rides up onto the
     // water: the wetted area shrinks and resistance stops growing with v^2,

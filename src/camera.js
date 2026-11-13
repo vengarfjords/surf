@@ -1,6 +1,10 @@
 import * as THREE from "three";
 import { TUNING } from "./config.js";
-import { clamp, damp, dampVec3, lerp, smoothstep, wrapAngle } from "./utils.js";
+import { clamp, damp, dampVec3, lerp, MAX_FRAME_DT, smoothstep, wrapAngle } from "./utils.js";
+
+// A per-frame blend written for 60 fps, made frame-rate independent: the
+// same pull per second whatever the frame time.
+const perFrame = (f, dt) => 1 - Math.pow(1 - f, dt * 60);
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
@@ -85,7 +89,9 @@ export class CameraRig {
   }
 
   update(dt, dolphin, seabed, started) {
-    dt = Math.min(dt, 1 / 30);
+    // Same cap as the main loop and the dolphin, so a long frame does not
+    // leave the lens behind the body it follows.
+    dt = Math.min(dt, MAX_FRAME_DT);
     this.time += dt;
     this.surfaceCrossCooldown -= dt;
     const camCfg = TUNING.camera;
@@ -216,20 +222,31 @@ export class CameraRig {
     // breach; when it does, the camera is allowed to break through with it.
     const camSurf = this.ocean.getWaterSample(targetPos.x, targetPos.z);
     camSurf.height += dolphin.surfaceLead || 0;
-    if (submerged) {
-      // The surf shot lifts the ceiling continuously, so the lens rises out
-      // through the surface as the blend builds instead of popping.
-      const ceiling = camSurf.height + (nearSurface ? 0.12 : -0.32) + surf * 10;
-      if (targetPos.y > ceiling) targetPos.y = ceiling;
-    } else {
-      // When the dolphin is on or above the surface, let the camera break
-      // through with it so a breach actually reveals the sky.
-      if (this.position.y > camSurf.height - 0.2 && targetPos.y < camSurf.height + 0.52) {
-        targetPos.y = camSurf.height + 0.52;
+    // The under/over rules hand over in about a tenth of a second rather
+    // than on the frame the body crosses a threshold: a dolphin bobbing at
+    // the surface flipped the target between them every few frames, and a
+    // body crossing it at speed made the lens lurch half a metre in a frame.
+    const subT = submerged ? 1 : 0;
+    const nearT = nearSurface ? 1 : 0;
+    this.subBlend = this.initialized ? damp(this.subBlend ?? subT, subT, 10, dt) : subT;
+    this.nearBlend = this.initialized ? damp(this.nearBlend ?? nearT, nearT, 10, dt) : nearT;
+    {
+      // Submerged: the surf shot lifts the ceiling continuously, so the
+      // lens rises out through the surface as the blend builds instead of
+      // popping.
+      let yUnder = targetPos.y;
+      const ceiling = camSurf.height + lerp(-0.32, 0.12, this.nearBlend) + surf * 10;
+      if (yUnder > ceiling) yUnder = ceiling;
+      // On or above the surface: let the camera break through with the
+      // dolphin so a breach actually reveals the sky.
+      let yOver = targetPos.y;
+      if (this.position.y > camSurf.height - 0.2 && yOver < camSurf.height + 0.52) {
+        yOver = camSurf.height + 0.52;
       }
-      if (targetPos.y < camSurf.height - 0.35 && this.position.y > camSurf.height + 0.3) {
-        targetPos.y = camSurf.height + 0.35;
+      if (yOver < camSurf.height - 0.35 && this.position.y > camSurf.height + 0.3) {
+        yOver = camSurf.height + 0.35;
       }
+      targetPos.y = lerp(yOver, yUnder, this.subBlend);
     }
     const floorAt = seabed.getSurfaceHeight(targetPos.x, targetPos.z);
     if (targetPos.y < floorAt + 0.52) targetPos.y = floorAt + 0.52;
@@ -252,31 +269,56 @@ export class CameraRig {
       dampVec3(this.look, targetLook, camCfg.rotationLag, dt);
     }
 
+    // What the waterline rules did this frame (read by scenarios.glitchProbe).
+    const dbg = this.dbg || (this.dbg = {});
+    dbg.yDamped = this.position.y;
+    dbg.sub = submerged ? 1 : 0;
+    dbg.near = nearSurface ? 1 : 0;
+    dbg.surf = +surf.toFixed(2);
+    dbg.tgtY = +(targetPos.y - waterAtDolphin).toFixed(2);
     // Re-check after damping; the smoothed camera can otherwise still pass
     // through a steep bank or a crest.
     const smoothedSurf = this.ocean.getWaterSample(this.position.x, this.position.z);
     smoothedSurf.height += dolphin.surfaceLead || 0;
     const smoothedFloor = seabed.getSurfaceHeight(this.position.x, this.position.z);
-    // The underwater bands hand over to the surf shot's clearance.
+    // The underwater bands hand over to the surf shot's clearance. They
+    // ease the lens over at a limited speed (`camera.bandSpeed` on top of
+    // how fast the surface itself is moving): swimming straight up a face
+    // the lens trails metres below the dolphin, and pulling 30% of that gap
+    // in one frame when the snout reached the surface was a visible jump.
     const under = 1 - smoothstep(0.05, 0.4, surf);
-    if (submerged && !nearSurface && this.position.y > smoothedSurf.height - 0.18) {
-      this.position.y = lerp(this.position.y, smoothedSurf.height - 0.18, 0.3 * under);
-    } else if (submerged && nearSurface) {
+    const bandStep = ((camCfg.bandSpeed ?? 6) + Math.abs(dolphin._slDEta || 0)) * dt;
+    const easeY = (y, w) => {
+      if (w <= 0) return;
+      // The speed limit grows with the band's own weight, so a band that is
+      // just handing over starts the lens moving gently.
+      const cap = bandStep * Math.min(1, 2 * w);
+      const d = (y - this.position.y) * perFrame(0.3, dt) * w;
+      this.position.y += clamp(d, -cap, cap);
+    };
+    const deep = this.subBlend * (1 - this.nearBlend) * under;
+    if (deep > 0.001 && this.position.y > smoothedSurf.height - 0.18) easeY(smoothedSurf.height - 0.18, deep);
+    const band = this.subBlend * this.nearBlend * under;
+    if (band > 0.001) {
       // Keep the camera inside a narrow band around the local surface.
       const lo = smoothedSurf.height - 0.22;
       const hi = smoothedSurf.height + 0.12;
-      if (this.position.y < lo) this.position.y = lerp(this.position.y, lo, 0.3 * under);
-      if (this.position.y > hi) this.position.y = lerp(this.position.y, hi, 0.3 * under);
+      if (this.position.y < lo) easeY(lo, band);
+      else if (this.position.y > hi) easeY(hi, band);
     }
-    if (surf > 0.6) {
-      // A crest rolling under the lens lifts the camera rather than burying it.
+    // A crest rolling under the lens lifts the camera rather than burying it.
+    // It fades in with the surf shot instead of switching on at a threshold.
+    const crest = smoothstep(0.45, 0.75, surf);
+    if (crest > 0) {
       const lo = smoothedSurf.height + camCfg.surfClearance * 0.6;
-      if (this.position.y < lo) this.position.y = lerp(this.position.y, lo, 0.35 * surf);
+      if (this.position.y < lo) this.position.y = lerp(this.position.y, lo, perFrame(0.35, dt) * surf * crest);
     }
     if (this.position.y < smoothedFloor + 0.48) {
-      this.position.y = lerp(this.position.y, smoothedFloor + 0.48, 0.4);
+      this.position.y = lerp(this.position.y, smoothedFloor + 0.48, perFrame(0.4, dt));
     }
 
+    dbg.band = +(this.position.y - dbg.yDamped).toFixed(3);
+    dbg.camRel = +(this.position.y - smoothedSurf.height).toFixed(2);
     // Camera shake is a decaying, frequency-shaped impulse, not random noise.
     this.impact = Math.max(this.impact * Math.exp(-4.5 * dt), dolphin.impact);
     const shake = this.impact * camCfg.shake;
