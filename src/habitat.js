@@ -1500,6 +1500,11 @@ function makeSeagrassMaterial() {
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.16, 0.08), bladeBrown * (0.15 + vGrassT * 0.35));
           float bladeSpecks = smoothstep(0.82, 0.95, vnoise(vCausticWorld.xz * 55.0 + vGrassT * 12.0));
           diffuseColor.rgb += vec3(0.08, 0.08, 0.05) * bladeSpecks;
+          // Past ten metres or so a blade is only a pixel or two wide; its
+          // colour settles toward the meadow's mean so the field reads as a
+          // soft mat instead of a scatter of bright specks.
+          float bladeFar = smoothstep(7.0, 22.0, distance(vCausticWorld, cameraPosition));
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.13, 0.19, 0.08), bladeFar * 0.7);
         `
       );
   };

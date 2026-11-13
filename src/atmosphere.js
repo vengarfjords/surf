@@ -77,8 +77,12 @@ export const glslSky = /* glsl */ `
     float foot = smoothstep(0.012, -0.002, y);
     nearCol = mix(nearCol, horizon, foot * 0.75);
     farCol = mix(farCol, horizon, foot * 0.5);
-    col = mix(col, farCol, farMask * step(0.0, y + 0.004));
-    col = mix(col, nearCol, nearMask * step(0.0, y + 0.004));
+    // A rough sea reflects a lobe several degrees wide, so the thin strip of
+    // coast is averaged with the haze around it and only faintly darkens a
+    // reflection.
+    float landA = mix(0.3, 1.0, detail * detail);
+    col = mix(col, farCol, farMask * step(0.0, y + 0.004) * landA);
+    col = mix(col, nearCol, nearMask * step(0.0, y + 0.004) * landA);
     return col;
   }
 

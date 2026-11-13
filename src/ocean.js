@@ -1033,9 +1033,16 @@ export class Ocean {
             // Snell's window: refracted sky within the critical angle
             // (48.6°, cos 0.6614), total internal reflection outside it.
             vec3 I = -view; // camera -> surface
+            // Under foam and whitewater the light has been scattered by the
+            // bubbles before it arrives: there is no sharp Snell window to
+            // see through the churned surface, only a soft glow. Take the
+            // window from the smoothed surface there, and blur its edge.
+            float churn = clamp(aeration * 1.2 + freshCover + foamCover * 0.5, 0.0, 1.0);
+            vec3 calmN = normalize(mix(microN, n, churn));
+            vec3 microN = calmN;
             float cosI = clamp(dot(I, microN), 0.0, 1.0);
-            float window = smoothstep(0.654, 0.69, cosI);
-            float rim = exp(-pow((cosI - 0.6614) / 0.014, 2.0));
+            float window = smoothstep(0.654 - 0.12 * churn, 0.69 + 0.12 * churn, cosI);
+            float rim = exp(-pow((cosI - 0.6614) / 0.014, 2.0)) * (1.0 - churn);
             vec3 refr = refract(I, -microN, 1.0 / 1.333);
             vec3 winDir = length(refr) > 0.5 ? normalize(refr) : normalize(I);
 
@@ -1059,8 +1066,10 @@ export class Ocean {
             // Foam seen from below: a dark-edged, bright lace ceiling.
             below = mix(below, vec3(0.46, 0.6, 0.58), foamCover * foamCover * 0.3);
             below = mix(below, vec3(0.45, 0.62, 0.58), aeration * 0.45);
-            // Whitewater seen from below glows with the light it diffuses.
-            below = mix(below, vec3(0.6, 0.76, 0.74), freshCover * 0.45);
+            // Whitewater seen from below glows with the light it diffuses:
+            // brightest where it is thickest, with soft, uneven density.
+            float glowN = 0.8 + 0.4 * fbm2(p * 1.3 + uTime * 0.05);
+            below = mix(below, vec3(0.6, 0.76, 0.74) * glowN, freshCover * 0.55);
             below = applyWaterFog(below, vDistance, uFogColor, uFogDensity * 0.72);
           }
 

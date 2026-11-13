@@ -103,7 +103,8 @@ const FilmShader = {
         float m = 1.0 - smoothstep(0.3, 1.0, dist);
         m *= m;
         float dome = sqrt(max(0.0, 1.0 - dist * dist));
-        vec2 off = -(d / (r * wob)) * (1.0 - dome * 0.6) * (0.012 / scale) * 5.0;
+        // Small drops bend the view less and are blurrier still.
+        vec2 off = -(d / (r * wob)) * (1.0 - dome * 0.6) * (0.012 / scale) * (L == 0 ? 4.0 : 2.5);
         acc.xy += off * m;
         acc.z = max(acc.z, m);
       }
@@ -193,9 +194,9 @@ const FilmShader = {
           + texture2D(tDiffuse, clamp(uvA - bo, 0.001, 0.999)).rgb
           + texture2D(tDiffuse, clamp(uvA + vec2(-bo.x, bo.y), 0.001, 0.999)).rgb
           + texture2D(tDiffuse, clamp(uvA + vec2(bo.x, -bo.y), 0.001, 0.999)).rgb;
-        color = mix(color, soft * 0.25, dropMask * 0.45);
+        color = mix(color, soft * 0.25, dropMask * 0.7);
         float edge = dropMask * (1.0 - dropMask) * 4.0;
-        color *= 1.0 - edge * 0.05;
+        color *= 1.0 - edge * 0.03;
       }
 
       // Fine film grain, mostly in the shadows.

@@ -551,9 +551,13 @@ async function boot() {
       pendingGpuQuery = gl.createQuery();
       gl.beginQuery(timerExt.TIME_ELAPSED_EXT, pendingGpuQuery);
     }
+    // The lens gets wet when it breaks the surface, or when it is close
+    // enough to the dolphin to be caught by its spray; a breach seen from a
+    // few body lengths away leaves the lens dry, as it would a real camera.
+    const lensSpray = 1 - THREE.MathUtils.smoothstep(camera.position.distanceTo(dolphin.position), 2.5, 6);
     post.render(dt, {
       underwater: camState.underwater,
-      wetness: Math.max(camState.wetness, dolphin.wetness * 0.6),
+      wetness: Math.max(camState.wetness, dolphin.wetness * 0.6 * lensSpray),
       speedNorm: camState.speedNorm,
       waterLevel: camState.waterHeight,
     });
