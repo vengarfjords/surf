@@ -142,11 +142,8 @@ function addDolphinMaterialShader(material, uniforms) {
         /* glsl */ `
           #include <color_fragment>
           // The geometry has been baked upright, so local Y is dorsal.
-          // The baked body is only ~0.5 m tall, so the countershading
-          // bands sit within a few tens of centimetres of the midline:
-          // a dark grey back, paler flanks, a cream belly.
-          float dorsalAmount = smoothstep(-0.1, 0.16, vDolphinLocal.y);
-          float bellyMix = 1.0 - smoothstep(-0.22, 0.06, vDolphinLocal.y);
+          float dorsalAmount = smoothstep(-0.2, 0.65, vDolphinLocal.y);
+          float bellyMix = 1.0 - smoothstep(-1.2, 0.7, vDolphinLocal.y);
           vec3 darkBack = vec3(0.13, 0.23, 0.27);
           vec3 paleBelly = vec3(1.35, 1.26, 1.05);
           diffuseColor.rgb *= mix(darkBack, paleBelly, bellyMix);
@@ -170,6 +167,12 @@ function addDolphinMaterialShader(material, uniforms) {
       /* glsl */ `
         vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;
         outgoingLight *= mix(vec3(0.17, 0.25, 0.29), vec3(1.03, 0.99, 0.9), 1.0 - dorsalAmount * 0.88);
+        // Countershading by facing: whatever faces the sky is the dark
+        // slate back of a bottlenose, whatever faces the floor stays pale,
+        // whatever the pose or bend of the body.
+        vec3 upView = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+        float facingUp = smoothstep(-0.35, 0.55, dot(normal, upView));
+        outgoingLight *= mix(vec3(0.95, 0.95, 0.92), vec3(0.34, 0.39, 0.42), facingUp);
       `
     );
   };

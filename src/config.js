@@ -49,7 +49,7 @@ export const TUNING = {
     // Base limit for the mid-body; it tapers stiffer toward the shoulders and
     // looser toward the peduncle, like a real dolphin's vertebral column.
     bodyBendLimit: 0.3,
-    skin: 0x56656c,
+    skin: 0x3d484e,
     belly: 0xb3bfb9,
   },
 
@@ -498,9 +498,9 @@ export const PALETTE = {
   fogDeep: 0x0d2f45,
   waterTop: 0x4fb3a4,
   waterDeep: 0x0b3442,
-  skyZenith: 0x9aa4ab,
-  skyMid: 0xe2d6c0,
-  skyMidAway: 0xc4c6c2,
+  skyZenith: 0x8c97a0,
+  skyMid: 0xd9d1c2,
+  skyMidAway: 0xb6bbba,
   skyHorizon: 0xf3caa2,
   skyHorizonAway: 0xb7bfc0,
   skyCloud: 0x8c9196,
@@ -619,6 +619,11 @@ export const TUNE_CONTROLS = [
   { path: "visuals.volumetricCaustics", label: "caustic light", min: 0, max: 1.8, step: 0.01 },
   { path: "visuals.surfaceHaze", label: "surface haze", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.surfaceMist", label: "sea mist", min: 0, max: 1.5, step: 0.01 },
+  { path: "visuals.seaMist", label: "low sea mist", min: 0, max: 4, step: 0.01 },
+  { path: "visuals.horizonFog", label: "horizon fog", min: 0, max: 3, step: 0.01 },
+  { path: "visuals.whitecaps", label: "whitecaps", min: 0, max: 2.5, step: 0.01 },
+  { path: "visuals.foamStreaks", label: "foam streaks", min: 0, max: 2, step: 0.01 },
+  { path: "visuals.spindrift", label: "crest spindrift", min: 0, max: 2, step: 0.01 },
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.dynamicQuality", label: "dynamic quality", type: "toggle" },
   { path: "visuals.dynamicQualityMinScale", label: "min render scale", min: 0.4, max: 0.8, step: 0.01 },

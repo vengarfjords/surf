@@ -1328,8 +1328,8 @@ function bladeGeometry() {
     const facing = rnd() * Math.PI;
     const dirX = Math.cos(facing);
     const dirZ = Math.sin(facing);
-    const halfW = 0.012 + rnd() * 0.011;
-    const lean = 0.025 + rnd() * 0.1;
+    const halfW = 0.015 + rnd() * 0.013;
+    const lean = 0.05 + rnd() * 0.2;
     const twist = (rnd() - 0.5) * 0.65;
     const curl = (rnd() - 0.5) * 0.05;
     const tipSway = (rnd() - 0.5) * 0.1;

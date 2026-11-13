@@ -561,7 +561,9 @@ export class Ocean {
 
         float foamTexture(vec2 p, float dist) {
           float near = 1.0 - smoothstep(25.0, 140.0, dist);
-          float lace = foamCells(p * 1.7 + vec2(uTime * 0.05, -uTime * 0.03));
+          // Warp the cells so the lace never reads as a regular net.
+          vec2 warp = vec2(vnoise(p * 0.6 + 3.0), vnoise(p * 0.6 - 5.0)) * 1.6;
+          float lace = foamCells(p * 1.7 + warp + vec2(uTime * 0.05, -uTime * 0.03));
           float fine = near > 0.01 ? foamCells(p * 4.6 - vec2(uTime * 0.08, uTime * 0.05)) : 0.5;
           float body = fbm2(p * 0.45 + uTime * 0.02);
           float t = mix(0.35 + 0.65 * body, lace * 0.35 + fine * 0.25 + body * 0.6, near * 0.7 + 0.1);
@@ -649,6 +651,8 @@ export class Ocean {
           float capLife = vnoise(vec2(perpA * 0.11, perpB * 0.11) + uTime * 0.21);
           float windCaps = smoothstep(0.7, 0.92, capCell * 0.6 + capLife * 0.55 + slopeEnergy * 0.25)
             * smoothstep(-0.2, 0.5, vCrest + microHeight * 0.4);
+          // A mega face is swept clean by its own flow; keep its caps sparse.
+          windCaps *= 1.0 - 0.75 * smoothstep(0.05, 0.3, megaRise);
           foam = max(foam, windCaps * 0.85 * clamp(uWhitecaps - 0.4, 0.0, 1.0));
           foam *= 1.0 - smoothstep(1500.0, 5200.0, vDistance);
 
@@ -693,7 +697,7 @@ export class Ocean {
             float across = dot(p, vec2(-megaDir.y, megaDir.x));
             float scar = vnoise(vec2(along * 0.006 - uTime * 0.05, across * 0.06));
             scar = scar * 0.6 + vnoise(vec2(along * 0.02, across * 0.21) + 5.0) * 0.4;
-            float scars = smoothstep(0.6, 0.86, scar) * smoothstep(0.08, 0.5, megaRise);
+            float scars = smoothstep(0.62, 0.95, scar) * smoothstep(0.08, 0.5, megaRise) * 0.75;
             streaks = max(streaks, scars * (megaFront ? 1.0 : 0.45));
           }
           foam = max(foam, streaks * 0.42 * uFoamStreaks);
@@ -707,100 +711,116 @@ export class Ocean {
           // Thin foam is lace; thick foam closes up into a white sheet.
           float foamCover = clamp(foam * (0.45 + 0.9 * foamTex) + foam * foam * 0.4, 0.0, 1.0);
           foamCover = smoothstep(0.08, 0.85, foamCover);
-
-          // ---- above the surface ----------------------------------------
-          float cosView = clamp(dot(view, microN), 0.0, 1.0);
-          float fres = 0.02 + 0.98 * pow(1.0 - cosView, 5.0);
-          // A rough sea never reaches mirror reflectance at grazing angles.
-          fres = min(fres, 0.62);
-          vec3 refl = reflect(-view, microN);
-          vec3 sky = skyReflection(refl);
-          vec3 viewFlat = normalize(vec3(-view.x, 0.0, -view.z) + vec3(1e-4, 0.0, 0.0));
-          vec3 horizon = skyHorizonColor(viewFlat, uSunDir);
-
-          // Diffuse light under the overcast: mostly sky, a little sun.
-          float skyLight = 0.62 + 0.38 * microN.y;
-          vec3 ambient = mix(SKY_HORIZON_AWAY, SKY_MID, 0.5) * skyLight;
-
-          float shallowMix = smoothstep(0.9, 14.0, pathDepth);
-          vec3 shallow = uTopColor * 0.55 + vec3(0.03, 0.05, 0.02);
-          vec3 body = mix(shallow, uDeepColor, shallowMix) * ambient;
-
-          // Subsurface light. The water near a crest is thin, and the face
-          // tilted toward the viewer shows light coming through it: the
-          // translucent turquoise of the reference sea. Looking toward the
-          // sun the whole crest glows.
-          float thin = max(smoothstep(-0.15, 0.9, vCrest), smoothstep(0.45, 1.0, megaRise));
-          vec2 nH = microN.xz;
-          vec2 vH = view.xz / max(length(view.xz), 1e-4);
-          float faceView = clamp(dot(nH, vH) * 3.0, 0.0, 1.0);
-          float towardSun = pow(clamp(dot(-view, uSunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
-          float sss = thin * (0.35 + faceView * 0.9 + towardSun * 0.8);
-          sss += faceView * 0.18;
-          vec3 sssColor = uTopColor * vec3(0.85, 1.05, 0.95);
-          body += sssColor * sss * 0.42 * (0.7 + 0.3 * microHeight);
-          // Wave-face legibility from the sun side.
-          vec2 sunFlat = normalize(uSunDir.xz);
-          float faceSun = clamp(-dot(n.xz, sunFlat) * 2.0, -1.0, 1.0);
-          body *= 1.0 + faceSun * 0.14;
-          // Bubbles below the foam scatter the light: pale turquoise.
-          body = mix(body, sssColor * 0.9 + 0.08, clamp(aeration * 0.75 + foam * 0.3, 0.0, 0.85));
-
-          vec3 above = mix(body, sky, fres);
-
-          // Overcast sheen: a broad soft highlight toward the hidden sun and
-          // only a scatter of small sparkles, never a hard sun path.
-          float sunAlign = max(dot(refl, uSunDir), 0.0);
-          float sheen = pow(sunAlign, 18.0) * 0.12 + pow(sunAlign, 160.0) * 0.35;
-          float sparkle = smoothstep(0.7, 0.95, vnoise(p * 3.4 + vec2(uTime * 0.4, -uTime * 0.33)));
-          sheen += pow(sunAlign, 600.0) * sparkle * 1.4 * (1.0 - smoothstep(60.0, 500.0, vDistance));
-          above += SKY_HORIZON_SUN * sheen * (1.0 - foamCover);
-
-          // Foam: lit by the sky, slightly shadowed in its own cell walls.
-          vec3 foamLit = mix(ambient * 0.86, ambient * 1.18 + SKY_HORIZON_SUN * 0.08, foamTex);
-          foamLit *= 1.0 + faceSun * 0.08;
-          above = mix(above, foamLit, foamCover * 0.94);
-
-          // ---- below the surface ----------------------------------------
-          // Snell's window: refracted sky within the critical angle
-          // (48.6°, cos 0.6614), total internal reflection outside it.
-          vec3 I = -view; // camera -> surface
-          float cosI = clamp(dot(I, microN), 0.0, 1.0);
-          float window = smoothstep(0.654, 0.69, cosI);
-          float rim = exp(-pow((cosI - 0.6614) / 0.014, 2.0));
-          vec3 refr = refract(I, -microN, 1.0 / 1.333);
-          vec3 winDir = length(refr) > 0.5 ? normalize(refr) : normalize(I);
-
-          float wav = clamp(vCrest * 0.5 + 0.5, 0.0, 1.0);
-          vec3 tir = uDeepColor * 0.55 + uTopColor * 0.06;
-          tir *= 0.88 + 0.28 * wav;
-          tir += uTopColor * (0.06 + 0.13 * wav) * (0.4 + 0.6 * microHeight);
-          tir += uTopColor * pow(max(0.0, 1.0 - cosI), 1.25) * 0.08;
-          float undersideSheen = pow(max(dot(reflect(-view, microN), uSunDir), 0.0), 24.0);
-          tir += uSunColor * undersideSheen * 0.1;
-          float veins = causticNetwork(vWorld.xz * 0.34 + vec2(uTime * 0.02, -uTime * 0.015), uTime * 0.55);
-          tir += uTopColor * veins * 0.03 * (0.45 + 0.55 * wav);
-
-          vec3 winCol = skyColor(winDir, uSunDir, uTime, 0.6);
-          winCol = mix(winCol, uTopColor * 0.85, 0.32);
-          winCol *= (0.84 + 0.28 * microHeight) * 0.78;
-
-          vec3 below = mix(tir, winCol, window * 0.94);
-          below += uTopColor * rim * 0.7;
-          // Foam seen from below: a dark-edged, bright lace ceiling.
-          below = mix(below, vec3(0.46, 0.6, 0.58), foamCover * foamCover * 0.3);
-          below = mix(below, vec3(0.45, 0.62, 0.58), aeration * 0.45);
-          below = applyWaterFog(below, vDistance, uFogColor, uFogDensity * 0.72);
-
-          // Above-water distance fog fades to the horizon colour in that
-          // direction, so the far sea dissolves into the sea mist.
-          float hz = 1.0 - exp(-vDistance * 0.00026 * uHorizonFog);
-          hz = max(hz, (1.0 - exp(-vDistance * 0.0006 * uHorizonFog)) * (1.0 - smoothstep(0.0, 0.2, abs(view.y))));
-          vec3 aboveFog = mix(above, horizon, clamp(hz, 0.0, 0.97));
+          // Far foam is unresolved: softer and thinner, never paint flecks.
+          foamCover *= 1.0 - 0.45 * smoothstep(200.0, 1200.0, vDistance);
 
           float nearSurface = clamp(1.0 - abs(uUnderwater - 0.5) * 2.0, 0.0, 1.0);
           float localAbove = smoothstep(-0.08, 0.08, uCameraPos.y - vWorld.y);
           float aboveWeight = mix(clamp(1.0 - uUnderwater, 0.0, 1.0), localAbove, nearSurface);
+
+          // ---- above the surface ----------------------------------------
+          // Only the side the camera can see is shaded.
+          vec3 above = vec3(0.0);
+          vec3 aboveFog = vec3(0.0);
+          if (aboveWeight > 0.001) {
+            float cosView = clamp(dot(view, microN), 0.0, 1.0);
+            float fres = 0.02 + 0.98 * pow(1.0 - cosView, 5.0);
+            // A rough sea never reaches mirror reflectance at grazing angles.
+            fres = min(fres, 0.52);
+            vec3 refl = reflect(-view, microN);
+            vec3 sky = skyReflection(refl);
+            vec3 viewFlat = normalize(vec3(-view.x, 0.0, -view.z) + vec3(1e-4, 0.0, 0.0));
+            vec3 horizon = skyHorizonColor(viewFlat, uSunDir);
+
+            // Diffuse light under the overcast: mostly sky, a little sun.
+            float skyLight = 0.62 + 0.38 * microN.y;
+            vec3 ambient = mix(SKY_HORIZON_AWAY, SKY_MID, 0.5) * skyLight;
+
+            float shallowMix = smoothstep(0.9, 14.0, pathDepth);
+            vec3 shallow = uTopColor * 0.55 + vec3(0.03, 0.05, 0.02);
+            vec3 body = mix(shallow, uDeepColor, shallowMix) * ambient;
+
+            // Subsurface light. The water near a crest is thin, and the face
+            // tilted toward the viewer shows light coming through it: the
+            // translucent turquoise of the reference sea. Looking toward the
+            // sun the whole crest glows.
+            float thin = max(smoothstep(-0.15, 0.9, vCrest), smoothstep(0.45, 1.0, megaRise));
+            vec2 nH = microN.xz;
+            vec2 vH = view.xz / max(length(view.xz), 1e-4);
+            float faceView = clamp(dot(nH, vH) * 3.0, 0.0, 1.0);
+            float towardSun = pow(clamp(dot(-view, uSunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
+            float sss = thin * (0.35 + faceView * 0.9 + towardSun * 0.8);
+            sss += faceView * 0.18;
+            vec3 sssColor = uTopColor * vec3(0.85, 1.05, 0.95);
+            body += sssColor * sss * 0.42 * (0.7 + 0.3 * microHeight);
+            // Wave-face legibility from the sun side.
+            vec2 sunFlat = normalize(uSunDir.xz);
+            float faceSun = clamp(-dot(n.xz, sunFlat) * 2.0, -1.0, 1.0);
+            body *= 1.0 + faceSun * 0.14;
+            // Bubbles below the foam scatter the light: pale turquoise.
+            body = mix(body, sssColor * 0.9 + 0.08, clamp(aeration * 0.75 + foam * 0.3, 0.0, 0.85));
+
+            above = mix(body, sky, fres);
+
+            // Overcast sheen: a broad soft highlight toward the hidden sun and
+            // only a scatter of small sparkles, never a hard sun path.
+            float sunAlign = max(dot(refl, uSunDir), 0.0);
+            float sheen = pow(sunAlign, 18.0) * 0.12 + pow(sunAlign, 160.0) * 0.35;
+            float sparkle = smoothstep(0.7, 0.95, vnoise(p * 3.4 + vec2(uTime * 0.4, -uTime * 0.33)));
+            sheen += pow(sunAlign, 600.0) * sparkle * 1.4 * (1.0 - smoothstep(60.0, 500.0, vDistance));
+            above += SKY_HORIZON_SUN * sheen * (1.0 - foamCover);
+
+            // Foam: lit by the sky, slightly shadowed in its own cell walls.
+            vec3 foamLit = mix(ambient * 0.86, ambient * 1.18 + SKY_HORIZON_SUN * 0.08, foamTex);
+            foamLit *= 1.0 + faceSun * 0.08;
+            above = mix(above, foamLit, foamCover * 0.94);
+
+
+            // Above-water distance fog fades to the horizon colour in that
+            // direction, so the far sea dissolves into the sea mist.
+            // Clear for the first few hundred metres, then thickening, so a
+            // nearby face stays crisp while the far sea melts away.
+            float hz = 1.0 - exp(-pow(vDistance * 0.00021 * uHorizonFog, 1.6));
+            hz = max(hz, (1.0 - exp(-pow(vDistance * 0.00036 * uHorizonFog, 1.6))) * (1.0 - smoothstep(0.0, 0.15, abs(view.y))));
+            aboveFog = mix(above, horizon, clamp(hz, 0.0, 0.97));
+
+          }
+
+          // ---- below the surface ----------------------------------------
+          vec3 below = vec3(0.0);
+          if (aboveWeight < 0.999) {
+            // Snell's window: refracted sky within the critical angle
+            // (48.6°, cos 0.6614), total internal reflection outside it.
+            vec3 I = -view; // camera -> surface
+            float cosI = clamp(dot(I, microN), 0.0, 1.0);
+            float window = smoothstep(0.654, 0.69, cosI);
+            float rim = exp(-pow((cosI - 0.6614) / 0.014, 2.0));
+            vec3 refr = refract(I, -microN, 1.0 / 1.333);
+            vec3 winDir = length(refr) > 0.5 ? normalize(refr) : normalize(I);
+
+            float wav = clamp(vCrest * 0.5 + 0.5, 0.0, 1.0);
+            vec3 tir = uDeepColor * 0.55 + uTopColor * 0.06;
+            tir *= 0.88 + 0.28 * wav;
+            tir += uTopColor * (0.06 + 0.13 * wav) * (0.4 + 0.6 * microHeight);
+            tir += uTopColor * pow(max(0.0, 1.0 - cosI), 1.25) * 0.08;
+            float undersideSheen = pow(max(dot(reflect(-view, microN), uSunDir), 0.0), 24.0);
+            tir += uSunColor * undersideSheen * 0.1;
+            float veins = causticNetwork(vWorld.xz * 0.34 + vec2(uTime * 0.02, -uTime * 0.015), uTime * 0.55);
+            tir += uTopColor * veins * 0.03 * (0.45 + 0.55 * wav);
+
+            vec3 winCol = skyColor(winDir, uSunDir, uTime, 0.6);
+            winCol = mix(winCol, uTopColor * 0.9, 0.3);
+            // The window is broken up by the ripples it is seen through.
+            winCol *= (0.62 + 0.6 * microHeight) * (0.68 + 0.65 * veins) * 0.74;
+
+            below = mix(tir, winCol, window * 0.94);
+            below += uTopColor * rim * 0.7;
+            // Foam seen from below: a dark-edged, bright lace ceiling.
+            below = mix(below, vec3(0.46, 0.6, 0.58), foamCover * foamCover * 0.3);
+            below = mix(below, vec3(0.45, 0.62, 0.58), aeration * 0.45);
+            below = applyWaterFog(below, vDistance, uFogColor, uFogDensity * 0.72);
+          }
+
           float camGap = uCameraPos.y - vWorld.y;
           float meniscus = exp(-pow(camGap / 0.05, 2.0)) * nearSurface;
           vec3 color = mix(below, aboveFog, aboveWeight);

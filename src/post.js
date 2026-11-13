@@ -139,9 +139,9 @@ const FilmShader = {
         color = mix(aboveC, color, under);
       }
 
-      // Lens drops catch a highlight.
+      // Lens drops: refraction only (above), plus a faint rim.
       if (dropMask > 0.001) {
-        color = mix(color, color * 1.12 + 0.03, dropMask * 0.5);
+        color *= 1.0 + dropMask * (1.0 - dropMask) * 0.25;
       }
 
       // Fine film grain, mostly in the shadows.

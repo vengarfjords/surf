@@ -446,28 +446,6 @@ export class ParticleFX {
           b: 0.94,
         });
       }
-      if (brk > 0.3 || crest > 0.8) {
-        this.windSprayPool.spawn({
-          x,
-          y: s.height + 0.6,
-          z,
-          vx: bx + wx * 3,
-          vy: 0.8,
-          vz: bz + wz * 3,
-          bx: bx + wx * 2.5,
-          by: 0.2,
-          bz: bz + wz * 2.5,
-          life: 2.5 + Math.random() * 2,
-          size: size * 4,
-          drag: 0.6,
-          gravity: 0,
-          wobble: 0.3,
-          alpha: 0.12,
-          r: 0.88,
-          g: 0.91,
-          b: 0.92,
-        });
-      }
     }
   }
 
