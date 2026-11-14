@@ -40,6 +40,9 @@ export const TUNING = {
     tailSurgeHeave: 0.03,
     tailAccelReference: 3.0,
     tailAccelSmoothing: 6.0,
+    // Rate (1/s) at which the stroke winds up or dies away when W or Shift
+    // is pressed or let go, and when the tail leaves or meets the water.
+    tailEase: 9,
     tailAccelClamp: 8.0,
     flukePitch: 0.22,
     bodyFollow: 1.35,
@@ -104,7 +107,12 @@ export const TUNING = {
     waveSurf: 0.82,
     gravity: 9.81,
     floorClearance: 0.52,
-    floorBounce: 0.3,
+    // Sand yields under the body: the speed into it is taken out at this
+    // rate (1/s), faster the deeper the body is pressed in, and nothing
+    // springs back (it used to stop the body dead in one frame and throw it
+    // back up at a third of the speed, so a dive into the sand dribbled
+    // along the bottom like a ball).
+    floorYield: 20,
     breachImpulse: 1.6,
     // Shift held as the body breaks the surface: one last fluke stroke of
     // this much speed (m/s, at surge speed; scaled by exit speed) along the
@@ -146,6 +154,8 @@ export const TUNING = {
     airStall: 0.5,
     airInducedDrag: 0.2,
     airAimMax: 0.6,
+    // How far off the flight path A/D can swing the nose sideways (rad).
+    airYawMax: 0.6,
     // Weathervane: rate (1/s) at which the nose relaxes back onto the
     // flight path once the player stops aiming it.
     airAimReturn: 1.5,
@@ -154,6 +164,12 @@ export const TUNING = {
     // How fast the automatic pitch (ride trim, surface lock) may turn the
     // nose just after a flight ends (rad/s).
     landingPitchRate: 3,
+    // For `landingTrimTime` s after a flight ends, the ride trim pulls the
+    // nose no higher than `landingClimb` rad above level (plus the slope
+    // needed to follow a rising surface): a re-entry levels out and rises
+    // gently instead of whipping straight back up.
+    landingClimb: 0.25,
+    landingTrimTime: 2.4,
     // Fastest the nose is turned up or down by anything other than the
     // player's own input (leap, flight path, ride trim, surface lock), rad/s.
     autoPitchRate: 5,
@@ -234,6 +250,14 @@ export const TUNING = {
     flukeOscillation: 0.12,
     finLiftMax: 1.2,
     liftCap: 5200,
+    // Keel (hull.js): the slender body, dorsal fin and tail stock as a
+    // vertical foil. Side force = 1/2 rho x keelArea x keelLiftSlope x
+    // sideslip x speed^2, at right angles to the path, up to a sideslip of
+    // `keelStall` rad and twice `liftCap`. At cruise it pulls a small slip
+    // out in about a third of a second.
+    keelArea: 0.2,
+    keelLiftSlope: 3.0,
+    keelStall: 0.35,
     thrustAerationLoss: 0.75,
     // Passive surface trim when the player is not pitching: the body settles
     // parallel to the local face instead of floating nose-up forever.
@@ -564,9 +588,9 @@ export const TUNING = {
     bloomRadius: 0.7,
     bloomThreshold: 1.1,
     exposure: 1.34,
-    grain: 0.022,
-    aberration: 0.0022,
-    vignette: 0.32,
+    grain: 0.028,
+    aberration: 0.0012,
+    vignette: 0.24,
     cameraTint: 0.15,
     motionBlur: 0.22,
     causticStrength: 1.25,
@@ -585,9 +609,21 @@ export const TUNING = {
     // dissolves into the horizon mist, seaMist the low mist layer.
     whitecaps: 1.7,
     foamStreaks: 1.25,
-    horizonFog: 1.6,
-    seaMist: 1.5,
+    horizonFog: 2.4,
+    seaMist: 2.4,
     spindrift: 1.0,
+    // Graded against the reference photographs. seaMilk: how much of the
+    // deep-water colour is replaced by the pale turquoise-green of aerated
+    // storm water (0 = clear dark water). seaGlow scales the light the
+    // water itself scatters back, foamWhite how much brighter than the
+    // horizon sky the foam is, sunGlitter the silver path and sparkle
+    // under the hidden sun, skyTexture the contrast of the cloud deck (read
+    // once at start).
+    seaMilk: 0.88,
+    seaGlow: 1.7,
+    foamWhite: 2.6,
+    sunGlitter: 1.6,
+    skyTexture: 0.55,
   },
 
   fish: {
@@ -606,20 +642,24 @@ export const TUNING = {
 };
 
 export const PALETTE = {
-  // A storm over the shelf: a dark teal-green sea under a low, heavy slate
-  // overcast (a little pale light left low on the sun's side, grey rain and
-  // spray haze on the other) and, below, blue water that turns green-teal
-  // toward the seagrass floor.
-  fogShallow: 0x2a6a70,
-  fogDeep: 0x0d2f45,
+  // A storm over the shelf, graded against photographs: a luminous, milky
+  // turquoise-green sea (the water is full of air and stirred sediment)
+  // under a flat, pale grey overcast that rain haze melts into the sea
+  // with no horizon line; a soft bright patch and a silver glitter under
+  // the hidden sun; and, below, clear blue-teal water that falls off to a
+  // dark blue with depth, over sunlit yellow-green seagrass and pale sand.
+  fogShallow: 0x1f6274,
+  fogDeep: 0x082844,
   waterTop: 0x3f9e90,
   waterDeep: 0x0b3442,
-  skyZenith: 0x59626b,
-  skyMid: 0x9ca2a3,
-  skyMidAway: 0x828b8f,
-  skyHorizon: 0xc8bfae,
-  skyHorizonAway: 0x9aa3a7,
-  skyCloud: 0x4e565d,
+  // The colour light takes inside aerated storm water (see seaMilk).
+  seaMilk: 0x799683,
+  skyZenith: 0x69787c,
+  skyMid: 0xa4aaaa,
+  skyMidAway: 0x748386,
+  skyHorizon: 0xbfc1bb,
+  skyHorizonAway: 0x7c8b8d,
+  skyCloud: 0x5f6c70,
   skyLand: 0x3f4a55,
   sandLight: 0x9b8a64,
   sandShade: 0x41402f,
@@ -723,6 +763,7 @@ export const TUNE_CONTROLS = [
   { path: "hydro.diveDragCut", label: "dive drag cut (Shift)", min: 0, max: 0.95, step: 0.01 },
   { path: "hydro.planeSpeed", label: "planing speed", min: 10, max: 40, step: 0.5 },
   { path: "hydro.finLiftSlope", label: "fin lift", min: 0, max: 6, step: 0.05 },
+  { path: "hydro.keelLiftSlope", label: "keel grip (path follows nose)", min: 0, max: 6, step: 0.1 },
   { path: "hydro.slamDrag", label: "slam drag", min: 0, max: 8, step: 0.1 },
   { path: "hydro.surfaceTrimRate", label: "surface trim", min: 0, max: 4, step: 0.05 },
   { path: "hydro.rideTrim", label: "ride trim", type: "toggle" },
@@ -750,6 +791,10 @@ export const TUNE_CONTROLS = [
   { path: "visuals.whitecaps", label: "whitecaps", min: 0, max: 2.5, step: 0.01 },
   { path: "visuals.foamStreaks", label: "foam streaks", min: 0, max: 2, step: 0.01 },
   { path: "visuals.spindrift", label: "crest spindrift", min: 0, max: 2, step: 0.01 },
+  { path: "visuals.seaMilk", label: "milky storm water", min: 0, max: 1, step: 0.01 },
+  { path: "visuals.seaGlow", label: "water glow", min: 0.4, max: 2, step: 0.01 },
+  { path: "visuals.foamWhite", label: "foam whiteness", min: 0.8, max: 3, step: 0.01 },
+  { path: "visuals.sunGlitter", label: "sun glitter", min: 0, max: 3, step: 0.01 },
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.dynamicQuality", label: "dynamic quality", type: "toggle" },
   { path: "visuals.dynamicQualityMinScale", label: "min render scale", min: 0.4, max: 0.8, step: 0.01 },

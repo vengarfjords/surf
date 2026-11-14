@@ -1,15 +1,16 @@
 import * as THREE from "three";
-import { PALETTE } from "./config.js";
+import { PALETTE, TUNING } from "./config.js";
 
 /**
  * One sky for everything above the water: the dome, the sea's reflection,
  * the horizon fog and the volumetric haze all call the same function, so the
  * water always melts into the air behind it instead of meeting a seam.
  *
- * The look is a storm: a low, heavy slate overcast driven fast by the wind,
- * with darker ragged scud under it, a little pale light low on the sun's
- * side and grey rain and spray haze on the other, and a hazy headland on part
- * of the horizon.
+ * The look is a storm seen the way a camera records it: a flat, pale grey
+ * overcast with only soft, low-contrast cloud in it, rain haze that leaves
+ * no horizon line, a bright hazy patch where the sun stands behind thin
+ * cloud with a warmer, paler sky around it, and a hazy headland on part of
+ * the horizon.
  */
 const lin = (hex) => {
   const c = new THREE.Color(hex);
@@ -24,12 +25,21 @@ export const glslSky = /* glsl */ `
   const vec3 SKY_HORIZON_AWAY = ${lin(PALETTE.skyHorizonAway)};
   const vec3 SKY_CLOUD = ${lin(PALETTE.skyCloud)};
   const vec3 SKY_LAND = ${lin(PALETTE.skyLand)};
+  const float SKY_TEXTURE = ${TUNING.visuals.skyTexture.toFixed(3)};
 
   // 0 away from the sun, 1 toward it, measured around the horizon only.
   float skyWarmth(vec3 d, vec3 sunDir) {
     vec2 a = d.xz / max(length(d.xz), 1e-4);
     vec2 s = sunDir.xz / max(length(sunDir.xz), 1e-4);
-    return pow(dot(a, s) * 0.5 + 0.5, 2.0);
+    return pow(dot(a, s) * 0.5 + 0.5, 3.0);
+  }
+
+  // How much of the storm's rain and spray haze lies in front of something
+  // dist metres away (amount is TUNING.visuals.horizonFog). A fifth of the
+  // contrast is gone by 600 m and two thirds by 2 km, so the far sea melts
+  // into the sky without a hard horizon while a nearby face stays crisp.
+  float seaHaze(float dist, float amount) {
+    return 1.0 - exp(-pow(dist * 0.00021 * amount, 1.25));
   }
 
   // Horizon colour in a direction: what distant air and sea mist fade to.
@@ -93,27 +103,30 @@ export const glslSky = /* glsl */ `
     vec3 horizon = skyHorizonColor(d, sunDir);
     float h = max(d.y, 0.0);
 
-    // Storm overcast: a heavy deck over most of the sky with darker, cooler
-    // undersides and only thin brighter breaks, driven along by the wind.
+    // Storm overcast as a photograph shows it: the deck is one pale grey
+    // sheet, and the cloud in it is only a soft mottling that the rain haze
+    // wipes out toward the horizon. SKY_TEXTURE sets its contrast.
     vec2 cp = d.xz / (h + 0.09);
     float base = fbm2(cp * 0.55 + vec2(t * 0.012, t * 0.005));
     float fine = fbm2(cp * 1.7 + vec2(base * 1.8 - t * 0.02, base));
     float deck = smoothstep(0.2, 0.62, base * 0.65 + fine * 0.45);
     float thin = smoothstep(0.62, 0.9, fine);
     vec3 cloud = mix(SKY_CLOUD, mix(SKY_MID, SKY_HORIZON_SUN, 0.35) * 1.02, thin * skyWarmth(d, sunDir) * 0.6);
-    float fadeHorizon = smoothstep(0.0, 0.12, h);
-    col = mix(col, cloud, deck * 0.82 * fadeHorizon * detail);
+    float fadeHorizon = smoothstep(0.03, 0.34, h);
+    col = mix(col, cloud, deck * 0.82 * fadeHorizon * detail * SKY_TEXTURE);
     // Ragged low scud racing under the deck.
     float scud = fbm2(cp * 1.1 + vec2(t * 0.045, t * 0.02) + 17.0);
-    col = mix(col, SKY_CLOUD * 0.82, smoothstep(0.55, 0.8, scud) * fadeHorizon * 0.5 * detail);
+    col = mix(col, SKY_CLOUD * 0.86, smoothstep(0.55, 0.8, scud) * fadeHorizon * 0.5 * detail * SKY_TEXTURE);
     // Long streaks of stratus low over the horizon.
     float strat = vnoise(vec2(atan(d.z, d.x) * 9.0, h * 60.0 + t * 0.002));
-    col = mix(col, mix(SKY_CLOUD, horizon, 0.5), smoothstep(0.55, 0.9, strat) * (1.0 - smoothstep(0.02, 0.14, h)) * 0.35 * detail);
+    col = mix(col, mix(SKY_CLOUD, horizon, 0.6), smoothstep(0.55, 0.9, strat) * (1.0 - smoothstep(0.02, 0.14, h)) * 0.3 * detail * SKY_TEXTURE);
 
-    // The sun is behind cloud: a wide glow, no hard disc.
+    // The sun stands behind thin cloud: a bright, hazy patch several
+    // degrees across inside a wide glow, with no hard disc.
     float sd = max(dot(d, sunDir), 0.0);
-    vec3 sunTint = mix(SKY_HORIZON_SUN, vec3(1.0, 0.93, 0.8), 0.5);
-    col += sunTint * (pow(sd, 5.0) * 0.08 + pow(sd, 28.0) * 0.1 + pow(sd, 260.0) * 0.12) * (1.0 - deck * 0.6);
+    vec3 sunTint = mix(SKY_HORIZON_SUN, vec3(1.0, 0.97, 0.92), 0.6);
+    float sunGlow = pow(sd, 4.0) * 0.16 + pow(sd, 24.0) * 0.3 + pow(sd, 180.0) * 0.55;
+    col += sunTint * sunGlow * (1.0 - deck * 0.5 * SKY_TEXTURE);
 
     col = skyLand(d, col, horizon, detail);
     // Below the horizon the dome only ever shows as reflection: hold it at

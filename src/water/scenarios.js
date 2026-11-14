@@ -1500,6 +1500,523 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       return out;
     },
 
+    /**
+     * Movement feel audit on calm, deep water (deterministic, 60 Hz). It
+     * strings together the moves a player makes (throttle on and off,
+     * coasting, braking, key and mouse turns, a pitch change, a breach and
+     * re-entry, the Space surface ride with carves, a leap and landing,
+     * tapping W) and measures what the hands and eyes get back:
+     *   - how much speed each move keeps, and how long a glide lasts;
+     *   - how soon the body and its path answer the controls, and whether
+     *     they overshoot;
+     *   - how smooth every visible channel is: body acceleration and jerk,
+     *     pitch / yaw / roll, the head, the spine bend, the tail's stroke
+     *     height and rate, and the camera. For each it reports the largest
+     *     rate and acceleration and the frames where they happen.
+     *   opts.only: array of segment names to run. opts.x / z: where.
+     */
+    async feelAudit(opts = {}) {
+      const saved = saveState();
+      const savedPreset = TUNING.water.preset;
+      const savedTime = TUNING.water.timeScale;
+      water.setPreset(opts.preset ?? "calm");
+      freeze(true);
+      TUNING.water.timeScale = 0;
+      const savedClock = ocean.time;
+      ocean.time = opts.clock ?? 40;
+      water.setTime(ocean.time);
+      const X = opts.x ?? -985;
+      const Z = opts.z ?? -690;
+      const YAW = 1.2;
+      const dt = 1 / 60;
+      const sens = TUNING.movement.mouseSensitivity;
+      const only = opts.only ? new Set(opts.only) : null;
+      let control = botInput();
+      const out = {};
+      // opts.trace: every Nth step as [segment, t, height over the water,
+      // speed, vy, lock, in the air, wet share, slip, pitch, yaw rate].
+      const trace = opts.trace ? [] : null;
+      const traceEvery = typeof opts.trace === "number" ? opts.trace : 6;
+      let traceN = 0;
+      const r2 = (v) => (v === null || v === undefined || !Number.isFinite(v) ? null : +v.toFixed(2));
+      const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+      // ---- smoothness channels ----------------------------------------
+      const chan = {};
+      let segName = "";
+      let segT = 0;
+      const stateNow = () =>
+        (dolphin.leapFlight ? "leap " : "") + (dolphin.leaping ? "air " : "") + (dolphin.surfLock > 0.5 ? "lock " : "") +
+        (dolphin.diveState ? "dive " : "") + "wet" + (dolphin.hydro ? dolphin.hydro.wetFraction.toFixed(1) : "?");
+      function track(name, value, angle = false) {
+        let c = chan[name];
+        if (!c) c = chan[name] = { fresh: true, last: 0, rate: 0, maxRate: 0, maxAcc: 0, top: [] };
+        if (c.fresh) {
+          c.last = value;
+          c.rate = 0;
+          c.fresh = false;
+          c.settle = 2;
+          return;
+        }
+        let d = value - c.last;
+        if (angle) d = wrap(d);
+        const rate = d / dt;
+        const acc = (rate - c.rate) / dt;
+        c.last = value;
+        c.rate = rate;
+        if (c.settle > 0) {
+          c.settle--;
+          return;
+        }
+        if (Math.abs(rate) > c.maxRate) c.maxRate = Math.abs(rate);
+        const a = Math.abs(acc);
+        if (a > c.maxAcc) c.maxAcc = a;
+        if (c.top.length < 4 || a > c.top[c.top.length - 1].acc) {
+          const last = c.top.find((e) => e.seg === segName && Math.abs(e.t - segT) < 0.25);
+          if (last) {
+            if (a > last.acc) Object.assign(last, { t: r2(segT), acc: r2(a), rate: r2(rate), state: stateNow() });
+          } else c.top.push({ seg: segName, t: r2(segT), acc: r2(a), rate: r2(rate), state: stateNow() });
+          c.top.sort((p, q) => q.acc - p.acc);
+          if (c.top.length > 4) c.top.length = 4;
+        }
+      }
+      const prevV = dolphin.velocity.clone();
+      const prevA = dolphin.velocity.clone().set(0, 0, 0);
+      const camPrev = cameraRig ? cameraRig.camera.position.clone() : null;
+      const camVel = dolphin.velocity.clone().set(0, 0, 0);
+      const tmpV = dolphin.velocity.clone();
+      let fresh = 3;
+      let lastPhase = 0;
+      const jerkTop = [];
+      const accelTop = [];
+      const camTop = [];
+      const pushTop = (list, value) => {
+        if (list.length < 4 || value > list[list.length - 1].v) {
+          const near = list.find((e) => e.seg === segName && Math.abs(e.t - segT) < 0.25);
+          if (near) {
+            if (value > near.v) Object.assign(near, { t: r2(segT), v: r2(value), state: stateNow() });
+          } else list.push({ seg: segName, t: r2(segT), v: r2(value), state: stateNow() });
+          list.sort((p, q) => q.v - p.v);
+          if (list.length > 4) list.length = 4;
+        }
+      };
+      function sample() {
+        // Body acceleration and jerk (how hard the motion changes).
+        tmpV.copy(dolphin.velocity).sub(prevV).multiplyScalar(1 / dt);
+        const aMag = tmpV.length();
+        const jerk = tmpV.distanceTo(prevA) / dt;
+        prevA.copy(tmpV);
+        prevV.copy(dolphin.velocity);
+        if (cameraRig) {
+          tmpV.copy(cameraRig.camera.position).sub(camPrev).multiplyScalar(1 / dt);
+          const camAcc = tmpV.distanceTo(camVel) / dt;
+          camVel.copy(tmpV);
+          camPrev.copy(cameraRig.camera.position);
+          if (fresh <= 0) pushTop(camTop, camAcc);
+        }
+        if (fresh > 0) fresh--;
+        else {
+          pushTop(accelTop, aMag);
+          pushTop(jerkTop, jerk);
+        }
+        track("pitch", dolphin.pitch, true);
+        track("yaw", dolphin.yaw, true);
+        track("roll", dolphin.roll, true);
+        const sp = dolphin.spine;
+        if (sp && sp.forwardTarget) {
+          track("headPitch", Math.asin(clamp(sp.forwardTarget.y, -1, 1)), true);
+          track("headYaw", Math.atan2(sp.forwardTarget.x, sp.forwardTarget.z), true);
+          const tail = sp.segDirs[sp.segDirs.length - 1];
+          track("spineBend", Math.acos(clamp(tail.dot(sp.backTarget), -1, 1)), true);
+        }
+        track("tailHeave", dolphin.tailHeave || 0);
+        const ph = dolphin.tailPhase || 0;
+        track("tailRate", (ph - lastPhase) / dt);
+        lastPhase = ph;
+        track("thrust", dolphin.hydroControl ? dolphin.hydroControl.thrustAccel : 0);
+      }
+      function begin(name, depth, speed, pitch = 0, x = X, z = Z) {
+        segName = name;
+        segT = 0;
+        control = botInput();
+        const h = ocean.getWaterHeight(x, z);
+        setPose(x, h - depth, z, YAW, pitch);
+        dolphin.targetYaw = dolphin.yaw = YAW;
+        dolphin.targetPitch = dolphin.pitch = pitch;
+        dolphin.rideOffset = pitch;
+        dolphin.velocity.copy(dolphin.forward).multiplyScalar(speed);
+        for (const p of dolphin.hull.panels) p.prevWet = 1;
+        dolphin.waterTilt.set(0, 0, 0);
+        dolphin.waterTiltRate.set(0, 0, 0);
+        dolphin.resetVisualChain();
+        resetCamera();
+        prevV.copy(dolphin.velocity);
+        prevA.set(0, 0, 0);
+        fresh = 3;
+        lastPhase = dolphin.tailPhase || 0;
+        for (const k in chan) chan[k].fresh = true;
+      }
+      const speed = () => dolphin.velocity.length();
+      const heading = () => Math.atan2(dolphin.velocity.x, dolphin.velocity.z);
+      const pathPitch = () => Math.asin(clamp(dolphin.velocity.y / Math.max(speed(), 1e-3), -1, 1));
+      const rel = () => dolphin.position.y - ocean.getWaterHeight(dolphin.position.x, dolphin.position.z);
+      // Run `seconds`, calling fn(t) before each step and after(t) after it.
+      function run(seconds, fn, after) {
+        for (let t = 0; t < seconds - 1e-9; t += dt) {
+          control.mdx = 0;
+          control.mdy = 0;
+          if (fn) fn(t);
+          stepWorld(dt, control);
+          segT += dt;
+          sample();
+          if (trace && traceN++ % traceEvery === 0)
+            trace.push([segName, r2(segT), r2(rel()), r2(speed()), r2(dolphin.velocity.y), r2(dolphin.surfLock), dolphin.leaping ? 1 : 0,
+              r2(dolphin.hydro ? dolphin.hydro.wetFraction : 0), r2(wrap(heading() - dolphin.yaw)), r2(dolphin.pitch), r2(dolphin.yawRate)]);
+          if (after) after(t + dt);
+        }
+      }
+      const want = (name) => !only || only.has(name);
+      // Time for series [t, value] to cover `frac` of the way from v0 to v1.
+      const riseTime = (series, v0, v1, frac) => {
+        const target = v0 + (v1 - v0) * frac;
+        const up = v1 > v0;
+        for (const [t, v] of series) if (up ? v >= target : v <= target) return t;
+        return null;
+      };
+
+      // ---- throttle, coast, brake ---------------------------------------
+      for (const boost of [false, true]) {
+        const name = boost ? "coastBoost" : "coast";
+        if (!want(name)) continue;
+        begin(name, 3, 0);
+        const sp = [];
+        const heave = [];
+        control.forward = true;
+        control.boost = boost;
+        let aPeak = 0;
+        let last = 0;
+        run(7, null, (t) => {
+          sp.push([t, speed()]);
+          heave.push([t, dolphin.tailHeave || 0]);
+          aPeak = Math.max(aPeak, (speed() - last) / dt);
+          last = speed();
+        });
+        const top = sp.slice(-60).reduce((a, b) => a + b[1], 0) / 60;
+        const heaveTop = heave.slice(-120).reduce((a, b) => Math.max(a, b[1]), 0);
+        const m = { top: r2(top), to50: r2(riseTime(sp, 0, top, 0.5)), to90: r2(riseTime(sp, 0, top, 0.9)), accelPeak: r2(aPeak),
+          tailOn90: r2(riseTime(heave, 0, heaveTop, 0.9)), tailHeave: r2(heaveTop) };
+        control.forward = false;
+        control.boost = false;
+        const x0 = dolphin.position.x;
+        const z0 = dolphin.position.z;
+        const v0 = speed();
+        const co = [];
+        const hv = [];
+        let dPeak = 0;
+        last = v0;
+        run(4, null, (t) => {
+          co.push([t, speed()]);
+          hv.push([t, dolphin.tailHeave || 0]);
+          if (t < 0.3) dPeak = Math.max(dPeak, (last - speed()) / dt);
+          last = speed();
+        });
+        const at = (t) => co[Math.min(co.length - 1, Math.round(t / dt) - 1)][1];
+        Object.assign(m, { coast05: r2(at(0.5)), coast1: r2(at(1)), coast2: r2(at(2)), coast4: r2(at(4)), keptAt1: r2(at(1) / v0),
+          halfTime: r2(riseTime(co, v0, 0, 0.5)), glide4: r2(Math.hypot(dolphin.position.x - x0, dolphin.position.z - z0)),
+          decelAtRelease: r2(dPeak), decelAt1: r2((at(0.9) - at(1.1)) / 0.2), tailOff20: r2(riseTime(hv, hv[0][1], 0, 0.8)) });
+        out[name] = m;
+      }
+      if (want("brake")) {
+        begin("brake", 3, 0);
+        control.forward = true;
+        run(6);
+        control.forward = false;
+        control.brake = true;
+        const v0 = speed();
+        const br = [];
+        let dPeak = 0;
+        let last = v0;
+        run(3, null, (t) => {
+          br.push([t, speed()]);
+          dPeak = Math.max(dPeak, (last - speed()) / dt);
+          last = speed();
+        });
+        const fwd = dolphin.velocity.dot(dolphin.forward);
+        out.brake = { from: r2(v0), to1ms: r2(riseTime(br, v0, 1, 1)), decelPeak: r2(dPeak), after3s: r2(speed()), alongNose: r2(fwd) };
+      }
+      if (want("taps")) {
+        begin("taps", 3, 0);
+        control.forward = true;
+        run(6);
+        let vMin = Infinity;
+        let vMax = 0;
+        run(4, (t) => { control.forward = Math.floor(t / 0.25) % 2 === 0; }, () => { vMin = Math.min(vMin, speed()); vMax = Math.max(vMax, speed()); });
+        out.taps = { speedMin: r2(vMin), speedMax: r2(vMax) };
+      }
+
+      // ---- turning ------------------------------------------------------
+      if (want("turnKeys")) {
+        begin("turnKeys", 4, 0);
+        control.forward = true;
+        run(6);
+        const v0 = speed();
+        const yawRate = [];
+        let lastYaw = dolphin.yaw;
+        let rollPeak = 0;
+        let slipPeak = 0;
+        let turned = 0;
+        let v180 = null;
+        control.right = true;
+        run(3.5, null, (t) => {
+          const dy = wrap(dolphin.yaw - lastYaw);
+          lastYaw = dolphin.yaw;
+          turned += Math.abs(dy);
+          yawRate.push([t, Math.abs(dy) / dt]);
+          rollPeak = Math.max(rollPeak, Math.abs(dolphin.roll));
+          slipPeak = Math.max(slipPeak, Math.abs(wrap(heading() - dolphin.yaw)));
+          if (v180 === null && turned >= Math.PI) v180 = speed();
+        });
+        const steady = yawRate.slice(-45).reduce((a, b) => a + b[1], 0) / 45;
+        const vEnd = speed();
+        control.right = false;
+        const decay = [];
+        run(2, null, (t) => {
+          const dy = wrap(dolphin.yaw - lastYaw);
+          lastYaw = dolphin.yaw;
+          decay.push([t, Math.abs(dy) / dt]);
+        });
+        out.turnKeys = { speedIn: r2(v0), yawRate: r2(steady), to63: r2(riseTime(yawRate, 0, steady, 0.63)), radius: r2(vEnd / Math.max(steady, 1e-3)),
+          rollPeak: r2(rollPeak), slipPeakDeg: r2((slipPeak * 180) / Math.PI), turnedDeg: r2((turned * 180) / Math.PI),
+          speedAfter180: r2(v180), keptAfter180: r2(v180 === null ? null : v180 / v0), speedOut: r2(vEnd),
+          stopTo20: r2(riseTime(decay, steady, 0, 0.8)), speed2sAfter: r2(speed()) };
+      }
+      if (want("mouseYaw")) {
+        begin("mouseYaw", 4, 0);
+        control.forward = true;
+        run(6);
+        const v0 = speed();
+        const y0 = dolphin.yaw;
+        const h0 = heading();
+        const step = 0.8;
+        const body = [];
+        const path = [];
+        let over = 0;
+        run(3, (t) => { if (t < dt / 2) control.mdx = step / sens; }, (t) => {
+          const b = -wrap(dolphin.yaw - y0);
+          body.push([t, b]);
+          path.push([t, -wrap(heading() - h0)]);
+          over = Math.max(over, b - step);
+        });
+        out.mouseYaw = { step, body63: r2(riseTime(body, 0, step, 0.63)), body95: r2(riseTime(body, 0, step, 0.95)), path63: r2(riseTime(path, 0, step, 0.63)),
+          path95: r2(riseTime(path, 0, step, 0.95)), overshootDeg: r2((Math.max(0, over) * 180) / Math.PI), speedKept: r2(speed() / v0) };
+      }
+      if (want("mousePitch")) {
+        begin("mousePitch", 14, 0);
+        control.forward = true;
+        run(6);
+        const v0 = speed();
+        const step = 0.5;
+        const body = [];
+        const path = [];
+        let over = 0;
+        run(2.5, (t) => { if (t < dt / 2) control.mdy = -step / (sens * 0.78); }, (t) => {
+          body.push([t, dolphin.pitch]);
+          path.push([t, pathPitch()]);
+          over = Math.max(over, dolphin.pitch - step);
+        });
+        out.mousePitch = { step, body63: r2(riseTime(body, 0, step, 0.63)), body95: r2(riseTime(body, 0, step, 0.95)), path63: r2(riseTime(path, 0, step, 0.63)),
+          path95: r2(riseTime(path, 0, step, 0.95)), overshootDeg: r2((Math.max(0, over) * 180) / Math.PI), speedKept: r2(speed() / v0) };
+      }
+
+      // ---- breach and re-entry -------------------------------------------
+      // "breach": W held throughout. "breachCoast": W let go in the air and
+      // after. "breachAim": the nose held up off the flight path in the air
+      // (steering the arc), to see what that costs in speed.
+      for (const mode of ["hold", "coast", "aim"]) {
+        const hold = mode !== "coast";
+        const name = mode === "hold" ? "breach" : mode === "coast" ? "breachCoast" : "breachAim";
+        if (!want(name)) continue;
+        begin(name, 9, opts.breachSpeed ?? 10, 0.6);
+        control.forward = true;
+        const m = { exitSpeed: null, apex: -Infinity, airTime: 0, entrySpeed: null, entryAngleDeg: null, at05: null, at1: null, at2: null, decelEntryPeak: 0, pitchRateAir: 0, airLossPeak: 0 };
+        let phase = "up";
+        let tEntry = 0;
+        let last = speed();
+        let lastPitch = dolphin.pitch;
+        run(9, (t) => {
+          if (phase === "air" && !hold) control.forward = false;
+          if (phase === "air" && mode === "aim") control.mdy = -0.04 / (sens * 0.78);
+        }, (t) => {
+          if (phase === "up" && dolphin.leaping) {
+            phase = "air";
+            m.exitSpeed = r2(speed());
+          } else if (phase === "air") {
+            m.apex = Math.max(m.apex, rel());
+            m.airTime += dt;
+            m.pitchRateAir = Math.max(m.pitchRateAir, Math.abs(wrap(dolphin.pitch - lastPitch)) / dt);
+            // Speed lost in the air beyond what gravity takes on the way up
+            // and gives back on the way down.
+            if (dolphin.hydro.wetFraction < 0.02 && m.airTime > 2 * dt)
+              m.airLossPeak = Math.max(m.airLossPeak, (last - speed()) / dt - (9.81 * dolphin.velocity.y) / Math.max(1, speed()));
+            if (!dolphin.leaping) {
+              phase = "water";
+              tEntry = t;
+              m.entrySpeed = r2(speed());
+              m.entryAngleDeg = r2((pathPitch() * 180) / Math.PI);
+            }
+          } else if (phase === "water") {
+            const since = t - tEntry;
+            if (since < 0.6) m.decelEntryPeak = Math.max(m.decelEntryPeak, (last - speed()) / dt);
+            if (m.at05 === null && since >= 0.5) m.at05 = r2(speed());
+            if (m.at1 === null && since >= 1) m.at1 = r2(speed());
+            if (m.at2 === null && since >= 2) m.at2 = r2(speed());
+          }
+          last = speed();
+          lastPitch = dolphin.pitch;
+        });
+        m.apex = r2(m.apex);
+        m.airTime = r2(m.airTime);
+        m.decelEntryPeak = r2(m.decelEntryPeak);
+        m.pitchRateAir = r2(m.pitchRateAir);
+        m.airLossPeak = r2(m.airLossPeak);
+        m.keptAt1 = m.at1 !== null && m.entrySpeed ? r2(m.at1 / m.entrySpeed) : null;
+        out[name] = m;
+      }
+
+      // ---- the Space surface ride: lock, carve, leap, land, let go -------
+      if (want("surface")) {
+        begin("surface", 1.2, 6);
+        control.forward = true;
+        control.rise = true;
+        const m = { lockedAt: null };
+        let relMin = Infinity;
+        let relMax = -Infinity;
+        let vy2 = 0;
+        let n = 0;
+        run(6, null, (t) => {
+          if (m.lockedAt === null && dolphin.surfLock > 0.99) m.lockedAt = r2(t);
+          if (m.lockedAt !== null && t > m.lockedAt + 1.5) {
+            const r = rel() - (dolphin.surfaceLead || 0);
+            relMin = Math.min(relMin, r);
+            relMax = Math.max(relMax, r);
+            vy2 += dolphin.velocity.y * dolphin.velocity.y;
+            n++;
+          }
+        });
+        m.speed = r2(speed());
+        m.bob = r2(relMax - relMin);
+        m.heaveRms = r2(Math.sqrt(vy2 / Math.max(1, n)));
+        const v0 = speed();
+        for (const side of ["left", "right"]) {
+          const rates = [];
+          let lastYaw = dolphin.yaw;
+          let rollPeak = 0;
+          control[side] = true;
+          run(2, null, (t) => {
+            rates.push([t, Math.abs(wrap(dolphin.yaw - lastYaw)) / dt]);
+            lastYaw = dolphin.yaw;
+            rollPeak = Math.max(rollPeak, Math.abs(dolphin.roll));
+          });
+          control[side] = false;
+          const steady = rates.slice(-30).reduce((a, b) => a + b[1], 0) / 30;
+          m[side] = { yawRate: r2(steady), to63: r2(riseTime(rates, 0, steady, 0.63)), rollPeak: r2(rollPeak), speed: r2(speed()), lock: r2(dolphin.surfLock) };
+        }
+        m.carveKept = r2(speed() / v0);
+        run(1.5);
+        // Leap: let go of Space, press it again in the air, land into the ride.
+        const vBefore = speed();
+        control.rise = false;
+        let apex = -Infinity;
+        let air = 0;
+        run(0.4, null, () => { apex = Math.max(apex, rel()); if (dolphin.hydro.wetFraction < 0.02) air += dt; });
+        control.rise = true;
+        let relock = null;
+        let vLand = null;
+        run(3, null, (t) => {
+          apex = Math.max(apex, rel());
+          if (dolphin.hydro.wetFraction < 0.02) air += dt;
+          if (relock === null && dolphin.surfLock > 0.99) { relock = t + 0.4; }
+          if (relock !== null && vLand === null && t + 0.4 >= relock + 1) vLand = speed();
+        });
+        m.leap = { speedBefore: r2(vBefore), apex: r2(apex), air: r2(air), relock: r2(relock), speed1sAfterRelock: r2(vLand), kept: r2(vLand === null ? null : vLand / vBefore) };
+        // Let go of everything on the surface: the glide.
+        control.rise = false;
+        control.forward = false;
+        const vg = speed();
+        const g = [];
+        run(3, null, (t) => g.push([t, speed()]));
+        const at = (t) => g[Math.min(g.length - 1, Math.round(t / dt) - 1)][1];
+        m.letGo = { from: r2(vg), at1: r2(at(1)), at3: r2(at(3)), keptAt1: r2(at(1) / vg), depthAt3: r2(-rel()) };
+        out.surface = m;
+      }
+
+      // ---- the seabed: swim down into the sand at cruise -----------------
+      if (want("seabed")) {
+        // On the inner shelf (about 10 m of water), nose 0.45 rad down.
+        begin("seabed", 3, 9, -0.45, opts.shelfX ?? 0, opts.shelfZ ?? 30);
+        control.forward = true;
+        const m = { water: r2(ocean.getWaterHeight(dolphin.position.x, dolphin.position.z) - seabed.getSurfaceHeight(dolphin.position.x, dolphin.position.z)),
+          hitSpeed: null, intoSand: null, accelPeak: 0, stepPeak: 0, speedAfter05: null, bounce: 0, contactFrames: 0 };
+        let tHit = null;
+        let altMin = Infinity;
+        const pv = dolphin.velocity.clone();
+        const pp = dolphin.position.clone();
+        const pv0 = dolphin.velocity.clone();
+        run(4, (t) => { pv0.copy(dolphin.velocity); pp.copy(dolphin.position); }, (t) => {
+          const alt = dolphin.position.y - seabed.getSurfaceHeight(dolphin.position.x, dolphin.position.z);
+          if (dolphin.contact.floor) {
+            m.contactFrames++;
+            if (tHit === null) {
+              tHit = t;
+              m.hitSpeed = r2(pv0.length());
+              m.intoSand = r2(-pv0.y);
+            }
+          }
+          if (tHit !== null) {
+            const a = pv.copy(dolphin.velocity).sub(pv0).length() / dt;
+            if (t - tHit < 0.5) m.accelPeak = Math.max(m.accelPeak, a);
+            // Movement this frame that neither the old nor the new velocity
+            // explains: the sand pushing the body out.
+            const moved = pv.copy(dolphin.position).sub(pp).length();
+            const explained = Math.max(pv0.length(), dolphin.velocity.length()) * dt;
+            if (t - tHit < 0.5) m.stepPeak = Math.max(m.stepPeak, moved - explained);
+            if (m.speedAfter05 === null && t - tHit >= 0.5) m.speedAfter05 = r2(speed());
+            if (t - tHit < 1.5) {
+              altMin = Math.min(altMin, alt);
+              m.bounce = Math.max(m.bounce, alt - altMin);
+            }
+          }
+        });
+        m.accelPeak = r2(m.accelPeak);
+        m.stepPeak = r2(m.stepPeak);
+        m.bounce = r2(m.bounce);
+        m.kept = m.speedAfter05 !== null && m.hitSpeed ? r2(m.speedAfter05 / m.hitSpeed) : null;
+        out.seabed = m;
+      }
+
+      // ---- smoothness table ----------------------------------------------
+      const smooth = {};
+      for (const k in chan) smooth[k] = { maxRate: r2(chan[k].maxRate), maxAcc: r2(chan[k].maxAcc), top: chan[k].top };
+      out.smooth = smooth;
+      out.accelTop = accelTop;
+      out.jerkTop = jerkTop;
+      out.cameraAccelTop = camTop;
+      if (trace) out.trace = trace;
+
+      control = botInput();
+      ocean.time = savedClock;
+      water.setTime(savedClock);
+      TUNING.water.timeScale = savedTime;
+      restoreState(saved);
+      for (const p of dolphin.hull.panels) p.prevWet = 0;
+      dolphin.waterTilt.set(0, 0, 0);
+      dolphin.waterTiltRate.set(0, 0, 0);
+      freeze(false);
+      water.setPreset(savedPreset);
+      cameraReport();
+      return out;
+    },
+
     /** Scenario 1: passive float/bob. */
     async passiveFloat(name = "calm", seconds = 6) {
       const saved = saveState();

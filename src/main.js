@@ -184,6 +184,7 @@ async function boot() {
   const skyHorizon = new THREE.Color(PALETTE.skyHorizon);
   const sunWarm = new THREE.Color(PALETTE.sunColor);
   const sunCool = new THREE.Color(0xd6ecf5);
+  const sunDeep = new THREE.Color(0x6fa9d6);
   const fogColor = new THREE.Color();
   const current = new THREE.Vector3(
     TUNING.movement.currentX,
@@ -462,6 +463,14 @@ async function boot() {
       .copy(skyHorizon)
       .lerp(sunWarm, 0.55)
       .lerp(sunCool, camState.underwater * 0.55);
+    // Daylight dies away with depth, the red and green first: below the
+    // sunlit shelf (about 8 m) everything dims toward a blue twilight, to
+    // about two fifths of the surface light at 30 m and a fifth at 60 m.
+    const depthLoss = camState.underwater * (1 - Math.exp(-Math.max(0, camDepth - 8) * 0.05));
+    lights.sun.intensity *= 1 - 0.85 * depthLoss;
+    lights.hemi.intensity *= 1 - 0.7 * depthLoss;
+    lights.ambient.intensity *= 1 - 0.6 * depthLoss;
+    lights.sun.color.lerp(sunDeep, depthLoss * 0.7);
 
     const envUnder = camState.underwater > 0.5;
     const envNow = envUnder ? envMaps.below : envMaps.above;

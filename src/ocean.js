@@ -362,6 +362,8 @@ export class Ocean {
       uWhitecaps: { value: TUNING.visuals.whitecaps },
       uFoamStreaks: { value: TUNING.visuals.foamStreaks },
       uHorizonFog: { value: TUNING.visuals.horizonFog },
+      uMilkColor: { value: new THREE.Color(PALETTE.seaMilk) },
+      uSeaLook: { value: new THREE.Vector4(TUNING.visuals.seaMilk, TUNING.visuals.seaGlow, TUNING.visuals.foamWhite, TUNING.visuals.sunGlitter) },
       uRefrColor: { value: null },
       uRefrDepth: { value: null },
       uRefrOn: { value: 0 },
@@ -515,6 +517,8 @@ export class Ocean {
         uniform float uWhitecaps;
         uniform float uFoamStreaks;
         uniform float uHorizonFog;
+        uniform vec3 uMilkColor;
+        uniform vec4 uSeaLook; // milk, glow, foam whiteness, sun glitter
         uniform sampler2D uRefrColor;
         uniform sampler2D uRefrDepth;
         uniform float uRefrOn;
@@ -630,6 +634,12 @@ export class Ocean {
           float near = 1.0 - smoothstep(30.0, 170.0, dist);
           float patchN = fbm2(p * 0.45 + vec2(uTime * 0.02, -uTime * 0.015));
           float d = density * (0.45 + 1.1 * patchN);
+          // Far off, where the lace is finer than a pixel, a sheet of spent
+          // foam still is not one flat plate: it lies in ragged pieces a few
+          // metres across with water between them, which a low camera sees
+          // as broken white lines.
+          float farBreak = 0.25 + 1.1 * smoothstep(0.32, 0.68, fbm2(p * 0.17 + vec2(3.0, uTime * 0.01)));
+          d *= mix(farBreak, 1.0, near);
           float s = 0.5 + 0.3 * patchN;
           if (near > 0.01) {
             // Large, slow domain warp so nothing lines up.
@@ -649,7 +659,7 @@ export class Ocean {
             float strings = smoothstep(0.82 - aw, 0.97, r1) * 0.85;
             strings = max(strings, smoothstep(0.88 - aw, 0.985, r2) * 0.55 * smoothstep(0.35, 0.75, r1));
             float thin = 1.0 - smoothstep(0.2, 0.6, d);
-            float pattern = mix(blotch, max(blotch * 0.7, strings), thin * 0.6);
+            float pattern = mix(blotch, max(blotch * 0.5, strings), thin * 0.8);
             // Up close the foam is visibly made of bubbles of every size, most
             // a few millimetres across and a few up to two centimetres, in
             // clumps with gaps of water between. Each size fades to its mean
@@ -812,8 +822,17 @@ export class Ocean {
           // crests, the white flecks that cover the reference sea.
           float capCell = vnoise(vec2(perpA * 0.045 - uTime * 0.11, perpB * 0.09) + 3.1);
           float capLife = vnoise(vec2(perpA * 0.11, perpB * 0.11) + uTime * 0.21);
-          float windCaps = smoothstep(0.7, 0.92, capCell * 0.6 + capLife * 0.55 + slopeEnergy * 0.25)
+          float capSum = capCell * 0.6 + capLife * 0.55 + slopeEnergy * 0.25;
+          float windCaps = smoothstep(0.7, 0.92, capSum)
             * smoothstep(-0.2, 0.5, vCrest + microHeight * 0.4);
+          // A whitecap is not a round raft. Its downwind edge is the active
+          // crest, dense and white; behind it the foam is already spent, a
+          // thin patch that the lace below draws out into strings and webs.
+          vec2 capAhead = vec2(perpA + 3.5, perpB);
+          float capSumAhead = vnoise(vec2(capAhead.x * 0.045 - uTime * 0.11, capAhead.y * 0.09) + 3.1) * 0.6
+            + vnoise(vec2(capAhead.x * 0.11, capAhead.y * 0.11) + uTime * 0.21) * 0.55 + slopeEnergy * 0.25;
+          float capFront = smoothstep(0.0, 0.035, capSum - capSumAhead);
+          windCaps *= 0.3 + 0.7 * capFront;
           // A mega face is swept clean by its own flow; keep its caps sparse.
           windCaps *= 1.0 - 0.75 * smoothstep(0.05, 0.3, megaRise);
           foam = max(foam, windCaps * 0.85 * clamp(uWhitecaps - 0.4, 0.0, 1.0));
@@ -845,7 +864,14 @@ export class Ocean {
           foam = max(foam, vSolverFoam * 1.15);
           float fieldLace = 0.55 * foamNoise + 0.45 * lace;
           float fieldMask = smoothstep(0.28, 0.72, fieldLace);
-          foam = max(foam, vFoamField * fieldMask * 1.15);
+          // The foam field is coarse (two-metre cells) and on its own draws
+          // soft round rafts. Tear it into ragged pieces and connected
+          // strands a few metres apart, as spent foam lies on the water.
+          vec2 fw = p + (vec2(fbm2(p * 0.13 + 3.0), fbm2(p * 0.13 - 9.0)) - 0.5) * 14.0;
+          float tearN = fbm2(fw * 0.19 + vec2(uTime * 0.01, 0.0));
+          float strand = 1.0 - abs(2.0 * vnoise(fw * 0.42 + 5.0) - 1.0);
+          float fieldShape = smoothstep(0.3, 0.75, tearN) * 0.7 + smoothstep(0.6, 0.96, strand) * 0.5;
+          foam = max(foam, vFoamField * fieldMask * (0.3 + 0.95 * fieldShape));
           // Residual foam: across a surf zone every bore leaves a sheet of
           // foam behind it that thins into patches and lace until the next
           // one comes through. age is 0 just behind a crest, 1 at the next.
@@ -853,7 +879,11 @@ export class Ocean {
           float residual = smoothstep(0.35, 0.9, vBreakZone) * (1.0 - 0.65 * foamAge);
           // Rafts and patches tens of metres across, not lined up with the wind.
           float resPat = fbm2(p * 0.06 + vec2(foamNoise * 0.8, uTime * 0.008)) * 0.65 + foamNoise * 0.35;
-          residual *= smoothstep(0.4 + 0.14 * foamAge, 0.66 + 0.14 * foamAge, resPat);
+          // Dense only just behind the bore. The rest is thin enough that
+          // the bubble lace shows it as webs and strings with open water
+          // between them, the way spent foam lies in an aerial photograph.
+          residual *= smoothstep(0.3 + 0.14 * foamAge, 0.78 + 0.14 * foamAge, resPat);
+          residual *= 0.42 + 0.5 * (1.0 - smoothstep(0.0, 0.3, foamAge));
           foam = max(foam, residual * 0.75 * clamp(0.4 + uFoamAmount * 0.5, 0.0, 1.0));
 
           // Foam streaks: old whitecap foam stretched into long lines along
@@ -862,10 +892,13 @@ export class Ocean {
           // The lines wander a few metres across the wind and break up along
           // it into flecks and patches, so they read as foam, not as ruled
           // lines.
-          float streakB0 = perpB + (vnoise(vec2(perpA * 0.012, perpB * 0.03) + 4.0) - 0.5) * 7.0;
-          float streakA = vnoise(vec2(perpA * 0.035 + uTime * 0.03, streakB0 * 0.55));
-          float streakB = vnoise(vec2(perpA * 0.09 - uTime * 0.02, streakB0 * 1.6) + 7.0);
-          float streaks = smoothstep(0.58, 0.9, streakA * 0.6 + streakB * 0.45);
+          float streakB0 = perpB + (fbm2(vec2(perpA * 0.05, perpB * 0.11) + 4.0) - 0.5) * 9.0;
+          // Short, curving threads a few metres long, many of them and
+          // faint: from the air they are a soft grain along the wind, never
+          // ruled lines or bright dashes.
+          float streakA = vnoise(vec2(perpA * 0.11 + uTime * 0.03, streakB0 * 0.95));
+          float streakB = vnoise(vec2(perpA * 0.28 - uTime * 0.02, streakB0 * 2.4) + 7.0);
+          float streaks = smoothstep(0.52, 0.95, streakA * 0.6 + streakB * 0.45);
           streaks *= smoothstep(0.25, 0.7, vnoise(vec2(perpA * 0.22, streakB0 * 0.7) + 21.0));
           streaks *= smoothstep(0.35, 0.75, vnoise(p * 0.02 + 11.0));
           streaks *= 1.0 - smoothstep(250.0, 1400.0, vDistance);
@@ -877,7 +910,7 @@ export class Ocean {
             float scars = smoothstep(0.62, 0.95, scar) * smoothstep(0.08, 0.5, megaRise) * 0.75;
             streaks = max(streaks, scars * (megaFront ? 1.0 : 0.45));
           }
-          foam = max(foam, streaks * 0.42 * uFoamStreaks);
+          foam = max(foam, streaks * 0.17 * uFoamStreaks);
 
           // Wake foam (b) and fresh whitewater (a) from the dolphin. Fresh
           // whitewater is dense and lumpy; as it settles it becomes foam that
@@ -975,7 +1008,14 @@ export class Ocean {
 
             float shallowMix = smoothstep(0.9, 14.0, pathDepth);
             vec3 shallow = uTopColor * 0.55 + vec3(0.03, 0.05, 0.02);
-            vec3 body = mix(shallow, uDeepColor, shallowMix) * ambient;
+            // A storm sea is not clear dark water. It is full of air and
+            // stirred sediment that scatter the daylight straight back, so
+            // the whole sea has a pale, milky turquoise-green body, a little
+            // darker in the troughs than on the crests.
+            vec3 milk = uMilkColor * (0.78 + 0.3 * smoothstep(-0.6, 0.9, vCrest));
+            vec3 deepBody = mix(uDeepColor, milk, uSeaLook.x);
+            shallow = mix(shallow, milk * 1.08, uSeaLook.x * 0.6);
+            vec3 body = mix(shallow, deepBody, shallowMix) * ambient * uSeaLook.y;
 
             // Subsurface light. The water near a crest is thin, and the face
             // tilted toward the viewer shows light coming through it: the
@@ -990,14 +1030,16 @@ export class Ocean {
             float towardSun = pow(clamp(dot(-view, uSunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
             float sss = thin * (0.35 + faceView * 0.9 + towardSun * 0.8);
             sss += faceView * 0.18;
-            vec3 sssColor = uTopColor * vec3(0.85, 1.05, 0.95);
-            body += sssColor * sss * 0.42 * (0.7 + 0.3 * microHeight);
+            // In milky water the light coming through a crest is the same
+            // pale green as the body, only brighter, never a neon teal.
+            vec3 sssColor = mix(uTopColor * vec3(0.85, 1.05, 0.95), uMilkColor * 1.2, uSeaLook.x * 0.95);
+            body += sssColor * sss * 0.42 * (0.7 + 0.3 * microHeight) * mix(1.0, 0.75, uSeaLook.x);
             // Wave-face legibility from the sun side.
             vec2 sunFlat = normalize(uSunDir.xz);
             float faceSun = clamp(-dot(n.xz, sunFlat) * 2.0, -1.0, 1.0);
             body *= 1.0 + faceSun * 0.14;
             // Bubbles below the foam scatter the light: pale turquoise.
-            body = mix(body, sssColor * 0.9 + 0.08, clamp(aeration * 0.75 + foam * 0.3, 0.0, 0.85));
+            body = mix(body, sssColor * 0.95 + 0.08, clamp(aeration * 0.75 + foam * 0.3, 0.0, 0.85));
 
             // What is under the surface (the dolphin), seen through it: bent
             // by the ripples, dimmed and tinted by the water in between, and
@@ -1042,17 +1084,26 @@ export class Ocean {
 
             above = mix(body, sky, fres);
 
-            // Overcast sheen: a broad soft highlight toward the hidden sun and
-            // only a scatter of small sparkles, never a hard sun path.
+            // The hidden sun on the water. Each ripple facet mirrors the
+            // bright patch of thin cloud in front of the sun (a few degrees
+            // across); where the facets are resolved that is a scatter of
+            // hard sparkles, and where a pixel averages many of them it is a
+            // silver sheen spread over the angle the ripples tilt it through,
+            // dimmer by the same factor, so the path keeps its energy from
+            // the sparkle at the lens to the glare far off.
             float sunAlign = max(dot(refl, uSunDir), 0.0);
-            float sheen = pow(sunAlign, 18.0) * 0.12 + pow(sunAlign, 160.0) * 0.35;
-            // Glints: the few ripple facets tilted just right to catch the
-            // bright patch of cloud in front of the sun.
-            sheen += pow(sunAlign, 600.0) * 0.9 * (1.0 - rough);
-            above += SKY_HORIZON_SUN * sheen * (1.0 - foamCover);
+            float ang2 = 2.0 * (1.0 - sunAlign);
+            float lobe = 0.0026 + 4.0 * gRippleVar;
+            float glint = exp(-ang2 / (2.0 * lobe)) * (0.0026 / lobe);
+            // Wider, fainter light from the glow around the patch.
+            float sheen = pow(sunAlign, 18.0) * 0.1 + pow(sunAlign, 120.0) * 0.22;
+            vec3 sunPatch = mix(SKY_HORIZON_SUN, vec3(1.0, 0.975, 0.93), 0.6);
+            above += sunPatch * (sheen + glint * 5.5) * uSeaLook.w * (1.0 - foamCover);
 
-            // Foam: lit by the sky, slightly shadowed in its own cell walls.
-            vec3 foamLit = mix(ambient * 0.86, ambient * 1.18 + SKY_HORIZON_SUN * 0.08, foamTex);
+            // Foam: it scatters the whole sky, the bright overhead part of
+            // it too, so it is the brightest thing on the sea, well above the
+            // haze at the horizon; a little shadowed in its own cell walls.
+            vec3 foamLit = mix(ambient * 0.8, ambient * 1.12 + SKY_HORIZON_SUN * 0.06, foamTex) * uSeaLook.z;
             foamLit *= 1.0 + faceSun * 0.08;
             // Fresh whitewater is brighter than settled foam, and foam is
             // never darker than the water it floats on (it scatters the same
@@ -1076,8 +1127,8 @@ export class Ocean {
             // direction, so the far sea dissolves into the sea mist.
             // Clear for the first few hundred metres, then thickening, so a
             // nearby face stays crisp while the far sea melts away.
-            float hz = 1.0 - exp(-pow(vDistance * 0.00021 * uHorizonFog, 1.6));
-            hz = max(hz, (1.0 - exp(-pow(vDistance * 0.00036 * uHorizonFog, 1.6))) * (1.0 - smoothstep(0.0, 0.15, abs(view.y))));
+            float hz = seaHaze(vDistance, uHorizonFog);
+            hz = max(hz, seaHaze(vDistance, uHorizonFog * 1.7) * (1.0 - smoothstep(0.0, 0.15, abs(view.y))));
             aboveFog = mix(above, horizon, clamp(hz, 0.0, 0.97));
 
           }
@@ -1488,6 +1539,7 @@ export class Ocean {
     u.uWhitecaps.value = TUNING.visuals.whitecaps;
     u.uFoamStreaks.value = TUNING.visuals.foamStreaks;
     u.uHorizonFog.value = TUNING.visuals.horizonFog;
+    u.uSeaLook.value.set(TUNING.visuals.seaMilk, TUNING.visuals.seaGlow, TUNING.visuals.foamWhite, TUNING.visuals.sunGlitter);
 
     this.mesh.visible = true;
     this.sky.visible = camera.position.y > camSurf.height;

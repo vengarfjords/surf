@@ -719,7 +719,8 @@ export class ParticleFX {
         rand(0.6, 1.8),
         bz + wz * gust,
         rand(0.5, 1.1) * (1 + dist * 0.004),
-        rand(0.07, 0.15),
+        // A thin veil, never a cloud sitting on the whitecap.
+        rand(0.035, 0.08),
         rand(0.9, 2.0)
       );
       // Beyond ~60 m single drops are far below a pixel and invisible; only

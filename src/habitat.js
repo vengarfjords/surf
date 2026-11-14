@@ -526,8 +526,8 @@ function makeBranchCoral(seed) {
   return merged;
 }
 
-function makeBrainCoral(seed) {
-  const geo = new THREE.IcosahedronGeometry(0.62, 3);
+function makeBrainCoral(seed, detail = 3) {
+  const geo = new THREE.IcosahedronGeometry(0.62, detail);
   const pos = geo.attributes.position;
   const rnd = mulberry32(seed);
   const seen = new Map();
@@ -807,7 +807,39 @@ function makeCoralMaterials() {
     );
   };
   branch.customProgramCacheKey = () => "branch-coral-pored-lit";
-  return { rock, coral, coralDeep, branch };
+  // Dome and table corals: the same pored skin without the warm glow of
+  // the branching corals, so purple, ochre and pale colonies keep their
+  // own colour under the blue light.
+  const dome = injectCaustics(
+    new THREE.MeshStandardMaterial({
+      map: coralPore.color,
+      bumpMap: coralPore.color,
+      bumpScale: 0.014,
+      normalMap: coralPore.normal,
+      normalScale: new THREE.Vector2(1.5, 1.5),
+      color: 0xffffff,
+      roughness: 0.82,
+      metalness: 0.0,
+      emissive: 0x1c2624,
+      emissiveIntensity: 0.3,
+      side: THREE.DoubleSide,
+    }),
+    0.05,
+    0xffeac4
+  );
+  const domeCaustic = dome.onBeforeCompile;
+  dome.onBeforeCompile = (shader) => {
+    domeCaustic(shader);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <emissivemap_fragment>",
+      /* glsl */ `
+        #include <emissivemap_fragment>
+        totalEmissiveRadiance += diffuseColor.rgb * 0.2;
+      `
+    );
+  };
+  dome.customProgramCacheKey = () => "dome-coral-pored-lit";
+  return { rock, coral, coralDeep, branch, dome };
 }
 
 function instanced(geometry, material, transforms, colors, chunkSize = 0) {
@@ -947,6 +979,9 @@ export class Reefs {
     const branchPalettes = [0xd0946e, 0xc88162, 0xd9a47b, 0xb9785b, 0xc99876, 0xd7b08a, 0xb98770];
     const spongePalettes = [0xb47d38, 0xc49a4f, 0x8e613f, 0x537f63];
     const fanPalettes = [0xb24b5a, 0xc98155, 0x8c6a46, 0xad8f68, 0xb76d83];
+    const domePalettes = [0x8f73ad, 0xd08a3c, 0xc9a04a, 0xb4706e, 0x7d9a5e, 0xa25b4a, 0x9b7f9b, 0xc77949, 0xb58d50];
+    const tablePalettes = [0xcbc2a8, 0xbcc3ab, 0xadbcb1, 0xd4c5a2, 0xb7a98c];
+    const rnd2 = mulberry32(72434);
 
     for (const p of patches) {
       const patchY = seabedHeight(p.x, p.z);
@@ -962,14 +997,63 @@ export class Reefs {
         if (inHeroReef(px, pz)) continue;
         if (nearReferenceCoral(px, pz, 3.2)) continue;
         const sx = (0.85 + rnd() * 1.35) * (0.7 + p.detail * 0.34);
-        const sy = 0.28 + rnd() * 0.72;
-        pos.set(px, seabedHeight(px, pz) - 0.3, pz);
-        q.setFromEuler(new THREE.Euler((rnd() - 0.5) * 0.24, rnd() * Math.PI * 2, (rnd() - 0.5) * 0.24));
-        scale.set(sx, sy, sx * (0.65 + rnd() * 0.6));
+        // A bommie: the rock stands half a metre to a metre proud of the
+        // sand and is crowded with coral colonies.
+        const sy = (0.28 + rnd() * 0.72) * 1.35 + 0.35;
+        const tiltX = (rnd() - 0.5) * 0.24;
+        const yaw = rnd() * Math.PI * 2;
+        const tiltZ = (rnd() - 0.5) * 0.24;
+        const sz = sx * (0.65 + rnd() * 0.6);
+        const cy = seabedHeight(px, pz) - 0.15;
+        pos.set(px, cy, pz);
+        q.setFromEuler(new THREE.Euler(tiltX, yaw, tiltZ));
+        scale.set(sx, sy, sz);
         mat.compose(pos, q, scale);
         moundXf.push(mat.clone());
         color.setHex(rockPalettes[Math.floor(rnd() * rockPalettes.length)]).offsetHSL(rnd() * 0.02, 0.02, rnd() * 0.08);
         moundCol.push(color.clone());
+
+        // Colonies on the rock, from their own random stream so the rest
+        // of the reef keeps its layout.
+        const cosY = Math.cos(yaw);
+        const sinY = Math.sin(yaw);
+        const onRock = (f, a2) => {
+          const lx = Math.cos(a2) * f * sx * 0.82;
+          const lz = Math.sin(a2) * f * sz * 0.82;
+          return [px + lx * cosY + lz * sinY, cy + 0.6 * sy * Math.sqrt(1 - f * f), pz - lx * sinY + lz * cosY];
+        };
+        const domes = 3 + Math.floor(rnd2() * 4);
+        for (let k = 0; k < domes; k++) {
+          const f = Math.sqrt(rnd2()) * 0.85;
+          const a2 = rnd2() * Math.PI * 2;
+          const [wx, wy, wz] = onRock(f, a2);
+          const s = (0.3 + rnd2() * 0.55) * Math.min(1.25, 0.55 + sx * 0.35);
+          pos.set(wx, wy - s * 0.06, wz);
+          q.setFromEuler(new THREE.Euler(Math.sin(a2) * f * 0.5, rnd2() * Math.PI * 2, -Math.cos(a2) * f * 0.5));
+          scale.set(s, s * (0.7 + rnd2() * 0.6), s * (0.8 + rnd2() * 0.4));
+          mat.compose(pos, q, scale);
+          brainXf.push(mat.clone());
+          color
+            .setHex(domePalettes[Math.floor(rnd2() * domePalettes.length)])
+            .offsetHSL((rnd2() - 0.5) * 0.03, (rnd2() - 0.5) * 0.1, (rnd2() - 0.5) * 0.08);
+          brainCol.push(color.clone());
+        }
+        const shelves = rnd2() < 0.55 ? 1 + Math.floor(rnd2() * 2.4) : 0;
+        for (let k = 0; k < shelves; k++) {
+          const f = 0.45 + rnd2() * 0.4;
+          const a2 = rnd2() * Math.PI * 2;
+          const [wx, wy, wz] = onRock(f, a2);
+          const s = 0.45 + rnd2() * 0.6;
+          pos.set(wx, wy - 0.22 * s, wz);
+          q.setFromEuler(new THREE.Euler(Math.sin(a2) * f * 0.3, rnd2() * Math.PI * 2, -Math.cos(a2) * f * 0.3));
+          scale.set(s, s * (0.6 + rnd2() * 0.4), s);
+          mat.compose(pos, q, scale);
+          tableXf.push(mat.clone());
+          color
+            .setHex(tablePalettes[Math.floor(rnd2() * tablePalettes.length)])
+            .offsetHSL((rnd2() - 0.5) * 0.02, (rnd2() - 0.5) * 0.06, (rnd2() - 0.5) * 0.06);
+          tableCol.push(color.clone());
+        }
       }
 
       const rubble = Math.floor(24 + rnd() * 40 * p.detail);
@@ -1108,12 +1192,17 @@ export class Reefs {
     const moundGeo = makeRoughRockGeometry(903, 4);
     const rubbleGeo = makeRoughRockGeometry(905, 1);
     const branchGeos = [makeBranchCoral(13), makeBranchCoral(42), makeBranchCoral(77)];
-    const brainGeo = makeBrainCoral(71);
-    this.geometries.push(moundGeo, rubbleGeo, ...branchGeos, brainGeo);
+    const brainGeo = makeBrainCoral(71, 2);
+    const tableGeo = makeTableCoral(57);
+    this.geometries.push(moundGeo, rubbleGeo, ...branchGeos, brainGeo, tableGeo);
 
     const chunk = TUNING.visuals.reefChunkSize;
     this.group.add(instanced(moundGeo, this.materials.rock, moundXf, moundCol, chunk));
     this.group.add(instanced(rubbleGeo, this.materials.rock, rubbleXf, rubbleCol, chunk));
+    // Dome corals (on the rocks and loose on the sand around them) and
+    // table corals: one instanced draw each per reef chunk.
+    this.group.add(instanced(brainGeo, this.materials.dome, brainXf, brainCol, chunk));
+    this.group.add(instanced(tableGeo, this.materials.dome, tableXf, tableCol, chunk));
 
     // Empty fan shells scattered through the meadow: a small, quiet sign of
     // the living reef that also gives the sand a readable scale.
@@ -1315,27 +1404,29 @@ function bladeGeometry() {
   const uvs = [];
   const indices = [];
   const rnd = mulberry32(99117);
-  // Three blades of four segments still read as a dense tuft under the low-fi
-  // grade and cut the grass vertex/triangle load by more than half.
-  const blades = 4;
-  const segments = 4;
+  // Seven single ribbons of three segments, splayed out from the root the
+  // way a shoot of seagrass lies over in the surge. More, shorter, thinner
+  // blades for about the same triangle count as four crossed ones: a meadow
+  // in a photograph is a shaggy mat of leaves, not a stand of reeds.
+  const blades = 7;
+  const segments = 3;
 
   for (let blade = 0; blade < blades; blade++) {
     const rootAngle = rnd() * Math.PI * 2;
-    const ox = Math.cos(rootAngle) * (0.015 + rnd() * 0.11);
-    const oz = Math.sin(rootAngle) * (0.015 + rnd() * 0.11);
+    const ox = Math.cos(rootAngle) * (0.02 + rnd() * 0.16);
+    const oz = Math.sin(rootAngle) * (0.02 + rnd() * 0.16);
     const heightScale = 0.58 + rnd() * 0.46;
     const facing = rnd() * Math.PI;
     const dirX = Math.cos(facing);
     const dirZ = Math.sin(facing);
     const halfW = 0.015 + rnd() * 0.013;
-    const lean = 0.05 + rnd() * 0.2;
+    const lean = 0.1 + rnd() * 0.34;
     const twist = (rnd() - 0.5) * 0.65;
     const curl = (rnd() - 0.5) * 0.05;
     const tipSway = (rnd() - 0.5) * 0.1;
 
-    for (let side = 0; side < 2; side++) {
-      const baseAngle = facing + side * Math.PI * 0.5;
+    for (let side = 0; side < 1; side++) {
+      const baseAngle = facing + Math.PI * 0.5 + (rnd() - 0.5) * 0.9;
       const base = positions.length / 3;
       for (let i = 0; i <= segments; i++) {
         const t = i / segments;
@@ -1356,14 +1447,14 @@ function bladeGeometry() {
         positions.push(cx, y, cz, cx2, y, cz2);
         uvs.push(0, t, 1, t);
         // Dark, cold roots; sunlit jade tips.
-        const rootShade = 0.52 + t * 0.64;
+        const rootShade = 0.6 + t * 0.62;
         colors.push(
-          rootShade * 0.74,
-          rootShade * 0.88,
-          rootShade * 0.5,
-          rootShade * 0.78,
-          rootShade * 0.9,
-          rootShade * 0.52
+          rootShade * 0.66,
+          rootShade * 0.92,
+          rootShade * 0.42,
+          rootShade * 0.7,
+          rootShade * 0.94,
+          rootShade * 0.44
         );
       }
       for (let i = 0; i < segments; i++) {
@@ -1447,8 +1538,8 @@ function makeSeagrassMaterial() {
     metalness: 0.0,
     vertexColors: true,
     side: THREE.DoubleSide,
-    emissive: 0x0d1f0a,
-    emissiveIntensity: 0.6,
+    emissive: 0x16330f,
+    emissiveIntensity: 0.8,
   });
   injectCaustics(mat, 0.05, 0xf0ffd0);
   const prev = mat.onBeforeCompile;
@@ -1504,7 +1595,7 @@ function makeSeagrassMaterial() {
           // colour settles toward the meadow's mean so the field reads as a
           // soft mat instead of a scatter of bright specks.
           float bladeFar = smoothstep(7.0, 22.0, distance(vCausticWorld, cameraPosition));
-          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.13, 0.19, 0.08), bladeFar * 0.7);
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.32, 0.1), bladeFar * 0.6);
         `
       );
   };
@@ -1572,7 +1663,7 @@ export class Seagrass {
       return window * (0.25 + 0.75 * smoothstep(0.26, 0.42, patch));
     });
     // Denser blades in the meadows the player starts among.
-    for (let i = 0; i < nearMeadows.length; i++) meadows[i] = { ...meadows[i], n: Math.round(meadows[i].n * 1.6) };
+    for (let i = 0; i < nearMeadows.length; i++) meadows[i] = { ...meadows[i], n: Math.round(meadows[i].n * 3.0) };
 
     for (const meadow of meadows) {
       for (let i = 0; i < meadow.n; i++) {
@@ -1586,8 +1677,8 @@ export class Seagrass {
         if (depth < 2.1 || depth > 15.5) continue;
         const density = fbm(x * 0.042 + 4.3, z * 0.042 - 8.7, 2);
         if (density < 0.34 && rnd() > 0.18) continue;
-        const height = 0.24 + Math.pow(rnd(), 1.35) * 0.95;
-        const width = 0.62 + rnd() * 0.62;
+        const height = 0.2 + Math.pow(rnd(), 1.5) * 0.62;
+        const width = 0.7 + rnd() * 0.6;
         p.set(x, y - 0.02, z);
         q.setFromEuler(new THREE.Euler((rnd() - 0.5) * 0.12, rnd() * Math.PI * 2, (rnd() - 0.5) * 0.12));
         s.set(width, height, width);

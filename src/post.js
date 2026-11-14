@@ -158,8 +158,8 @@ const FilmShader = {
       if (under > 0.01) {
         // Photographic underwater grade: warm wavelengths gone, blue-teal
         // shadows, green-cyan midtones, and a little softness.
-        vec3 shadowTint = vec3(0.78, 0.97, 1.08);
-        vec3 midTint = vec3(0.94, 1.04, 0.96);
+        vec3 shadowTint = vec3(0.78, 0.96, 1.1);
+        vec3 midTint = vec3(0.94, 1.02, 1.0);
         vec3 graded = color * mix(shadowTint, midTint, smoothstep(0.05, 0.45, lum));
         graded = mix(vec3(lum), graded, 1.08);
         graded = (graded - 0.4) * 1.04 + 0.4;
@@ -179,10 +179,12 @@ const FilmShader = {
         // highlights, a touch of desaturation like a long-lens sea shot.
         vec3 aboveC = color;
         vec3 cool = aboveC * vec3(0.93, 1.0, 1.06);
-        vec3 warm = aboveC * vec3(1.05, 1.0, 0.93);
+        vec3 warm = aboveC * vec3(1.02, 1.0, 0.97);
         aboveC = mix(cool, warm, smoothstep(0.25, 0.8, lum));
         aboveC = mix(vec3(lum), aboveC, 0.9);
-        aboveC = aboveC * 0.96 + vec3(0.018, 0.02, 0.024);
+        // Rain haze and lens flare fill the shadows: nothing in a storm
+        // photograph is black.
+        aboveC = aboveC * 0.93 + vec3(0.034, 0.038, 0.042);
         color = mix(aboveC, color, under);
       }
 
@@ -303,16 +305,20 @@ const VolumetricShader = {
     // looking down it turns green over the meadow; looking up into open
     // water it deepens to blue, until the bright surface takes over.
     vec3 waterMedium(vec3 d, float camDepth) {
-      vec3 level = uWaterShallow * vec3(0.42, 0.62, 0.7);
-      vec3 floorTint = uWaterShallow * vec3(0.45, 0.72, 0.6);
-      vec3 open = uWaterDeep * vec3(0.7, 1.05, 1.5);
-      vec3 ceiling = uWaterShallow * vec3(0.55, 0.85, 1.0);
+      // Clear shelf water as a camera sees it: blue-teal looking level,
+      // greener looking down at the lit floor, and falling off to a dark
+      // blue with depth, where only blue light is left.
+      vec3 level = uWaterShallow * vec3(0.27, 0.36, 0.62);
+      vec3 floorTint = uWaterShallow * vec3(0.34, 0.56, 0.52);
+      vec3 open = uWaterDeep * vec3(0.7, 1.05, 1.6);
+      vec3 ceiling = uWaterShallow * vec3(0.5, 0.8, 1.0);
       vec3 col = mix(level, floorTint, smoothstep(-0.02, -0.45, d.y));
       col = mix(col, open, smoothstep(0.04, 0.4, d.y));
       col = mix(col, ceiling, smoothstep(0.55, 0.95, d.y) * exp(-camDepth * 0.05));
       // Deeper water darkens and turns bluer.
-      float deep = smoothstep(4.0, 40.0, camDepth);
-      col = mix(col, uWaterDeep * vec3(0.55, 0.8, 1.15), deep * 0.75);
+      float deep = smoothstep(3.0, 30.0, camDepth);
+      col = mix(col, uWaterDeep * vec3(0.5, 0.8, 1.35), deep * 0.9);
+      col *= mix(1.0, 0.4, smoothstep(24.0, 70.0, camDepth));
       return col;
     }
 
@@ -502,7 +508,9 @@ const VolumetricShader = {
         // of a mega wave) never sees more than the at-surface density.
         od = clamp(od, 0.0, L);
         float mist = 1.0 - exp(-od * 0.00012 * uSeaMist * wisps);
-        vec3 mistTint = mix(hazeTint, vec3(0.74, 0.78, 0.79), 0.35);
+        // Mist is lit by the same overcast as the haze behind it: a touch
+        // paler, never a white band along the horizon.
+        vec3 mistTint = hazeTint * 1.06 + vec3(0.012);
         color = mix(color, mistTint, clamp(mist, 0.0, 0.9) * above);
 
         float sunHalo = pow(max(dot(rayDir, uSunDir), 0.0), 6.0);

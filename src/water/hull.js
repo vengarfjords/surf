@@ -480,6 +480,35 @@ export class Hull {
       lift = clamp(lift, -cfg.liftCap, cfg.liftCap) * (1 - (cfg.diveFinCut ?? 0) * streamline);
       this.force.addScaledVector(this.liftDir, lift);
       this.result.liftForce = lift;
+
+      // Keel. The slender body, the dorsal fin and the deep, flat tail stock
+      // are a vertical foil: water meeting them at a small sideslip angle pushes the body
+      // sideways, at right angles to its path, so the path swings round to
+      // where the nose points and keeps its speed. Crossflow drag alone
+      // grows with the square of the slip, so a body that had turned kept
+      // sliding 5 to 10 degrees off its heading for seconds afterwards.
+      // Past `keelStall` the foil stalls and the bluff-body crossflow takes
+      // over, as before.
+      if (cfg.keelArea > 0 && underwater) {
+        const side = this.flow.dot(dolphin.right);
+        const beta = clamp(-side / speed, -cfg.keelStall, cfg.keelStall);
+        let keel = 0.5 * rhoFin * cfg.keelArea * cfg.keelLiftSlope * beta * speed * speed;
+        keel = clamp(keel, -cfg.liftCap * 2, cfg.liftCap * 2) * clamp(wetFraction * 1.5, 0, 1) * (1 - (cfg.diveFinCut ?? 0) * streamline);
+        // At right angles to the flow, in the plane of the flow and the
+        // body's side axis.
+        const fl = 1 / speed;
+        const d = side * fl;
+        let kx = dolphin.right.x - this.flow.x * fl * d;
+        let ky = dolphin.right.y - this.flow.y * fl * d;
+        let kz = dolphin.right.z - this.flow.z * fl * d;
+        const kl = Math.hypot(kx, ky, kz);
+        if (kl > 1e-3) {
+          keel /= kl;
+          this.force.x += kx * keel;
+          this.force.y += ky * keel;
+          this.force.z += kz * keel;
+        }
+      }
     } else {
       this.result.liftForce = 0;
     }

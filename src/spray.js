@@ -55,10 +55,12 @@ const PARTICLE_VERT = /* glsl */ `
     // Drops pick up the brighter sky above them; fine mist scatters about
     // as much light as the sky behind it, so against the sky it nearly
     // vanishes and against the sea it is a pale veil.
-    vec3 col = mix(mix(top, hz, 0.45) * 1.04, hz * 1.02, mistiness);
+    // Like foam, spray scatters the whole sky, the bright overhead part
+    // too: it is whiter than the haze it is seen against.
+    vec3 col = mix(mix(top, hz, 0.45) * 1.9, hz * 1.5, mistiness);
     col += SKY_HORIZON_SUN * fwd * (0.55 + 0.35 * mistiness);
     float dist = length(p - cameraPosition);
-    float hzF = 1.0 - exp(-pow(dist * 0.00021 * uHorizonFog, 1.6));
+    float hzF = seaHaze(dist, uHorizonFog);
     return mix(col, hz, clamp(hzF, 0.0, 0.95));
   }
 

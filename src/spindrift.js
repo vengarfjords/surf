@@ -82,7 +82,7 @@ const FRAG = /* glsl */ `
     col *= 0.88 + 0.2 * wisp;
 
     float dist = length(vWorld.xz - uCameraPos.xz);
-    float hz = 1.0 - exp(-pow(dist * 0.00021 * uHorizonFog, 1.6));
+    float hz = seaHaze(dist, uHorizonFog);
     col = mix(col, horizon, clamp(hz, 0.0, 0.95));
     alpha *= smoothstep(20.0, 140.0, length(vWorld - uCameraPos));
     if (alpha < 0.003) discard;

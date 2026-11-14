@@ -669,7 +669,25 @@ export class Dolphin {
     const keyTurn = (input.right ? 1 : 0) - (input.left ? 1 : 0);
     // On the surface (Space) the dolphin turns like a skier on an edge.
     const skiing = this.surfLock || 0;
-    const keyTurnRate = lerp(movement.maxTurnRate * 1.15, TUNING.hydro.surfaceTurnRate, skiing);
+    let keyTurnRate = lerp(movement.maxTurnRate * 1.15, TUNING.hydro.surfaceTurnRate, skiing);
+    // In the air the body cannot turn its path the way it does in the water,
+    // so a turn key held through a leap (porpoising round a bend) used to
+    // spin the body a quarter turn off its flight path, and it came down
+    // broadside or tail first and stopped dead. A/D now swing the nose up
+    // to `airYawMax` off the path, easing to nothing as they get there:
+    // lift bends the path toward the nose meanwhile, and the body lands
+    // close enough to its line to carve out of the landing. The mouse is
+    // not limited.
+    if (keyTurn !== 0 && this._flying) {
+      const hs = Math.hypot(this.velocity.x, this.velocity.z);
+      if (hs >= movement.airPathSpeed) {
+        const slip = wrapAngle(this.targetYaw - Math.atan2(this.velocity.x, this.velocity.z));
+        // How far the nose is already off the path on the side the key
+        // turns it toward.
+        const toward = -keyTurn * slip;
+        keyTurnRate *= 1 - smoothstep(movement.airYawMax * 0.5, movement.airYawMax, toward);
+      }
+    }
     this.targetYaw = wrapAngle(this.targetYaw - keyTurn * keyTurnRate * dt);
     const pitchInput =
       Math.abs(mx) > 0 ||
@@ -837,8 +855,12 @@ export class Dolphin {
     // surface lock) turns the nose at most `landingPitchRate` rad/s for a
     // moment: a nose-down entry pulls out over a few tenths of a second
     // instead of being yanked level in four frames.
-    if (this._flying && !flying) this._landClock = 0.6;
+    if (this._flying && !flying) {
+      this._landClock = 0.6;
+      this._landTrim = movement.landingTrimTime;
+    }
     this._landClock = Math.max(0, (this._landClock || 0) - dt);
+    this._landTrim = Math.max(0, (this._landTrim || 0) - dt);
     this._flying = flying;
     const autoPitch0 = this.targetPitch;
     this._rideTrim(dt, ocean, pitchInput);
@@ -1224,17 +1246,20 @@ export class Dolphin {
       // The sand yields, then supports the body. This is a yielding correction,
       // not a hard wall, which keeps contact feeling granular.
       const n = seabed.getSurfaceNormal(deepestPart.pos.x, deepestPart.pos.z);
-      const push = deepest * 0.68;
+      const push = deepest * (1 - Math.exp(-dt * 68));
       this.position.y += push;
       this.position.x += n.x * push * 0.32;
       this.position.z += n.z * push * 0.32;
       const vn = this.velocity.x * n.x + this.velocity.y * n.y + this.velocity.z * n.z;
       if (vn < 0) {
-        this.velocity.x -= n.x * vn * (1 + TUNING.movement.floorBounce);
-        this.velocity.y -= n.y * vn * (1 + TUNING.movement.floorBounce);
-        this.velocity.z -= n.z * vn * (1 + TUNING.movement.floorBounce);
+        // The speed into the sand goes over a few frames, not in one, and
+        // the body then slides along the bed instead of bouncing off it.
+        const take = 1 - Math.exp(-dt * (TUNING.movement.floorYield + deepest * 220));
+        this.velocity.x -= n.x * vn * take;
+        this.velocity.y -= n.y * vn * take;
+        this.velocity.z -= n.z * vn * take;
       }
-      this.velocity.multiplyScalar(1 - 0.019 * Math.min(deepest * 4, 1));
+      this.velocity.multiplyScalar(Math.exp(-1.15 * dt * Math.min(deepest * 4, 1)));
       if (deepest > 0.3) this.impact = Math.max(this.impact, deepest * 0.3);
     }
     if (this.plowClock <= 0) this.plowClock = 0.032;
@@ -1569,25 +1594,31 @@ export class Dolphin {
       1.8
     );
     const strokeScale = tailCfg.tailWaveAmplitude / 3.15;
+    // The stroke winds up and dies away over a beat or so. Pressing or
+    // letting go of W or Shift, and the tail leaving or meeting the water,
+    // used to switch its reach and its tempo in a single frame.
+    this._strokeOn = damp(this._strokeOn || 0, thrusting ? 1 : 0, tailCfg.tailEase, dt);
+    this._surgeOn = damp(this._surgeOn || 0, surge ? 1 : 0, tailCfg.tailEase, dt);
+    this._tailWater = damp(this._tailWater ?? 1, underwater ? 1 : movement.airTailScale, tailCfg.tailEase * 1.5, dt);
     this.tailHeave =
       Math.min(
         (tailCfg.tailHeaveIdle +
           speedRatio * tailCfg.tailHeaveSpeed +
           accelDrive * tailCfg.tailHeaveAccel +
-          (thrusting ? tailCfg.tailThrustHeave : 0) +
-          (surge ? tailCfg.tailSurgeHeave : 0)) *
+          this._strokeOn * tailCfg.tailThrustHeave +
+          this._surgeOn * tailCfg.tailSurgeHeave) *
           strokeScale,
         tailCfg.tailHeaveMax * strokeScale
       ) *
-      (underwater ? 1 : movement.airTailScale) *
+      this._tailWater *
       (1 - 0.92 * (this.tailStill || 0));
 
     const beatRate =
       tailCfg.tailBeatBase +
       Math.max(0, this.swimSpeed) * tailCfg.tailBeatSpeed +
       Math.max(0, this.swimAccel) * tailCfg.tailBeatAccel +
-      (thrusting ? tailCfg.tailThrustBeat : 0) +
-      (surge ? tailCfg.tailSurgeBeat : 0);
+      this._strokeOn * tailCfg.tailThrustBeat +
+      this._surgeOn * tailCfg.tailSurgeBeat;
     this.tailPhase += dt * Math.min(beatRate, tailCfg.tailBeatMax) * (1 - 0.75 * (this.tailStill || 0));
     this.tailUniforms.causticTime.value = ocean.time;
     this.wetness = Math.max(0, this.wetness - dt * 0.13);
@@ -2125,7 +2156,19 @@ export class Dolphin {
     // a landing) does not flick the nose from frame to frame.
     const cmdRaw = Math.asin(clamp(lead / Math.max(3, speed), -0.95, 0.95));
     this.rideCmd = this.rideCmd === undefined ? cmdRaw : damp(this.rideCmd, cmdRaw, 12, dt);
-    const cmd = this.rideCmd;
+    let cmd = this.rideCmd;
+    // Coming back in from the air the body is sinking fast, and the reflex
+    // answered with its hardest nose-up: the nose whipped from 35 degrees
+    // down to 50 up in half a second, the body ballooned back to the
+    // surface and half its speed went into the turn. For a moment after a
+    // landing the reflex only levels the body out and lets it rise at a
+    // shallow angle (plus whatever the surface itself is rising at), then
+    // hands back to the full trim.
+    if (this._landTrim > 0) {
+      const follow = Math.asin(clamp(Math.max(0, surfaceRate - wvy) / Math.max(3, speed), 0, 0.9));
+      const cap = movement.landingClimb + follow;
+      cmd = Math.min(cmd, lerp(movement.maxPitch, cap, smoothstep(0, 1.0, this._landTrim)));
+    }
 
     const release = cfg.rideRelease;
     const free = Math.abs(this.rideOffset) > release;
