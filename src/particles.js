@@ -1065,6 +1065,7 @@ export class NearMotes {
       uTime: { value: 0 },
       uScale: { value: 800 },
       uUnderwater: { value: 1 },
+      uLight: { value: new THREE.Color(1, 1, 1) },
       uFogColor: { value: new THREE.Color(0x17585b) },
       uFogDensity: { value: 0.026 },
     };
@@ -1110,6 +1111,7 @@ export class NearMotes {
         uniform vec3 uFogColor;
         uniform float uFogDensity;
         uniform float uUnderwater;
+        uniform vec3 uLight;
         varying vec3 vColor;
         varying float vAlpha;
         varying float vDepth;
@@ -1123,7 +1125,9 @@ export class NearMotes {
           float halo = smoothstep(0.5, 0.1, d);
           float inner = smoothstep(0.22, 0.0, length(p + vec2(0.09, -0.08)));
           float a = (halo * 0.32 + inner * 0.52) * vAlpha;
-          vec3 col = applyWaterFog(vColor, vDepth, uFogColor, uFogDensity);
+          // A speck only shows the daylight that reaches it: bright in the
+          // shallows, a dim blue fleck at depth (never a glowing orb).
+          vec3 col = applyWaterFog(vColor * uLight, vDepth, uFogColor, uFogDensity);
           gl_FragColor = vec4(col, a * uUnderwater);
         }
       `,
@@ -1134,13 +1138,14 @@ export class NearMotes {
     this.scene.add(this.points);
   }
 
-  update(dt, camera, fogColor, fogDensity, underwater) {
+  update(dt, camera, fogColor, fogDensity, underwater, light) {
     this.time += dt;
     this.uniforms.uTime.value = this.time;
     this.uniforms.uCenter.value.copy(camera.position);
     this.uniforms.uFogColor.value.copy(fogColor);
     this.uniforms.uFogDensity.value = fogDensity;
     this.uniforms.uUnderwater.value = underwater;
+    if (light) this.uniforms.uLight.value.copy(light);
     this.uniforms.uScale.value = window.innerHeight * Math.min(window.devicePixelRatio || 1, 1.5) * 0.9;
     this.points.visible = underwater > 0.05;
   }
@@ -1179,6 +1184,7 @@ export class MarineSnow {
       uTime: { value: 0 },
       uScale: { value: 700 },
       uUnderwater: { value: 1 },
+      uLight: { value: new THREE.Color(1, 1, 1) },
       uFogColor: { value: new THREE.Color(0x17585b) },
       uFogDensity: { value: 0.026 },
     };
@@ -1224,6 +1230,7 @@ export class MarineSnow {
         uniform vec3 uFogColor;
         uniform float uFogDensity;
         uniform float uUnderwater;
+        uniform vec3 uLight;
         varying vec3 vColor;
         varying float vAlpha;
         varying float vDepth;
@@ -1237,7 +1244,9 @@ export class MarineSnow {
           float grain = vnoise(gl_PointCoord * 5.0 + vSeed * 30.0);
           float a = smoothstep(0.5, 0.16, d) * (0.38 + grain * 0.62) * vAlpha;
           a *= 0.55 + 0.45 * sin(vSeed * 60.0 + vDepth);
-          vec3 col = applyWaterFog(vColor, vDepth, uFogColor, uFogDensity);
+          // A speck only shows the daylight that reaches it: bright in the
+          // shallows, a dim blue fleck at depth (never a glowing orb).
+          vec3 col = applyWaterFog(vColor * uLight, vDepth, uFogColor, uFogDensity);
           gl_FragColor = vec4(col, a * 0.55 * uUnderwater);
         }
       `,
@@ -1248,13 +1257,14 @@ export class MarineSnow {
     this.scene.add(this.points);
   }
 
-  update(dt, camera, fogColor, fogDensity, underwater) {
+  update(dt, camera, fogColor, fogDensity, underwater, light) {
     this.time += dt;
     this.uniforms.uTime.value = this.time;
     this.uniforms.uCenter.value.copy(camera.position);
     this.uniforms.uFogColor.value.copy(fogColor);
     this.uniforms.uFogDensity.value = fogDensity;
     this.uniforms.uUnderwater.value = underwater;
+    if (light) this.uniforms.uLight.value.copy(light);
     this.uniforms.uScale.value = window.innerHeight * Math.min(window.devicePixelRatio || 1, 1.5) * 0.55;
     this.points.visible = underwater > 0.05;
   }

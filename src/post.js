@@ -23,6 +23,7 @@ const FilmShader = {
     uSunScreen: { value: new THREE.Vector2(0.5, 1.1) },
     uSunPower: { value: 0 },
     uDropSeed: { value: 0 },
+    uEdgeSmooth: { value: 1 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -47,6 +48,7 @@ const FilmShader = {
     uniform vec2 uSunScreen;
     uniform float uSunPower;
     uniform float uDropSeed;
+    uniform float uEdgeSmooth;
 
     float hash12(vec2 p) {
       vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -67,6 +69,41 @@ const FilmShader = {
       col.g = texture2D(tDiffuse, uv).g;
       col.b = texture2D(tDiffuse, uv - off).b;
       return col;
+    }
+
+    // Edge anti-aliasing (FXAA). The scene is rendered below screen
+    // resolution with no multisampling, so every silhouette (a fin against
+    // open water, a blade of grass, a foam edge) came out as a staircase,
+    // which no photograph has. This looks along each edge in the finished
+    // image and blends across it; flat areas are left untouched.
+    vec3 sampleSmooth(vec2 uv) {
+      vec2 px = 1.0 / uResolution;
+      vec3 cM = texture2D(tDiffuse, uv).rgb;
+      if (uEdgeSmooth < 0.5) return cM;
+      const vec3 W = vec3(0.299, 0.587, 0.114);
+      float lNW = dot(texture2D(tDiffuse, uv + vec2(-1.0, -1.0) * px).rgb, W);
+      float lNE = dot(texture2D(tDiffuse, uv + vec2(1.0, -1.0) * px).rgb, W);
+      float lSW = dot(texture2D(tDiffuse, uv + vec2(-1.0, 1.0) * px).rgb, W);
+      float lSE = dot(texture2D(tDiffuse, uv + vec2(1.0, 1.0) * px).rgb, W);
+      float lM = dot(cM, W);
+      float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
+      float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+      // Nothing to do where the neighbourhood is flat.
+      if (lMax - lMin < max(0.02, lMax * 0.09)) return cM;
+      vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));
+      float dirReduce = max((lNW + lNE + lSW + lSE) * 0.03125, 0.0078125);
+      float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+      dir = clamp(dir * rcpDirMin, vec2(-8.0), vec2(8.0)) * px;
+      vec3 cA = 0.5 * (
+        texture2D(tDiffuse, uv + dir * (1.0 / 3.0 - 0.5)).rgb +
+        texture2D(tDiffuse, uv + dir * (2.0 / 3.0 - 0.5)).rgb
+      );
+      vec3 cB = cA * 0.5 + 0.25 * (
+        texture2D(tDiffuse, uv + dir * -0.5).rgb +
+        texture2D(tDiffuse, uv + dir * 0.5).rgb
+      );
+      float lB = dot(cB, W);
+      return (lB < lMin || lB > lMax) ? cA : cB;
     }
 
     // Water left on the lens port after the camera comes up: drops of
@@ -145,7 +182,10 @@ const FilmShader = {
       vec2 uvA = clamp(lens, vec2(0.001), vec2(0.999));
       // Lateral chromatic aberration, only toward the frame edges.
       float aberration = uAberration * r2 * (0.6 + under * 0.6) * (1.0 + uSpeed * 0.3);
-      vec3 color = sampleChroma(uvA, aberration);
+      // The smoothed image, plus the colour fringe the lens adds toward
+      // the frame edges (as a difference, so the fringe keeps the smoothing).
+      vec3 color = sampleSmooth(uvA);
+      color += sampleChroma(uvA, aberration) - texture2D(tDiffuse, uvA).rgb;
 
       // Gentle speed blur toward the edges at a sprint.
       if (uSpeed > 0.25) {
@@ -251,6 +291,7 @@ const VolumetricShader = {
     uShaft: { value: 0.42 },
     uShaftSteps: { value: 16 },
     uCaustic: { value: 0.55 },
+    uCausticNet: { value: 0.45 },
     uHaze: { value: 0.65 },
     uMist: { value: 0.35 },
     uSeaMist: { value: 1 },
@@ -291,6 +332,7 @@ const VolumetricShader = {
     uniform float uShaft;
     uniform int uShaftSteps;
     uniform float uCaustic;
+    uniform float uCausticNet;
     uniform float uHaze;
     uniform float uMist;
     uniform float uSeaMist;
@@ -469,15 +511,22 @@ const VolumetricShader = {
           upFacing * belowGap * lightFacing * causticDepth * uCaustic * uUnderwater *
           (1.0 - clamp(mediumAmount, 0.0, 1.0));
         if (causticMask > 0.0005) {
-          float caustic = clamp(
-            causticNetwork(
-              worldPos.xz * 1.05 + vec2(uTime * 0.02, -uTime * 0.015),
-              uTime * 1.05
-            ),
-            0.0,
-            2.3
-          );
-          color += uSunColor * caustic * causticMask * 0.085;
+          // The net of bright lines is sharp in the first few metres and
+          // blurs out with depth, because every ripple focuses at its own
+          // distance: by 20 m down the light is even. It also fades to its
+          // mean before the lines are finer than a pixel. The mean stays the
+          // same either way, so nothing darkens where the net is gone.
+          float netSharp =
+            uCausticNet * exp(-belowSurface * 0.14) * (1.0 - smoothstep(9.0, 32.0, rayLength));
+          float net = 1.0;
+          if (netSharp > 0.01) {
+            net = mix(
+              1.0,
+              causticNetwork(worldPos.xz * 2.1 + vec2(uTime * 0.05, -uTime * 0.035), uTime * 1.05),
+              netSharp
+            );
+          }
+          color += uSunColor * net * causticMask * 0.195;
         }
       }
 
@@ -657,6 +706,7 @@ export class Post {
     this._lastWet = wetNow;
     this.film.material.uniforms.uWetness.value = wetNow;
     this.film.material.uniforms.uSpeed.value = state.speedNorm;
+    this.film.material.uniforms.uEdgeSmooth.value = TUNING.visuals.edgeSmoothing ? 1 : 0;
 
     this.camera.getWorldDirection(this._forward);
     const facing = this._forward.dot(this.sunDir);
@@ -702,6 +752,7 @@ export class Post {
     vu.uShaft.value = TUNING.visuals.shaftStrength;
     vu.uShaftSteps.value = TUNING.visuals.shaftSteps;
     vu.uCaustic.value = TUNING.visuals.volumetricCaustics;
+    vu.uCausticNet.value = TUNING.visuals.causticNet;
     vu.uHaze.value = TUNING.visuals.surfaceHaze;
     vu.uMist.value = TUNING.visuals.surfaceMist;
     vu.uSeaMist.value = TUNING.visuals.seaMist;

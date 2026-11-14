@@ -221,29 +221,38 @@ export const glslNoise = /* glsl */ `
 `;
 
 export const glslCaustics = /* glsl */ `
-  // Domain-warped refracted sunlight. This is the classic iterated inverse
-  // distance construction: sharp filaments with soft, moving cells.
+  // Sunlight refracted through a rippled surface. A ray entering at x lands
+  // at x + grad(h), so the light on the floor is 1 / |det(I + Hess(h))|: a
+  // net of bright fold lines around dimmer cells. h is six crossing wave
+  // trains, so the net never tiles. Returns the relative brightness with a
+  // mean of 1 (cells about 0.5, lines up to 4): scale it, or blend it toward
+  // 1.0 to soften it, and the average light stays the same.
+  #define CAUSTIC_SLOPE(dx, dz, k, w) g += vec2(dx, dz) * (cos((p.x * dx + p.y * dz) * k + t * w + k * 1.7) / k);
+  #define CAUSTIC_CURVE(dx, dz, k, w) sn = sin((q.x * dx + q.y * dz) * k + t * w + k * 1.7); hxx += dx * dx * sn; hzz += dz * dz * sn; hxz += dx * dz * sn;
   float causticNetwork(vec2 p, float t) {
-    vec2 uv = p * 0.18;
-    vec2 q = mod(uv * 6.2831853, 6.2831853) - 250.0;
-    vec2 i = q;
-    float c = 1.0;
-    float inten = 0.005;
-    for (int n = 0; n < 3; n++) {
-      float tt = t * (1.0 - (3.5 / float(n + 1)));
-      i = q + vec2(
-        cos(tt - i.x) + sin(tt + i.y),
-        sin(tt - i.y) + cos(tt + i.x)
-      );
-      c += 1.0 / length(vec2(
-        q.x / (sin(i.x + tt) / inten),
-        q.y / (cos(i.y + tt) / inten)
-      ));
-    }
-    c /= 3.0;
-    c = 1.17 - pow(c, 1.35);
-    float m = clamp(abs(c) / 0.48, 0.0, 1.6);
-    return min(2.4, pow(m, 2.25) * 2.25);
+    const float amp = 0.42;
+    // Where the light landing here entered the surface.
+    vec2 g = vec2(0.0);
+    CAUSTIC_SLOPE(0.978, 0.208, 1.0, 0.9)
+    CAUSTIC_SLOPE(0.225, 0.974, 1.31, -1.1)
+    CAUSTIC_SLOPE(-0.755, 0.656, 1.74, 1.3)
+    CAUSTIC_SLOPE(-0.921, -0.391, 2.19, -0.8)
+    CAUSTIC_SLOPE(-0.326, -0.946, 2.83, 1.6)
+    CAUSTIC_SLOPE(0.743, -0.669, 3.61, -1.9)
+    vec2 q = p - amp * g;
+    // How much that patch of surface focuses or spreads it.
+    float sn;
+    float hxx = 0.0;
+    float hzz = 0.0;
+    float hxz = 0.0;
+    CAUSTIC_CURVE(0.978, 0.208, 1.0, 0.9)
+    CAUSTIC_CURVE(0.225, 0.974, 1.31, -1.1)
+    CAUSTIC_CURVE(-0.755, 0.656, 1.74, 1.3)
+    CAUSTIC_CURVE(-0.921, -0.391, 2.19, -0.8)
+    CAUSTIC_CURVE(-0.326, -0.946, 2.83, 1.6)
+    CAUSTIC_CURVE(0.743, -0.669, 3.61, -1.9)
+    float det = (1.0 - amp * hxx) * (1.0 - amp * hzz) - amp * amp * hxz * hxz;
+    return min(4.0, 4.75 * 0.25 / (abs(det) + 0.25));
   }
 `;
 

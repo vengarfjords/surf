@@ -5,7 +5,6 @@ import {
   clamp,
   damp,
   lerp,
-  glslCaustics,
   MAX_FRAME_DT,
   seabedHeight,
   smoothstep,
@@ -141,7 +140,6 @@ function addDolphinMaterialShader(material, uniforms) {
         uniform float uWaterLevel;
         varying vec3 vDolphinLocal;
         varying vec3 vDolphinWorld;
-        ${glslCaustics}
       ` +
       shader.fragmentShader.replace(
         "#include <color_fragment>",
@@ -186,7 +184,8 @@ function addDolphinMaterialShader(material, uniforms) {
         // Caustics only under the water, fading with depth.
         float dolphinDepth = uWaterLevel - vDolphinWorld.y;
         float underMask = smoothstep(0.0, 0.25, dolphinDepth) * exp(-max(dolphinDepth, 0.0) * 0.07);
-        float dolphinCaustic = causticNetwork(vDolphinWorld.xz + 2.0, uCausticTime);
+        // Even light from above; post lays the moving net over the back.
+        float dolphinCaustic = 2.3;
         vec3 upInView = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
         float topLit = clamp(dot(normal, upInView) * 0.5 + 0.5, 0.0, 1.0);
         totalEmissiveRadiance += vec3(0.5, 0.75, 0.68) * dolphinCaustic * 0.07 * underMask * topLit;
@@ -1042,7 +1041,11 @@ export class Dolphin {
     // one step to the next.
     const substeps = clamp(Math.ceil(dt / (1 / 120) - 1e-6), 1, 4);
     const step = dt / substeps;
-    this.hydroControl.thrustAccel = thrustAccel;
+    // The push comes from the stroke, and a stroke winds up and dies away:
+    // it follows the key over about a tenth of a second instead of switching
+    // on and off in a single frame.
+    this._thrustEased = damp(this._thrustEased ?? thrustAccel, thrustAccel, movement.thrustEase, dt);
+    this.hydroControl.thrustAccel = this._thrustEased;
     this.hydroControl.reverseAccel = reverseAccel;
     this.hydroControl.verticalAccel = verticalAccel;
     this.hydroControl.streamline = this.streamline;
@@ -1619,7 +1622,10 @@ export class Dolphin {
       Math.max(0, this.swimAccel) * tailCfg.tailBeatAccel +
       this._strokeOn * tailCfg.tailThrustBeat +
       this._surgeOn * tailCfg.tailSurgeBeat;
-    this.tailPhase += dt * Math.min(beatRate, tailCfg.tailBeatMax) * (1 - 0.75 * (this.tailStill || 0));
+    // The tempo changes over a beat, too: speed jumps at a landing or a
+    // waterline crossing must not make the tail skip.
+    this._beatEased = damp(this._beatEased ?? beatRate, beatRate, tailCfg.tailEase, dt);
+    this.tailPhase += dt * Math.min(this._beatEased, tailCfg.tailBeatMax) * (1 - 0.75 * (this.tailStill || 0));
     this.tailUniforms.causticTime.value = ocean.time;
     this.wetness = Math.max(0, this.wetness - dt * 0.13);
     this.impact *= Math.exp(-TUNING.movement.cameraShakeDecay * dt);
@@ -1702,6 +1708,8 @@ export class Dolphin {
     this._lockSettle = 0;
     this.rideCmd = undefined;
     this.tailStill = 0;
+    this._thrustEased = 0;
+    this._beatEased = undefined;
     this.porpoiseClock = 0;
     this.surfGlide = 0;
     this.surfLockEngaged = false;
@@ -2045,14 +2053,27 @@ export class Dolphin {
       // tenths of a second (`surfaceLockSettleBrake`) instead of in one
       // substep.
       const sl = Math.sqrt(jj);
+      const full = lam;
       if (err < 0) lam = clamp(lam, (-cfg.surfaceLockSettlePull * step) / sl, 0);
       else {
-        const cap = (cfg.surfaceLockSettleBrake * step) / sl;
+        // The harder the body comes down, the harder the water stops it:
+        // enough to stop it within `surfaceLockSettleDip` m. A porpoise hop
+        // dips in and rides back up; only a fast landing on a big face gets
+        // the full brake.
+        const closing = Math.abs(cdot - L.dEta);
+        const brake = clamp(
+          (closing * closing) / (2 * cfg.surfaceLockSettleDip),
+          cfg.surfaceLockSettleBrakeMin,
+          cfg.surfaceLockSettleBrake
+        );
+        const cap = (brake * step) / sl;
         lam = clamp(lam, -cap, cap);
       }
-      // Settled: at the lock depth and moving with the surface, so the full
-      // lock takes over without a jolt.
-      if (Math.abs(err) < 0.15 && Math.abs(cdot - L.dEta) < 1.5) this._lockSettle = 0;
+      // Settled: at the lock depth, and the full lock asks for no more than
+      // the settle allows, so it takes over without a jolt. (Handing over
+      // while the body was still closing at 1.5 m/s reversed that speed in
+      // one frame: 125 m/s^2 on every porpoise landing.)
+      if (Math.abs(err) < 0.15 && Math.abs(full - lam) < 1e-6) this._lockSettle = 0;
     }
     v.x -= L.sx * lam;
     v.y += lam;

@@ -3,7 +3,6 @@ import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import { meadowMap } from "./atmosphere.js";
 import {
   clamp,
-  glslCaustics,
   glslFog,
   glslNoise,
   lerp,
@@ -451,36 +450,7 @@ const SAND_FRAG = /* glsl */ `
   varying float vDelta;
 
   ${glslNoise}
-  ${glslCaustics}
   ${glslFog}
-
-  // Cellular caustic web: bright seams between drifting Voronoi cells. This
-  // reads as the net of focused sunlight crossing a rippled surface.
-  float causticWeb(vec2 p, float t) {
-    vec2 n = floor(p);
-    vec2 f = fract(p);
-    float d1 = 8.0;
-    float d2 = 8.0;
-    for (int j = -1; j <= 1; j++) {
-      for (int i = -1; i <= 1; i++) {
-        vec2 g = vec2(float(i), float(j));
-        vec2 cell = n + g;
-        float h1 = hash21(cell + 0.17);
-        float h2 = hash21(cell + 7.71);
-        vec2 o = 0.5 + 0.4 * vec2(sin(t * 0.4 + h1 * 6.283), cos(t * 0.33 + h2 * 6.283));
-        vec2 r = g + o - f;
-        float d = dot(r, r);
-        if (d < d1) {
-          d2 = d1;
-          d1 = d;
-        } else if (d < d2) {
-          d2 = d;
-        }
-      }
-    }
-    float edge = sqrt(d2) - sqrt(d1);
-    return 1.0 - smoothstep(0.015, 0.16, edge);
-  }
 
   void main() {
     // The coarse whole-shelf mesh has a hole under the dense local sand mesh.
@@ -515,11 +485,10 @@ const SAND_FRAG = /* glsl */ `
     float ndl = max(dot(detailN, uSunDir), 0.0);
     float ambient = 0.17 + 0.18 * smoothstep(-5.0, -24.0, height);
 
-    // Light focused by the waves overhead: broad, soft, wandering bands.
-    // (The fine bright filaments are laid over every surface in post.)
+    // Light focused by the wave groups overhead: broad, soft and slow. (The
+    // net of bright lines is laid over every surface in post.)
     float webMask = smoothstep(0.33, 0.76, fbm2(vWorld.xz * 0.11 + uTime * 0.006));
-    float bands = causticNetwork(vWorld.xz * 0.43 + vec2(uTime * 0.03, -uTime * 0.021), uTime * 0.6);
-    float caustics = clamp(bands * 0.26, 0.0, 0.6) * (0.35 + webMask * 0.9);
+    float caustics = 0.6 * (0.5 + webMask * 0.6);
     float causticMask = smoothstep(-16.0, -1.4, height) * (0.4 + 0.6 * smoothstep(0.05, 0.9, detailN.y));
     vec3 causticTint = uSunColor * caustics * uCausticStrength * causticMask * 0.72;
 
@@ -599,6 +568,10 @@ const SAND_FRAG = /* glsl */ `
     // The water quickly eats warm wavelengths with depth.
     float absorb = smoothstep(2.0, 20.0, -height);
     sand = mix(sand, sand * vec3(0.45, 0.75, 0.7), absorb * 0.42);
+    // Below the sunlit shelf the daylight itself runs out, the red and the
+    // green first: the deep floor is dim and blue, whatever the lens does.
+    float deepLoss = 1.0 - exp(-max(-height - 10.0, 0.0) * 0.045);
+    sand *= mix(vec3(1.0), vec3(0.3, 0.52, 0.8), deepLoss);
 
     // Freshly pushed ridges catch light; damp furrows and caves read darker
     // and a little cooler.

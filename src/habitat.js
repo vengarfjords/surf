@@ -5,7 +5,6 @@ import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import {
   clamp,
   fbm,
-  glslCaustics,
   glslFog,
   glslNoise,
   lerp,
@@ -118,13 +117,14 @@ export function injectCaustics(material, strength = 0.34, tint = 0xffedc2) {
         uniform float uOceanTime;
         uniform vec3 uCausticTint;
         uniform float uCausticStrength;
-        ${glslCaustics}
       ` +
       shader.fragmentShader.replace(
         "#include <emissivemap_fragment>",
         /* glsl */ `
           #include <emissivemap_fragment>
-          float caustic = causticNetwork(vCausticWorld.xz * 1.35, uOceanTime);
+          // Even light from above. The moving net of bright lines is laid
+          // over every surface in post, so it lines up across sand and coral.
+          float caustic = 2.3;
           float causticMask = smoothstep(-16.0, -1.0, vCausticWorld.y);
           totalEmissiveRadiance += uCausticTint * caustic * uCausticStrength * causticMask;
           #ifdef USE_INSTANCING_COLOR
@@ -2244,7 +2244,13 @@ export class SunShafts {
           float shimmer = 0.55 + 0.45 * sin(vWorld.x * 0.35 + vWorld.z * 0.27 + uTime * 0.5);
           float nearFade = smoothstep(2.5, 13.0, vDepth);
           float farFade = smoothstep(85.0, 25.0, vDepth);
-          float alpha = uOpacity * endFade * edge * (0.25 + bands * 0.9) * shimmer * nearFade * farFade;
+          // A beam is a volume of lit water, thickest through its middle:
+          // it fades to nothing at its outline. The cone's skin used to stop
+          // dead at its silhouette, and read as a pale pane of glass with
+          // straight edges hanging in the water.
+          float through = abs(dot(normalize(vNormal), normalize(cameraPosition - vWorld)));
+          float soft = smoothstep(0.02, 0.6, through);
+          float alpha = uOpacity * endFade * edge * soft * (0.25 + bands * 0.9) * shimmer * nearFade * farFade;
           float fog = exp(-uFogDensity * uFogDensity * vDepth * vDepth);
           gl_FragColor = vec4(uColor, alpha * fog);
         }

@@ -185,7 +185,12 @@ async function boot() {
   const sunWarm = new THREE.Color(PALETTE.sunColor);
   const sunCool = new THREE.Color(0xd6ecf5);
   const sunDeep = new THREE.Color(0x6fa9d6);
+  const hemiShallow = lights.hemi.color.clone();
+  const hemiDeep = new THREE.Color(0x4f8fd0);
+  const ambientShallow = lights.ambient.color.clone();
+  const ambientDeep = new THREE.Color(0x143a6e);
   const fogColor = new THREE.Color();
+  const speckLight = new THREE.Color(1, 1, 1);
   const current = new THREE.Vector3(
     TUNING.movement.currentX,
     TUNING.movement.currentY,
@@ -471,6 +476,10 @@ async function boot() {
     lights.hemi.intensity *= 1 - 0.7 * depthLoss;
     lights.ambient.intensity *= 1 - 0.6 * depthLoss;
     lights.sun.color.lerp(sunDeep, depthLoss * 0.7);
+    // The sky light and the fill go the same way: at depth a grey body is
+    // a blue-grey body, not a neutral one.
+    lights.hemi.color.copy(hemiShallow).lerp(hemiDeep, depthLoss * 0.8);
+    lights.ambient.color.copy(ambientShallow).lerp(ambientDeep, depthLoss * 0.8);
 
     const envUnder = camState.underwater > 0.5;
     const envNow = envUnder ? envMaps.below : envMaps.above;
@@ -522,8 +531,10 @@ async function boot() {
     emitSurfBubbles(dt, camState.underwater);
     effects.update(dt, camera, fogColor, fogDensity, current);
     effects.updateBodyShed(dt, dolphin);
-    snow.update(dt, camera, fogColor, fogDensity, camState.underwater);
-    motes.update(dt, camera, fogColor, fogDensity, camState.underwater);
+    // Drifting specks are lit by what daylight is left at this depth.
+    speckLight.setRGB(1 - 0.9 * depthLoss, 1 - 0.78 * depthLoss, 1 - 0.6 * depthLoss);
+    snow.update(dt, camera, fogColor, fogDensity, camState.underwater, speckLight);
+    motes.update(dt, camera, fogColor, fogDensity, camState.underwater, speckLight);
     shafts.update(camera, total, camState.underwater);
     spindrift.update(dt, camera, camState.underwater);
     effects.updateWindSpray(dt, camera, camState.underwater);

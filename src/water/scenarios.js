@@ -1534,7 +1534,8 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
       let control = botInput();
       const out = {};
       // opts.trace: every Nth step as [segment, t, height over the water,
-      // speed, vy, lock, in the air, wet share, slip, pitch, yaw rate].
+      // speed, vy, lock, in the air, wet share, slip, pitch, yaw rate,
+      // acceleration, slam force, landing settle time left].
       const trace = opts.trace ? [] : null;
       const traceEvery = typeof opts.trace === "number" ? opts.trace : 6;
       let traceN = 0;
@@ -1600,10 +1601,12 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
           if (list.length > 4) list.length = 4;
         }
       };
+      let lastAccel = 0;
       function sample() {
         // Body acceleration and jerk (how hard the motion changes).
         tmpV.copy(dolphin.velocity).sub(prevV).multiplyScalar(1 / dt);
         const aMag = tmpV.length();
+        lastAccel = aMag;
         const jerk = tmpV.distanceTo(prevA) / dt;
         prevA.copy(tmpV);
         prevV.copy(dolphin.velocity);
@@ -1671,7 +1674,8 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
           sample();
           if (trace && traceN++ % traceEvery === 0)
             trace.push([segName, r2(segT), r2(rel()), r2(speed()), r2(dolphin.velocity.y), r2(dolphin.surfLock), dolphin.leaping ? 1 : 0,
-              r2(dolphin.hydro ? dolphin.hydro.wetFraction : 0), r2(wrap(heading() - dolphin.yaw)), r2(dolphin.pitch), r2(dolphin.yawRate)]);
+              r2(dolphin.hydro ? dolphin.hydro.wetFraction : 0), r2(wrap(heading() - dolphin.yaw)), r2(dolphin.pitch), r2(dolphin.yawRate),
+              r2(lastAccel), Math.round(dolphin.hydro ? dolphin.hydro.slamForce || 0 : 0), r2(dolphin._lockSettle || 0)]);
           if (after) after(t + dt);
         }
       }

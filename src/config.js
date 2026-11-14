@@ -156,6 +156,8 @@ export const TUNING = {
     airAimMax: 0.6,
     // How far off the flight path A/D can swing the nose sideways (rad).
     airYawMax: 0.6,
+    // How fast the push follows W / Shift (1/s): about 0.07 s to wind up.
+    thrustEase: 14,
     // Weathervane: rate (1/s) at which the nose relaxes back onto the
     // flight path once the player stops aiming it.
     airAimReturn: 1.5,
@@ -282,6 +284,10 @@ export const TUNING = {
     surfaceLockSettleTime: 2,
     surfaceLockSettlePull: 15,
     surfaceLockSettleBrake: 60,
+    // The brake scales with the landing speed: it stops the body within
+    // about `surfaceLockSettleDip` m, never gentler than `...BrakeMin`.
+    surfaceLockSettleBrakeMin: 25,
+    surfaceLockSettleDip: 0.8,
     // Letting go of Space while on the surface leaps: a tail drive of
     // `surfaceLeapForward` m/s (+ `surfaceLeapDriveShare` x speed through the
     // water, up to +8) along the heading and `surfaceLeap` m/s (+ share, up
@@ -591,6 +597,8 @@ export const TUNING = {
     grain: 0.028,
     aberration: 0.0012,
     vignette: 0.24,
+    // Edge anti-aliasing in the film pass (no staircase silhouettes).
+    edgeSmoothing: true,
     cameraTint: 0.15,
     motionBlur: 0.22,
     causticStrength: 1.25,
@@ -601,6 +609,9 @@ export const TUNING = {
     shaftStrength: 1.25,
     shaftSteps: 10,
     volumetricCaustics: 0.72,
+    // How sharp the moving net of light is just under the surface (0 = even
+    // light, 1 = hard sun). It blurs away with depth and is gone by 20 m.
+    causticNet: 0.45,
     surfaceHaze: 0.42,
     surfaceMist: 0.26,
     // Look of the open sea (visual only, no effect on the wave physics).
@@ -620,7 +631,7 @@ export const TUNING = {
     // under the hidden sun, skyTexture the contrast of the cloud deck (read
     // once at start).
     seaMilk: 0.88,
-    seaGlow: 1.7,
+    seaGlow: 1.8,
     foamWhite: 2.6,
     sunGlitter: 1.6,
     skyTexture: 0.55,
@@ -653,7 +664,7 @@ export const PALETTE = {
   waterTop: 0x3f9e90,
   waterDeep: 0x0b3442,
   // The colour light takes inside aerated storm water (see seaMilk).
-  seaMilk: 0x799683,
+  seaMilk: 0x6f9a84,
   skyZenith: 0x69787c,
   skyMid: 0xa4aaaa,
   skyMidAway: 0x748386,
@@ -784,6 +795,7 @@ export const TUNE_CONTROLS = [
   { path: "visuals.volumetricScatter", label: "water scatter", min: 0, max: 2, step: 0.01 },
   { path: "visuals.shaftStrength", label: "god rays", min: 0, max: 1.6, step: 0.01 },
   { path: "visuals.volumetricCaustics", label: "caustic light", min: 0, max: 1.8, step: 0.01 },
+  { path: "visuals.causticNet", label: "caustic net", min: 0, max: 1, step: 0.01 },
   { path: "visuals.surfaceHaze", label: "surface haze", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.surfaceMist", label: "sea mist", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.seaMist", label: "low sea mist", min: 0, max: 4, step: 0.01 },
@@ -796,6 +808,7 @@ export const TUNE_CONTROLS = [
   { path: "visuals.foamWhite", label: "foam whiteness", min: 0.8, max: 3, step: 0.01 },
   { path: "visuals.sunGlitter", label: "sun glitter", min: 0, max: 3, step: 0.01 },
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },
+  { path: "visuals.edgeSmoothing", label: "edge smoothing", type: "toggle" },
   { path: "visuals.dynamicQuality", label: "dynamic quality", type: "toggle" },
   { path: "visuals.dynamicQualityMinScale", label: "min render scale", min: 0.4, max: 0.8, step: 0.01 },
   { path: "hydro.waterTorque", label: "water torque", min: 0, max: 2, step: 0.05 },

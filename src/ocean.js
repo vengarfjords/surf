@@ -1012,7 +1012,7 @@ export class Ocean {
             // stirred sediment that scatter the daylight straight back, so
             // the whole sea has a pale, milky turquoise-green body, a little
             // darker in the troughs than on the crests.
-            vec3 milk = uMilkColor * (0.78 + 0.3 * smoothstep(-0.6, 0.9, vCrest));
+            vec3 milk = uMilkColor * (0.62 + 0.5 * smoothstep(-0.7, 0.9, vCrest));
             vec3 deepBody = mix(uDeepColor, milk, uSeaLook.x);
             shallow = mix(shallow, milk * 1.08, uSeaLook.x * 0.6);
             vec3 body = mix(shallow, deepBody, shallowMix) * ambient * uSeaLook.y;
@@ -1037,7 +1037,7 @@ export class Ocean {
             // Wave-face legibility from the sun side.
             vec2 sunFlat = normalize(uSunDir.xz);
             float faceSun = clamp(-dot(n.xz, sunFlat) * 2.0, -1.0, 1.0);
-            body *= 1.0 + faceSun * 0.14;
+            body *= 1.0 + faceSun * 0.2;
             // Bubbles below the foam scatter the light: pale turquoise.
             body = mix(body, sssColor * 0.95 + 0.08, clamp(aeration * 0.75 + foam * 0.3, 0.0, 0.85));
 
@@ -1159,7 +1159,13 @@ export class Ocean {
             tir += uTopColor * pow(max(0.0, 1.0 - cosI), 1.25) * 0.08;
             float undersideSheen = pow(max(dot(reflect(-view, microN), uSunDir), 0.0), 24.0);
             tir += uSunColor * undersideSheen * 0.1;
-            float veins = causticNetwork(vWorld.xz * 0.34 + vec2(uTime * 0.02, -uTime * 0.015), uTime * 0.55);
+            // Ripple lines on the ceiling: a soft net near the lens, even
+            // beyond it (the mean is the same, so the far ceiling is clean).
+            float veinSharp = 0.3 * (1.0 - smoothstep(8.0, 40.0, vDistance));
+            float veins = 2.3;
+            if (veinSharp > 0.01) {
+              veins *= mix(1.0, causticNetwork(vWorld.xz * 0.9 + vec2(uTime * 0.04, -uTime * 0.03), uTime * 0.55), veinSharp);
+            }
             tir += uTopColor * veins * 0.03 * (0.45 + 0.55 * wav);
 
             vec3 winCol = skyColor(winDir, uSunDir, uTime, 0.6);
