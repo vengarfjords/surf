@@ -53,6 +53,7 @@ await OCEAN.scenarios.faceDrop(-150, 0.35, 0, true, 0.35); // scenario 8: take o
 await OCEAN.scenarios.flatSpeed(true, 10);             // scenario 9: flat-water swim speeds (surge) and coast-down
 await OCEAN.scenarios.shiftDive({ breach: "boost", air: "hold" }); // breach, then dive back in (breach: boost|plain, air: none|hold|press, release: s)
 await OCEAN.scenarios.glitchProbe("dive", { where: "edge", dt: "jitter" }); // repeated breach-and-dive, checked frame by frame
+await OCEAN.scenarios.feelAudit({ only: ["surface", "breachCoast"] });     // movement feel audit (all segments when `only` is left out; `trace: 6` adds a time series)
 ```
 
 The surf scenarios step the world (and the camera rig) at a fixed 60 Hz and report a `camera` block: when the surf camera engaged, and whether the lens ever went underwater while it was engaged. The real-time scenarios (1, 3, 4, 5) depend on frame rate and vary from run to run.
@@ -164,6 +165,32 @@ There is no surf mode. The dolphin rides waves only through the hull forces and 
 - **Skimming is not breaching.** A breach (splash, toast, camera shake, re-entry speed loss) needs the body to get clear of the water, so riding the surface of a face no longer fires a breach and a re-entry every time the back crosses the waterline.
 
 In the storm, ride the shelf edge: wait in 40-45 m of water facing shore (B in the playable build puts you there), hold Space and W as a big wave comes up behind you, and add Shift as it lifts you; the biggest waves peak and break over 30-38 m of water and move at about 17 m/s. Inside, the broken bores on the inner shelf can be ridden the same way. To ride a mega wave, switch the sea state to `mega` in T, wait in the trough facing shore and hold Space (to stay on the surface) and W, adding Shift as the face starts to lift you; let the face carry you up, then steer across it or down it with the mouse or A/D to carve. To ride the reef instead, switch the sea state to `bigwave` in T, wait ahead of a set wave and surge (Shift + W) as the face starts to lift you; these waves move at 15-17 m/s, faster than a cruising dolphin. Once you are on the face you can let go of the mouse and steer only left and right: the ride trim keeps you in the face at 17-22 m/s, gravity takes you down when you point down the line, and the wave carries you back up when you turn up it. On a 16 m wave the hands-off rider (`faceDrop`, taking off near the crest) stays on the face for about 12 s with the surf camera engaged, drops about 4 m and climbs about 7 m. Standing-start catches with carving and no pitch input (`surfCatch`) ride a median of 6.8 s and up to 24 s / 417 m with a 10 m drop; some sets still pass under the scripted rider, which waits less cleverly than a person. `flatSpeed(boost, seconds, surface, flick)` reports flat-water swim speeds and, with `surface = "hands"`, how steadily the trim holds the surface and what a pitch flick does.
+
+## Photo references and movement feel
+
+A two-phase polish pass on top of the storm.
+
+**Phase 1: the look, against photographs.** Eleven reference photographs (a storm sea, a breaking turquoise wave from the side and from the air, sun glitter, dolphins leaping at dusk, a blue-hour beach, seagrass with stingrays, a shallow reef, a coral rock on rippled sand, a table-coral reef, a squid in deep blue) were matched with 14 fixed viewpoints in the game, captured from a static build with the world clock held still, and laid side by side with the photos. Each round compared them by eye and by numbers (band colours, luminance percentiles, saturation), changed the shaders and palette, and captured again.
+
+- **Storm sea.** The water has a pale, milky turquoise-green body, a little darker in the troughs (`PALETTE.seaMilk`, `visuals.seaMilk`, `visuals.seaGlow`), in place of slate grey. The sky is a flat grey overcast with soft cloud (`visuals.skyTexture`), cool silver on the sun's side instead of beige. Rain haze thickens with distance on one shared curve (`seaHaze` in `atmosphere.js`, used by the sea, the spray and the spindrift), so the far sea melts into the sky with no horizon line. Measured against the photographs (mean saturation, median luminance): the storm frame was 0.27 and 0.41 and is now 0.15 and 0.51 (photo: 0.18 and 0.53); the frame from the air was 0.48 and 0.16 and is now 0.24 and 0.42 (photo: 0.27 and 0.53).
+- **Foam and glitter.** Foam is the brightest thing on the sea (`visuals.foamWhite`). Whitecaps have a dense downwind edge and a thin spent patch behind it, the advected foam field is torn into ragged pieces and strands, the wind streaks are short faint threads, and far-off sheets of foam break into pieces instead of flat plates. The hidden sun lays a glitter path on the water whose width follows the ripple slopes (`visuals.sunGlitter`).
+- **Under water.** The water is blue-teal near the surface and falls off to dark blue with depth, and the sun, sky and fill lights dim and cool with depth, so a dolphin 30 m down is a dark shape in deep blue. The sand has wave ripples and soft caustic bands instead of a polygon net. A meadow is a dense green carpet with short splayed blades standing out of it. Every reef patch has coral bommies: rock mounds standing half a metre to a metre proud of the sand, crowded with dome corals (purple, orange, ochre, green) and table corals, on one extra instanced draw each per reef chunk.
+- **Film.** Less chromatic aberration (0.0012) and vignette (0.24), neutral highlights, slightly more grain (0.028).
+- **Where it stands.** The frames read as low-fidelity photographs of a grey storm and of a temperate reef. They do not match the sunny wave, the dusk sky or the blue-hour beach photographs, because the game's setting is a storm at midday; the foam is still softer than a photograph's, and there is no crisp plunging lip with spray drops.
+
+**Phase 2: the feel.** `feelAudit()` runs scripted segments at a fixed 60 Hz on calm deep water (throttle and coast, brake, taps, key and mouse turns, breaches with W held, released and with the nose held up, the Space ride with carves, a leap and a release, and a dive into the sand) and reports speed kept, response times, and the largest rate and acceleration of every animated channel (pitch, yaw, roll, head, spine, tail reach and tempo, thrust, body and camera).
+
+| finding | before | now |
+| --- | --- | --- |
+| A/D held through porpoise leaps (Space + W) | the body spun up to 92 degrees off its flight path, landed broadside or tail first and kept 15% of its speed | the nose swings at most 0.6 rad off the path (`movement.airYawMax`, keys only; the mouse is not limited) and the carve keeps 93-99% |
+| re-entry after a breach, W let go | the ride trim whipped the nose from 35 degrees down to 50-65 up in 0.6 s, the body ballooned back out, 53% of the speed left after 1 s | the trim levels the body out and lets it rise at 0.25 rad for 2.4 s (`movement.landingClimb`, `landingTrimTime`), 79% left |
+| the same with W held | 90% after 1 s, 6.2 m/s^2 peak loss | 100%, 1.6 m/s^2 |
+| path after a 46 degree mouse turn | 63% of the way in 0.7 s, still 4 degrees off after 3 s | 63% in 0.5 s, 95% in 1.6 s (keel side lift, `hydro.keelArea`, `keelLiftSlope`, `keelStall`) |
+| hard A/D turn through 180 degrees with W | 71% of the speed kept | 82% |
+| diving into the sand at 10 m/s | stopped in one frame (344 m/s^2) and thrown back up at a third of the speed, four bounces along the bottom | the sand takes the speed over a few frames and nothing rebounds (`movement.floorYield`): about 160 m/s^2, one continuous slide |
+| tail stroke | reach and tempo switched in one frame with W, Shift and the waterline (12.5 m/s, 750 m/s^2 on the reach) | eased over about a beat (`dolphin.tailEase`): 3.8 m/s, 320 m/s^2 |
+
+Unchanged on purpose: the head follows the mouse exactly (no smoothing between the hand and the snout), S brakes and then swims backwards, and straight-line swimming and coasting are the same (10.3 m/s cruise, 87% of the speed left 1 s after letting go of W, 31.8 m of glide in 4 s).
 
 ## Project layout
 
