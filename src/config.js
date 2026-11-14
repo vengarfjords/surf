@@ -158,6 +158,8 @@ export const TUNING = {
     airYawMax: 0.6,
     // How fast the push follows W / Shift (1/s): about 0.07 s to wind up.
     thrustEase: 14,
+    // Time (s) over which the water takes the speed a re-entry costs.
+    entryLossTime: 0.12,
     // Weathervane: rate (1/s) at which the nose relaxes back onto the
     // flight path once the player stops aiming it.
     airAimReturn: 1.5,
@@ -632,6 +634,9 @@ export const TUNING = {
     // once at start).
     seaMilk: 0.88,
     seaGlow: 1.8,
+    // How much a trough's low reflection shows the next wave's darker face
+    // instead of the sky (0 = the sky everywhere, the flat look).
+    troughShade: 0.75,
     foamWhite: 2.6,
     sunGlitter: 1.6,
     skyTexture: 0.55,
@@ -805,6 +810,7 @@ export const TUNE_CONTROLS = [
   { path: "visuals.spindrift", label: "crest spindrift", min: 0, max: 2, step: 0.01 },
   { path: "visuals.seaMilk", label: "milky storm water", min: 0, max: 1, step: 0.01 },
   { path: "visuals.seaGlow", label: "water glow", min: 0.4, max: 2, step: 0.01 },
+  { path: "visuals.troughShade", label: "trough shade", min: 0, max: 1, step: 0.01 },
   { path: "visuals.foamWhite", label: "foam whiteness", min: 0.8, max: 3, step: 0.01 },
   { path: "visuals.sunGlitter", label: "sun glitter", min: 0, max: 3, step: 0.01 },
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },

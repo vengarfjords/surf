@@ -364,6 +364,7 @@ export class Ocean {
       uHorizonFog: { value: TUNING.visuals.horizonFog },
       uMilkColor: { value: new THREE.Color(PALETTE.seaMilk) },
       uSeaLook: { value: new THREE.Vector4(TUNING.visuals.seaMilk, TUNING.visuals.seaGlow, TUNING.visuals.foamWhite, TUNING.visuals.sunGlitter) },
+      uTroughShade: { value: TUNING.visuals.troughShade },
       uRefrColor: { value: null },
       uRefrDepth: { value: null },
       uRefrOn: { value: 0 },
@@ -519,6 +520,7 @@ export class Ocean {
         uniform float uHorizonFog;
         uniform vec3 uMilkColor;
         uniform vec4 uSeaLook; // milk, glow, foam whiteness, sun glitter
+        uniform float uTroughShade;
         uniform sampler2D uRefrColor;
         uniform sampler2D uRefrDepth;
         uniform float uRefrOn;
@@ -1028,8 +1030,8 @@ export class Ocean {
             vec2 vH = view.xz / max(length(view.xz), 1e-4);
             float faceView = clamp(dot(nH, vH) * 3.0, 0.0, 1.0);
             float towardSun = pow(clamp(dot(-view, uSunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
-            float sss = thin * (0.35 + faceView * 0.9 + towardSun * 0.8);
-            sss += faceView * 0.18;
+            float sss = thin * (0.35 + faceView * 1.3 + towardSun * 0.8);
+            sss += faceView * 0.26;
             // In milky water the light coming through a crest is the same
             // pale green as the body, only brighter, never a neon teal.
             vec3 sssColor = mix(uTopColor * vec3(0.85, 1.05, 0.95), uMilkColor * 1.2, uSeaLook.x * 0.95);
@@ -1081,6 +1083,18 @@ export class Ocean {
                 body = mix(body, seen, clear);
               }
             }
+
+            // A trough does not see the sky in a low reflection: the next
+            // wave stands in the way, and what it mirrors is that wave's
+            // face, the darker water at its foot. These are the dark bands
+            // between the crests of a storm photograph; without them the
+            // troughs mirror the same grey sky as everything else and the sea
+            // goes flat. (A crest has nothing in front of it.)
+            float lowRefl = 1.0 - smoothstep(0.03, 0.16 + 0.1 * uSeaLook.x, refl.y);
+            float inTrough = 1.0 - smoothstep(-0.55, 0.35, vCrest);
+            float blocked = lowRefl * inTrough * uTroughShade * (1.0 - foamCover);
+            vec3 nextFace = milk * 0.62 * ambient * uSeaLook.y;
+            sky = mix(sky, nextFace, blocked);
 
             above = mix(body, sky, fres);
 
@@ -1546,6 +1560,7 @@ export class Ocean {
     u.uFoamStreaks.value = TUNING.visuals.foamStreaks;
     u.uHorizonFog.value = TUNING.visuals.horizonFog;
     u.uSeaLook.value.set(TUNING.visuals.seaMilk, TUNING.visuals.seaGlow, TUNING.visuals.foamWhite, TUNING.visuals.sunGlitter);
+    u.uTroughShade.value = TUNING.visuals.troughShade;
 
     this.mesh.visible = true;
     this.sky.visible = camera.position.y > camSurf.height;

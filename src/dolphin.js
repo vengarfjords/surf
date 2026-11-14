@@ -1331,8 +1331,15 @@ export class Dolphin {
           else this.velocity.add(P);
           this.boostBreachCount++;
         } else {
-          this.velocity.y +=
-            movement.breachImpulse * clamp(exitSpeed / movement.boostSpeed, 0, 1.15);
+          // The flukes are still in the water as the body comes out, so the
+          // last kick is a stroke too, not an instant jump in speed (that
+          // was a one-frame jolt of 0.7-1.8 m/s at every breach).
+          const kick = movement.breachImpulse * clamp(exitSpeed / movement.boostSpeed, 0, 1.15);
+          const stroke = TUNING.hydro.surfaceLeapStroke || 0;
+          if (stroke > 0) {
+            (this._leapPush || (this._leapPush = new THREE.Vector3())).set(0, kick, 0);
+            this._leapPushT = stroke;
+          } else this.velocity.y += kick;
         }
       }
     }
@@ -1422,21 +1429,43 @@ export class Dolphin {
         // Tucked in a Shift dive the body knifes in and keeps nearly all of
         // its speed.
         const keep = 1 - (TUNING.hydro.diveEntryKeep ?? 0) * this.streamline;
-        const cutN = 0.32 * hit * (1 - 0.7 * clean) * keep;
-        const cutT = 0.08 * hit * (1 - 0.9 * clean) * keep;
-        // Tangential part keeps 1 - cutT, normal part keeps 1 - cutN.
-        const tx = rx - vn * nx;
-        const ty = ry - vn * ny;
-        const tz = rz - vn * nz;
-        const kn = vn * (1 - cutN);
-        this.velocity.x = wx + tx * (1 - cutT) + kn * nx;
-        this.velocity.y = wy + ty * (1 - cutT) + kn * ny;
-        this.velocity.z = wz + tz * (1 - cutT) + kn * nz;
+        // Tangential part keeps 1 - cutT, normal part keeps 1 - cutN. The
+        // water takes it while the body goes in (`movement.entryLossTime`),
+        // not all in the frame its centre meets the surface, which showed
+        // as a hitch of half a metre per second on every porpoise landing.
+        this._entryCutN = 0.32 * hit * (1 - 0.7 * clean) * keep;
+        this._entryCutT = 0.08 * hit * (1 - 0.9 * clean) * keep;
+        this._entryLeft = TUNING.movement.entryLossTime;
       }
       this.impact = Math.max(this.impact, 0.55);
       this.wetness = 1;
     }
     this.wasAbove = centerAbove;
+    if (this._entryLeft > 0) {
+      if (this.leaping) this._entryLeft = 0;
+      else {
+        const share = Math.min(dt, this._entryLeft) / TUNING.movement.entryLossTime;
+        this._entryLeft -= dt;
+        const fN = Math.pow(1 - this._entryCutN, share);
+        const fT = Math.pow(1 - this._entryCutT, share);
+        const wv = this.hull.waterVel;
+        const wx = Number.isFinite(wv.x) ? wv.x : 0;
+        const wy = Number.isFinite(wv.y) ? wv.y : 0;
+        const wz = Number.isFinite(wv.z) ? wv.z : 0;
+        const nx = centerWater.nx ?? 0;
+        const ny = centerWater.ny ?? 1;
+        const nz = centerWater.nz ?? 0;
+        const rx = this.velocity.x - wx;
+        const ry = this.velocity.y - wy;
+        const rz = this.velocity.z - wz;
+        const vn = rx * nx + ry * ny + rz * nz;
+        // Only speed into the water is taken from the normal part.
+        const kn = vn < 0 ? vn * fN : vn;
+        this.velocity.x = wx + (rx - vn * nx) * fT + kn * nx;
+        this.velocity.y = wy + (ry - vn * ny) * fT + kn * ny;
+        this.velocity.z = wz + (rz - vn * nz) * fT + kn * nz;
+      }
+    }
 
     if (!centerAbove) {
       // Water parts continuously around the submerged body near the surface.
@@ -1710,6 +1739,7 @@ export class Dolphin {
     this.tailStill = 0;
     this._thrustEased = 0;
     this._beatEased = undefined;
+    this._entryLeft = 0;
     this.porpoiseClock = 0;
     this.surfGlide = 0;
     this.surfLockEngaged = false;
