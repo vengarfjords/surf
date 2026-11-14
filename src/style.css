@@ -451,6 +451,14 @@ button {
   transform: translate(-50%, 0);
 }
 
+/* The film grain, vignette and lens edge now live in the post chain, at a
+   photographic strength; these camcorder overlays are kept off. */
+.grain-overlay,
+.vignette-overlay,
+.lens-edge {
+  display: none;
+}
+
 .grain-overlay,
 .vignette-overlay {
   position: absolute;
@@ -669,6 +677,30 @@ button {
   color: rgba(211, 255, 244, 0.48);
 }
 
+.tuner-row.is-toggle {
+  grid-template-columns: 1fr 16px;
+}
+
+.tuner-row.is-toggle input[type="checkbox"] {
+  accent-color: #8ff3d8;
+  margin: 0;
+}
+
+.tuner-row.is-preset {
+  grid-template-columns: 1fr 78px;
+}
+
+.tuner-row.is-preset select {
+  background: rgba(8, 32, 36, 0.85);
+  color: rgba(220, 255, 246, 0.8);
+  border: 1px solid rgba(160, 240, 220, 0.22);
+  font: inherit;
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 2px;
+}
+
 .tuner-row label {
   text-transform: uppercase;
 }
@@ -716,6 +748,27 @@ button {
   color: rgba(211, 255, 244, 0.28);
   font-size: 6px;
   letter-spacing: 0.1em;
+}
+
+.water-readout {
+  position: absolute;
+  left: 28px;
+  top: 52px;
+  z-index: 6;
+  pointer-events: none;
+  color: rgba(206, 255, 244, 0.62);
+  font-size: 8px;
+  line-height: 1.65;
+  letter-spacing: 0.07em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 8px rgba(0, 20, 20, 0.8);
+  white-space: nowrap;
+}
+
+.water-readout b {
+  color: rgba(160, 255, 224, 0.82);
+  font-weight: 500;
+  letter-spacing: 0.14em;
 }
 
 .tuner-foot b {
