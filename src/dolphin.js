@@ -1740,6 +1740,7 @@ export class Dolphin {
     this._thrustEased = 0;
     this._beatEased = undefined;
     this._entryLeft = 0;
+    this._landedRide = false;
     this.porpoiseClock = 0;
     this.surfGlide = 0;
     this.surfLockEngaged = false;
@@ -1846,19 +1847,27 @@ export class Dolphin {
     // the water along the surface normal and forward along the heading, on
     // top of the momentum the wave has already given the body. (C instead of
     // letting go dives, with no leap.)
+    // Just after a leap or a porpoise hop lands back into the ride the lock
+    // is still taking hold; letting go then leaps too, once the body is
+    // mostly in the water to push off it (it used to do nothing for the
+    // first 0.16 s after every splash-down).
+    const pushOff = this._landedRide && (this.hydro ? this.hydro.wetFraction : 0) > 0.6;
     if (
       this._spaceWas &&
       !input.rise &&
       !input.dive &&
       this.surfLockEngaged &&
-      this.surfLock > 0.8 &&
+      (this.surfLock > 0.8 || pushOff) &&
       cfg.surfaceLeap > 0
     ) {
       // A dolphin leap is a hard tail drive along the body: it launches
       // forward along the line, much faster than the wave carrying it, at a
       // low angle off the surface, and flies a ballistic arc (nose up out of
       // the water, nose down into it). Faster rides throw longer, higher leaps.
-      const up = cfg.surfaceLeap + clamp(relFwd * cfg.surfaceLeapSpeedShare, 0, 3);
+      let up = cfg.surfaceLeap + clamp(relFwd * cfg.surfaceLeapSpeedShare, 0, 3);
+      // Still dipping from a splash-down: the stroke stops the dip first, so
+      // the leap leaves as it would from the settled ride.
+      if (this.surfLock <= 0.8 && closing > 0) up += closing / Math.hypot(sx, 1, sz);
       const onWaveDrive = cfg.surfaceLeapForward + clamp(relFwd * cfg.surfaceLeapDriveShare, 0, 8);
       const calmDrive = cfg.surfaceLeapForwardCalm + clamp(relFwd * cfg.surfaceLeapDriveShare * 0.5, 0, 4);
       const drive = lerp(calmDrive, onWaveDrive, Math.max(onWave, this.surfGlide || 0));
@@ -1932,6 +1941,7 @@ export class Dolphin {
         // Caught from the air: the body settles into the water (see
         // _surfaceConstrain) instead of being snapped down to the lock depth.
         this._lockSettle = this.leapFlight || depth < 0 ? cfg.surfaceLockSettleTime : 0;
+        this._landedRide = !!this.leapFlight;
       }
     } else if (depth > cfg.surfaceLockExit) {
       // Dragged deep (a breaking wave): swim back up.
@@ -1944,6 +1954,7 @@ export class Dolphin {
     this.surfLock = target
       ? Math.min(1, this.surfLock + dt * ramp)
       : Math.max(0, this.surfLock - dt * ramp * 2);
+    if (!this.surfLockEngaged || this.surfLock > 0.8) this._landedRide = false;
     // Rising (Space) gets you to the surface; on it there is nothing to rise
     // to, and in the air Space only means "land back into the ride".
     if (this.surfLockEngaged || (want && depth < 0)) this.verticalInput = 0;
