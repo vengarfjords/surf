@@ -6,6 +6,7 @@ import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { PALETTE, SUN_DIRECTION, TUNING } from "./config.js";
 import { glslCaustics, glslNoise } from "./utils.js";
+import { glslSky } from "./atmosphere.js";
 
 const FilmShader = {
   uniforms: {
@@ -21,6 +22,8 @@ const FilmShader = {
     uPixelRatio: { value: 1 },
     uSunScreen: { value: new THREE.Vector2(0.5, 1.1) },
     uSunPower: { value: 0 },
+    uDropSeed: { value: 0 },
+    uEdgeSmooth: { value: 1 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -44,6 +47,8 @@ const FilmShader = {
     uniform float uPixelRatio;
     uniform vec2 uSunScreen;
     uniform float uSunPower;
+    uniform float uDropSeed;
+    uniform float uEdgeSmooth;
 
     float hash12(vec2 p) {
       vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -66,157 +71,187 @@ const FilmShader = {
       return col;
     }
 
+    // Edge anti-aliasing (FXAA). The scene is rendered below screen
+    // resolution with no multisampling, so every silhouette (a fin against
+    // open water, a blade of grass, a foam edge) came out as a staircase,
+    // which no photograph has. This looks along each edge in the finished
+    // image and blends across it; flat areas are left untouched.
+    vec3 sampleSmooth(vec2 uv) {
+      vec2 px = 1.0 / uResolution;
+      vec3 cM = texture2D(tDiffuse, uv).rgb;
+      if (uEdgeSmooth < 0.5) return cM;
+      const vec3 W = vec3(0.299, 0.587, 0.114);
+      float lNW = dot(texture2D(tDiffuse, uv + vec2(-1.0, -1.0) * px).rgb, W);
+      float lNE = dot(texture2D(tDiffuse, uv + vec2(1.0, -1.0) * px).rgb, W);
+      float lSW = dot(texture2D(tDiffuse, uv + vec2(-1.0, 1.0) * px).rgb, W);
+      float lSE = dot(texture2D(tDiffuse, uv + vec2(1.0, 1.0) * px).rgb, W);
+      float lM = dot(cM, W);
+      float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
+      float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+      // Nothing to do where the neighbourhood is flat.
+      if (lMax - lMin < max(0.02, lMax * 0.09)) return cM;
+      vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));
+      float dirReduce = max((lNW + lNE + lSW + lSE) * 0.03125, 0.0078125);
+      float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+      dir = clamp(dir * rcpDirMin, vec2(-8.0), vec2(8.0)) * px;
+      vec3 cA = 0.5 * (
+        texture2D(tDiffuse, uv + dir * (1.0 / 3.0 - 0.5)).rgb +
+        texture2D(tDiffuse, uv + dir * (2.0 / 3.0 - 0.5)).rgb
+      );
+      vec3 cB = cA * 0.5 + 0.25 * (
+        texture2D(tDiffuse, uv + dir * -0.5).rgb +
+        texture2D(tDiffuse, uv + dir * 0.5).rgb
+      );
+      float lB = dot(cB, W);
+      return (lB < lMin || lB > lMax) ? cA : cB;
+    }
+
+    // Water left on the lens port after the camera comes up: drops of
+    // several sizes, each an irregular little lens that bends and blurs the
+    // view behind it, with a darker edge. They are out of focus, so they are
+    // soft distortions, not circles. Returns the refraction offset (xy) and
+    // the drop coverage (z). As the port dries the smaller and less likely
+    // drops go first.
+    vec3 lensWater(vec2 uv, float wet) {
+      vec2 p = uv * vec2(uResolution.x / max(uResolution.y, 1.0), 1.0);
+      vec3 acc = vec3(0.0);
+      for (int L = 0; L < 3; L++) {
+        float fl = float(L);
+        float scale = L == 0 ? 5.0 : (L == 1 ? 9.0 : 17.0);
+        vec2 g = p * scale + vec2(fl * 3.7 + uDropSeed * 1.31, fl * 1.9 - uDropSeed * 0.77);
+        vec2 cell = floor(g);
+        vec2 f = fract(g) - 0.5;
+        float h = hash(cell + fl * 17.0 + uDropSeed * 3.3);
+        float keep = wet * (L == 0 ? 0.18 : (L == 1 ? 0.28 : 0.38));
+        if (h > keep) continue;
+        vec2 c = (vec2(hash(cell + 3.1 + fl), hash(cell + 7.7 - fl)) - 0.5) * 0.45;
+        vec2 d = f - c;
+        float r = 0.14 + 0.2 * hash(cell + 1.3 + fl * 2.0);
+        // Shrink as it dries.
+        r *= 0.55 + 0.45 * smoothstep(h, h + 0.35, keep + 0.15);
+        float ang = atan(d.y, d.x);
+        float wob = 1.0 + 0.16 * sin(ang * 3.0 + h * 21.0) + 0.09 * sin(ang * 5.0 + h * 9.0);
+        // Gravity drags the bigger drops into a teardrop.
+        wob *= 1.0 + 0.25 * smoothstep(0.0, -1.0, sin(ang)) * (1.0 - fl * 0.4);
+        float dist = length(d) / (r * wob);
+        if (dist >= 1.0) continue;
+        // A drop on the lens is far out of focus: its edge is a wide, soft
+        // falloff, never a cut-out outline.
+        float m = 1.0 - smoothstep(0.3, 1.0, dist);
+        m *= m;
+        float dome = sqrt(max(0.0, 1.0 - dist * dist));
+        // Small drops bend the view less and are blurrier still.
+        vec2 off = -(d / (r * wob)) * (1.0 - dome * 0.6) * (0.012 / scale) * (L == 0 ? 4.0 : 2.5);
+        acc.xy += off * m;
+        acc.z = max(acc.z, m);
+      }
+      return acc;
+    }
+
     void main() {
       float under = uUnderwater;
       float wet = uWetness;
       vec2 uv = vUv;
 
-      // Very slight spherical lens + water-surface wobble.
+      // A slight lens curvature, and under water the faint wobble of
+      // looking through a moving medium.
       vec2 centered = uv * 2.0 - 1.0;
       float r2 = dot(centered, centered);
-      vec2 lens = uv + centered * (0.006 + under * 0.012) * r2;
+      // Barrel curvature, zoomed in just enough that the corners never
+      // sample outside the frame (which smears the edge pixels into bands).
+      float curve = 0.003 + under * 0.008;
+      vec2 lens = 0.5 + (uv + centered * curve * r2 - 0.5) / (1.0 + curve * 2.0 + 0.006);
       if (under > 0.01) {
-        lens.x += sin(uv.y * 44.0 + uTime * 1.3) * 0.00075 * under;
-        lens.y += cos(uv.x * 36.0 + uTime * 1.1) * 0.00055 * under;
+        lens.x += sin(uv.y * 31.0 + uTime * 1.1) * 0.0005 * under;
+        lens.y += cos(uv.x * 27.0 + uTime * 0.9) * 0.0004 * under;
       }
 
-      // Sparse droplets on the lens after a breach.
-      if (wet > 0.01) {
-        vec2 grid = uv * vec2(19.0, 12.0);
-        vec2 cell = floor(grid);
-        vec2 local = fract(grid) - 0.5;
-        float h = hash(cell + floor(uTime * 0.9) * 0.13);
-        float drop = smoothstep(0.26, 0.06, length(local + vec2(h - 0.5, hash(cell.yx) - 0.5) * 0.3));
-        drop *= step(0.72, h) * wet;
-        lens += normalize(local + 0.0001) * drop * 0.003 * wet;
+      // Water on the lens after the camera comes up.
+      float dropMask = 0.0;
+      if (wet > 0.01 && under < 0.5) {
+        vec3 lw = lensWater(uv, wet);
+        dropMask = lw.z;
+        lens += lw.xy;
+        // Right out of the water a film runs down the port and ripples
+        // the whole view for a moment.
+        float film = smoothstep(0.75, 1.0, wet);
+        lens.x += sin(uv.y * 23.0 + uTime * 4.0 + sin(uv.x * 9.0) * 2.0) * 0.004 * film;
+        lens.y += sin(uv.x * 17.0 - uTime * 3.0) * 0.002 * film + film * 0.004;
       }
 
       vec2 uvA = clamp(lens, vec2(0.001), vec2(0.999));
-      float aberration = uAberration * (0.45 + under * 0.9) * (1.0 + uSpeed * 0.22);
-      vec3 color = sampleChroma(uvA, aberration);
+      // Lateral chromatic aberration, only toward the frame edges.
+      float aberration = uAberration * r2 * (0.6 + under * 0.6) * (1.0 + uSpeed * 0.3);
+      // The smoothed image, plus the colour fringe the lens adds toward
+      // the frame edges (as a difference, so the fringe keeps the smoothing).
+      vec3 color = sampleSmooth(uvA);
+      color += sampleChroma(uvA, aberration) - texture2D(tDiffuse, uvA).rgb;
 
-      // Plastic-lens softness. Small sensor, bad glass, soft corners.
-      vec2 softness = vec2(0.0015, 0.0011) * (0.8 + r2 * 1.6);
-      vec3 softA = texture2D(tDiffuse, clamp(uvA + softness, 0.001, 0.999)).rgb;
-      vec3 softB = texture2D(tDiffuse, clamp(uvA - softness, 0.001, 0.999)).rgb;
-      vec3 softC = texture2D(tDiffuse, clamp(uvA + vec2(-softness.x, softness.y), 0.001, 0.999)).rgb;
-      vec3 softD = texture2D(tDiffuse, clamp(uvA + vec2(softness.x, -softness.y), 0.001, 0.999)).rgb;
-      color = mix(color, (softA + softB + softC + softD) * 0.25, 0.18 + under * 0.08);
-
-      // Slight horizontal smear. Tiny sensors, cheap optics, and a wet lens
-      // all leave a little colour dragging along the scan direction.
-      vec3 horizontalSmear = texture2D(tDiffuse, clamp(uvA - vec2(0.0045, 0.0), 0.001, 0.999)).rgb;
-      color = mix(color, horizontalSmear, 0.03 + under * 0.025);
-
-      // Soft, imperfect optical center: three cheap taps at speed.
-      if (uSpeed > 0.15) {
-        vec2 blurDir = (uvA - 0.5) * 0.0028 * uSpeed;
+      // Gentle speed blur toward the edges at a sprint.
+      if (uSpeed > 0.25) {
+        vec2 blurDir = (uvA - 0.5) * 0.004 * (uSpeed - 0.25);
         vec3 blur = texture2D(tDiffuse, uvA + blurDir).rgb * 0.5 + texture2D(tDiffuse, uvA - blurDir).rgb * 0.5;
-        color = mix(color, blur, 0.18 + under * 0.12);
+        color = mix(color, blur, clamp(r2, 0.0, 1.0) * 0.6);
       }
 
-      // Wet lens highlights.
-      if (wet > 0.01) {
-        vec2 grid = uv * vec2(19.0, 12.0);
-        vec2 cell = floor(grid);
-        vec2 local = fract(grid) - 0.5;
-        float h = hash(cell + floor(uTime * 0.9) * 0.13);
-        float drop = smoothstep(0.26, 0.1, length(local + vec2(h - 0.5, hash(cell.yx) - 0.5) * 0.3)) * step(0.72, h);
-        float glint = smoothstep(0.12, 0.0, length(local + vec2(-0.06, -0.05))) * drop * wet;
-        color += vec3(0.35, 0.5, 0.45) * glint * 0.16;
-      }
-
-      // Bleached, hazy air above; heavier cyan-green density below.
+      float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
       if (under > 0.01) {
-        float depthHaze = smoothstep(0.0, 1.0, r2);
-        float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
-        vec3 deepTint = vec3(0.005, 0.03, 0.062);
-        // Cheap halation: let only the brighter parts bleed into neighbours.
-        vec2 haloOff = vec2(0.0026, 0.0017) * (1.0 + under);
+        // Photographic underwater grade: warm wavelengths gone, blue-teal
+        // shadows, green-cyan midtones, and a little softness.
+        vec3 shadowTint = vec3(0.78, 0.96, 1.1);
+        vec3 midTint = vec3(0.94, 1.02, 1.0);
+        vec3 graded = color * mix(shadowTint, midTint, smoothstep(0.05, 0.45, lum));
+        graded = mix(vec3(lum), graded, 1.08);
+        graded = (graded - 0.4) * 1.04 + 0.4;
+        color = mix(color, graded, under);
+        // Soft scatter around the bright parts (water is never crisp).
+        vec2 haloOff = vec2(0.003, 0.002);
         vec3 halo = texture2D(tDiffuse, clamp(uvA + haloOff, 0.001, 0.999)).rgb;
         halo += texture2D(tDiffuse, clamp(uvA - haloOff, 0.001, 0.999)).rgb;
         halo *= 0.5;
-        float haloLum = dot(halo, vec3(0.2126, 0.7152, 0.0722));
-        color += halo * smoothstep(0.68, 0.98, haloLum) * 0.12;
-        color = mix(color, deepTint, 0.07 * under);
-        vec3 coolGrade = color * vec3(0.82, 0.96, 1.08);
-        vec3 warmGrade = color * vec3(1.08, 1.0, 0.86);
-        color = mix(coolGrade, warmGrade, smoothstep(0.32, 0.82, lum));
-        color = mix(vec3(lum), color, 1.58 + under * 0.15);
-        color = (color - 0.47) * (1.12 + under * 0.05) + 0.47;
-        color = mix(color, vec3(lum) * vec3(0.66, 0.93, 1.04), 0.03 * under);
-        color += vec3(0.03, 0.12, 0.23) * pow(max(lum - 0.3, 0.0), 1.8) * 0.18 * under;
-        color *= mix(1.0, 0.78, depthHaze * under);
-        color = max(color, vec3(0.004, 0.018, 0.02));
-
-        // A soft memory of the sun above the surface. The depth-aware
-        // volumetric pass now owns the hard shafts; this is only the broad
-        // scatter that survives in the lens.
+        color = mix(color, halo, 0.12 * under);
         vec2 sunDelta = (uv - uSunScreen) * vec2(1.0, 0.8);
-        float sunDist = length(sunDelta);
-        float scatter = exp(-sunDist * 3.6);
-        color += uSunPower * under * vec3(0.26, 0.44, 0.6) * scatter * 0.5;
-        float upperHaze = smoothstep(0.35, 0.95, uv.y);
-        color += vec3(0.025, 0.09, 0.17) * upperHaze * under * 1.25;
-      } else {
-        // Overexposed tropical air and a warm halation around the sun.
-        float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
-        // Split-tone the air: cool, blue shadows in the swell and warm,
-        // honeyed highlights around the sun and foam.
-        vec3 aboveCool = color * vec3(0.88, 0.98, 1.1);
-        vec3 aboveWarm = color * vec3(1.09, 1.0, 0.86);
-        color = mix(aboveCool, aboveWarm, smoothstep(0.36, 0.86, lum));
-        color = mix(color, vec3(1.0, 0.945, 0.82), smoothstep(0.64, 1.16, lum) * 0.2);
-        color += vec3(0.07, 0.04, 0.01) * smoothstep(0.58, 1.0, lum);
-        color = mix(vec3(lum), color, 0.94);
-        color = (color - 0.5) * 0.97 + 0.5;
+        float scatter = exp(-length(sunDelta) * 3.2);
+        color += uSunPower * under * vec3(0.12, 0.26, 0.3) * scatter * 0.35;
+      }
+      if (under < 0.99) {
+        // Photographic air: lifted, hazy blacks, cool shadows and warm
+        // highlights, a touch of desaturation like a long-lens sea shot.
+        vec3 aboveC = color;
+        vec3 cool = aboveC * vec3(0.93, 1.0, 1.06);
+        vec3 warm = aboveC * vec3(1.02, 1.0, 0.97);
+        aboveC = mix(cool, warm, smoothstep(0.25, 0.8, lum));
+        aboveC = mix(vec3(lum), aboveC, 0.9);
+        // Rain haze and lens flare fill the shadows: nothing in a storm
+        // photograph is black.
+        aboveC = aboveC * 0.93 + vec3(0.034, 0.038, 0.042);
+        color = mix(aboveC, color, under);
       }
 
-      // A hint of low-bitrate chroma smear — color remembers its neighbours
-      // longer than luminance does.
-      if (under > 0.01) {
-        vec2 chromaOffset = vec2(0.0021, 0.0) * (0.5 + 1.5 * r2);
-        vec3 sideA = texture2D(tDiffuse, clamp(uvA + chromaOffset, 0.001, 0.999)).rgb;
-        vec3 sideB = texture2D(tDiffuse, clamp(uvA - chromaOffset, 0.001, 0.999)).rgb;
-        float lumA = dot(sideA, vec3(0.2126, 0.7152, 0.0722));
-        float lumB = dot(sideB, vec3(0.2126, 0.7152, 0.0722));
-        color = mix(color, vec3(lumA * 0.5 + lumB * 0.5), 0.04);
+      // Lens drops are out of focus: what they show is soft, and their
+      // edges are a little darker where the light bends away.
+      if (dropMask > 0.001) {
+        vec2 bo = vec2(0.004, 0.003);
+        vec3 soft = texture2D(tDiffuse, clamp(uvA + bo, 0.001, 0.999)).rgb
+          + texture2D(tDiffuse, clamp(uvA - bo, 0.001, 0.999)).rgb
+          + texture2D(tDiffuse, clamp(uvA + vec2(-bo.x, bo.y), 0.001, 0.999)).rgb
+          + texture2D(tDiffuse, clamp(uvA + vec2(bo.x, -bo.y), 0.001, 0.999)).rgb;
+        color = mix(color, soft * 0.25, dropMask * 0.7);
+        float edge = dropMask * (1.0 - dropMask) * 4.0;
+        color *= 1.0 - edge * 0.03;
       }
 
-      // Light compression: quantized channels with a gentle dither, plus
-      // slow, blocky chroma noise. It should read as data, not pixels.
-      float dither = (hash12(gl_FragCoord.xy + floor(uTime * 24.0)) - 0.5) / 48.0;
-      vec3 quantized = floor((color + dither) * 48.0) / 48.0;
-      color = mix(color, quantized, 0.32);
-      vec2 block = floor(gl_FragCoord.xy / (6.0 * max(1.0, uPixelRatio)));
-      float blockNoise = hash(block + floor(uTime * 8.0));
-      color += (blockNoise - 0.5) * 0.008 * (0.5 + under);
-
-      // Grain, heavier in the shadows, and faint vertical scan smear.
+      // Fine film grain, mostly in the shadows.
       float grainSeed = hash12(gl_FragCoord.xy * 0.71 + floor(uTime * 30.0) * 17.13);
       float lum2 = dot(color, vec3(0.2126, 0.7152, 0.0722));
-      float grain = (grainSeed - 0.5) * uGrain * (1.15 - lum2 * 0.55);
-      color += grain;
-      color += (hash12(gl_FragCoord.xy * 1.31 + floor(uTime * 24.0)) - 0.5) * vec3(0.012, 0.02, 0.022) * (0.35 + under);
-      color -= sin(uv.y * uResolution.y * 1.55) * 0.0045 * (0.3 + under * 0.7);
+      color += (grainSeed - 0.5) * uGrain * (1.0 - lum2 * 0.6);
 
-      // Slow VHS tracking band.
-      float band = smoothstep(0.035, 0.0, abs(fract(uv.y * 0.66 + uTime * 0.021) - 0.5) - 0.475);
-      color += vec3(0.08, 0.1, 0.08) * band * 0.07;
-      color -= vec3(0.03, 0.02, 0.0) * smoothstep(0.01, 0.0, abs(fract(uv.y * 0.31 - uTime * 0.014) - 0.5) - 0.49);
-
-      // Vignette and edge dirt. The vertical axis is deliberately softer so
-      // a wide frame does not turn the sky into a grey band.
-      float vig = smoothstep(1.16, 0.24, length(centered * vec2(0.98, 0.72)));
+      // Soft natural vignette.
+      float vig = smoothstep(1.35, 0.25, length(centered * vec2(0.92, 0.75)));
       color *= mix(1.0, vig, uVignette);
-      color *= 0.965 + 0.055 * smoothstep(0.0, 0.6, uv.y);
 
-      // A cheap camcorder iris hunting for exposure and drifting white balance.
-      float iris = 1.0 + sin(uTime * 0.11) * 0.012 + sin(uTime * 0.043 + 1.7) * 0.008;
-      iris -= uSunPower * 0.05 * under;
-      color *= iris;
-      color.r *= 1.0 + sin(uTime * 0.021 + 0.4) * 0.008;
-      color.b *= 1.0 + sin(uTime * 0.017 + 2.1) * 0.007;
+      // Dither the 8-bit output so the big soft gradients do not band.
+      color += (hash12(gl_FragCoord.xy + fract(uTime) * 91.0) - 0.5) / 255.0;
 
       gl_FragColor = vec4(color, 1.0);
     }
@@ -256,8 +291,11 @@ const VolumetricShader = {
     uShaft: { value: 0.42 },
     uShaftSteps: { value: 16 },
     uCaustic: { value: 0.55 },
+    uCausticNet: { value: 0.45 },
     uHaze: { value: 0.65 },
     uMist: { value: 0.35 },
+    uSeaMist: { value: 1 },
+    uFogDensity: { value: 0.03 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -294,11 +332,37 @@ const VolumetricShader = {
     uniform float uShaft;
     uniform int uShaftSteps;
     uniform float uCaustic;
+    uniform float uCausticNet;
     uniform float uHaze;
     uniform float uMist;
+    uniform float uSeaMist;
+    uniform float uFogDensity;
 
     ${glslNoise}
     ${glslCaustics}
+    ${glslSky}
+
+    // The colour the water column fades to along a ray. Looking level the
+    // water is teal, brightened by light thrown back off the sunlit floor;
+    // looking down it turns green over the meadow; looking up into open
+    // water it deepens to blue, until the bright surface takes over.
+    vec3 waterMedium(vec3 d, float camDepth) {
+      // Clear shelf water as a camera sees it: blue-teal looking level,
+      // greener looking down at the lit floor, and falling off to a dark
+      // blue with depth, where only blue light is left.
+      vec3 level = uWaterShallow * vec3(0.27, 0.36, 0.62);
+      vec3 floorTint = uWaterShallow * vec3(0.34, 0.56, 0.52);
+      vec3 open = uWaterDeep * vec3(0.7, 1.05, 1.6);
+      vec3 ceiling = uWaterShallow * vec3(0.5, 0.8, 1.0);
+      vec3 col = mix(level, floorTint, smoothstep(-0.02, -0.45, d.y));
+      col = mix(col, open, smoothstep(0.04, 0.4, d.y));
+      col = mix(col, ceiling, smoothstep(0.55, 0.95, d.y) * exp(-camDepth * 0.05));
+      // Deeper water darkens and turns bluer.
+      float deep = smoothstep(3.0, 30.0, camDepth);
+      col = mix(col, uWaterDeep * vec3(0.5, 0.8, 1.35), deep * 0.9);
+      col *= mix(1.0, 0.4, smoothstep(24.0, 70.0, camDepth));
+      return col;
+    }
 
     float hash12(vec2 p) {
       vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -409,19 +473,18 @@ const VolumetricShader = {
           sunDrive *
           uUnderwater;
 
-        // Thin in-scatter toward the bright surface. This is not a replacement
-        // for the material fog; it is the light that hangs between surfaces.
-        float scatterAmount = 1.0 - exp(-rayLength * 0.024);
-        vec3 scatterTint = mix(
-          uWaterDeep,
-          uWaterShallow,
-          exp(-belowSurface * 0.06) * 0.45 + sunAlign * 0.12
-        );
-        color = mix(
-          color,
-          scatterTint * (0.78 + 0.22 * sunAlign),
-          scatterAmount * 0.15 * uScatter * uUnderwater
-        );
+        // Directional water medium. The materials fog toward one flat
+        // colour; here distant water takes the colour of the column in that
+        // direction, so the frame has the up/down falloff of real water.
+        float camDepthNow = max(0.0, uWaterLevel - uCameraPos.y);
+        float mediumDensity = uFogDensity * (0.85 + 0.25 * uScatter);
+        float mediumAmount = 1.0 - exp(-pow(rayLength * mediumDensity, 1.6));
+        // Past the visibility limit everything is the water itself, so the
+        // far seabed melts into the water instead of meeting it in a line.
+        mediumAmount = max(mediumAmount, smoothstep(35.0, 80.0, rayLength));
+        vec3 medium = waterMedium(rayDir, camDepthNow);
+        medium += uSunColor * 0.05 * pow(max(dot(rayDir, uSunDir), 0.0), 4.0) * exp(-camDepthNow * 0.04);
+        color = mix(color, medium, clamp(mediumAmount, 0.0, 1.0) * uUnderwater);
 
         // Broad solar halo in the water column, plus the brighter ceiling.
         float halo = pow(max(dot(rayDir, uSunDir), 0.0), 18.0);
@@ -442,44 +505,65 @@ const VolumetricShader = {
         float belowGap = smoothstep(0.3, 2.2, belowSurface);
         float lightFacing = clamp(dot(surfaceNormal, uSunDir) * 0.55 + 0.45, 0.0, 1.0);
         float causticDepth = exp(-belowSurface * 0.022);
+        // Caustics are light on a surface: they fade with the surface into
+        // the water, or the far seabed glows as a pale band at the horizon.
         float causticMask =
-          upFacing * belowGap * lightFacing * causticDepth * uCaustic * uUnderwater;
+          upFacing * belowGap * lightFacing * causticDepth * uCaustic * uUnderwater *
+          (1.0 - clamp(mediumAmount, 0.0, 1.0));
         if (causticMask > 0.0005) {
-          float caustic = clamp(
-            causticNetwork(
-              worldPos.xz * 1.05 + vec2(uTime * 0.02, -uTime * 0.015),
-              uTime * 1.05
-            ),
-            0.0,
-            2.3
-          );
-          color += uSunColor * caustic * causticMask * 0.085;
+          // The net of bright lines is sharp in the first few metres and
+          // blurs out with depth, because every ripple focuses at its own
+          // distance: by 20 m down the light is even. It also fades to its
+          // mean before the lines are finer than a pixel. The mean stays the
+          // same either way, so nothing darkens where the net is gone.
+          float netSharp =
+            uCausticNet * exp(-belowSurface * 0.14) * (1.0 - smoothstep(9.0, 32.0, rayLength));
+          float net = 1.0;
+          if (netSharp > 0.01) {
+            net = mix(
+              1.0,
+              causticNetwork(worldPos.xz * 2.1 + vec2(uTime * 0.05, -uTime * 0.035), uTime * 1.05),
+              netSharp
+            );
+          }
+          color += uSunColor * net * causticMask * 0.195;
         }
       }
 
       if (uUnderwater < 0.99) {
         float above = 1.0 - uUnderwater;
-        float horizon = exp(-abs(rayDir.y - 0.012) * 12.0);
-        float distanceHaze = 1.0 - exp(-rayLength * 0.0011);
-        vec3 hazeTint = mix(
-          uSkyHorizon,
-          uSunColor,
-          clamp(dot(rayDir, uSunDir) * 0.5 + 0.5, 0.0, 1.0) * 0.58
-        );
-        float mistBand = smoothstep(
-          0.56,
-          0.92,
-          fbm2(vec2(rayDir.x * 3.5 + uTime * 0.004, rayDir.y * 26.0 - uTime * 0.002))
-        );
-        mistBand *= exp(-abs(rayDir.y - 0.015) * 7.0);
-        color = mix(
-          color,
-          hazeTint,
-          (horizon * 0.08 + distanceHaze * 0.065) * uHaze * above
-        );
-        color += hazeTint * mistBand * uMist * above * 0.10;
+        vec3 hazeTint = skyHorizonColor(rayDir, uSunDir);
+        float distanceHaze = 1.0 - exp(-min(rayLength, 9000.0) * 0.00035);
+        bool isSky = rawDepth > 0.99999;
+        if (!isSky) {
+          color = mix(color, hazeTint, distanceHaze * 0.1 * uHaze * above);
+        }
+
+        // Low sea mist: an exponential layer hugging the water, integrated
+        // along the ray, broken into slow drifting wisps.
+        float H = 16.0;
+        float y0 = max(uCameraPos.y - uWaterLevel, 0.0);
+        float dy = rayDir.y;
+        float L = isSky ? 12000.0 : min(rayLength, 12000.0);
+        float base = exp(-y0 / H);
+        float od = abs(dy) < 1e-3
+          ? base * L
+          : H / dy * base * (1.0 - exp(-L * dy / H));
+        float az = atan(rayDir.z, rayDir.x);
+        float wisps = fbm2(vec2(az * 7.0 + uTime * 0.012, dy * 30.0 - uTime * 0.004));
+        wisps = 0.55 + 0.9 * smoothstep(0.3, 0.8, wisps);
+        // The layer follows the sea surface, not a flat plane: a ray that
+        // drops into a trough far below the camera's local level (the back
+        // of a mega wave) never sees more than the at-surface density.
+        od = clamp(od, 0.0, L);
+        float mist = 1.0 - exp(-od * 0.00012 * uSeaMist * wisps);
+        // Mist is lit by the same overcast as the haze behind it: a touch
+        // paler, never a white band along the horizon.
+        vec3 mistTint = hazeTint * 1.06 + vec3(0.012);
+        color = mix(color, mistTint, clamp(mist, 0.0, 0.9) * above);
+
         float sunHalo = pow(max(dot(rayDir, uSunDir), 0.0), 6.0);
-        color += uSunColor * sunHalo * (0.045 + uSunPower * 0.15) * uHaze * above;
+        color += SKY_HORIZON_SUN * sunHalo * 0.04 * uHaze * above;
       }
 
       gl_FragColor = vec4(max(color, vec3(0.0)), 1.0);
@@ -534,7 +618,16 @@ export class Post {
     this.film.material.uniforms.uAberration.value = TUNING.visuals.aberration;
     this.film.material.uniforms.uVignette.value = TUNING.visuals.vignette;
 
+    // "Post off" still needs the output transform (ACES + sRGB), otherwise
+    // raw shader values are written straight to an sRGB framebuffer and the
+    // water looks unnaturally dark. This chain has no grade, grain, bloom,
+    // volumetric haze or downsampling.
+    this.rawComposer = new EffectComposer(renderer);
+    this.rawComposer.addPass(new RenderPass(scene, camera));
+    this.rawComposer.addPass(new OutputPass());
+
     this.started = false;
+    this.enabled = true;
     this.setSize(window.innerWidth, window.innerHeight);
     this._frame = 0;
     this.sunDir = new THREE.Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
@@ -559,9 +652,21 @@ export class Post {
     return texture;
   }
 
+  /** Toggle the whole post chain. Raw mode renders at native resolution so
+   *  the water can be judged without grain, bloom, grade or volumetric haze. */
+  setEnabled(enabled) {
+    this.enabled = enabled;
+    this.setSize(window.innerWidth, window.innerHeight);
+  }
+
   setSize(w, h) {
     const dpr = Math.min(window.devicePixelRatio || 1, TUNING.visuals.maxPixelRatio);
-    this.renderer.setPixelRatio(dpr * TUNING.visuals.renderScale);
+    if (this.enabled) {
+      this.renderer.setPixelRatio(dpr * TUNING.visuals.renderScale);
+    } else {
+      // Clean-judging mode: native pixels, no composer downsample.
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    }
     this.renderer.setSize(w, h, false);
     // The composer is the real render budget. Keep its internal buffers at a
     // fixed fraction of CSS pixels regardless of devicePixelRatio, and cap the
@@ -578,15 +683,30 @@ export class Post {
     // Bloom is a soft effect; half resolution is indistinguishable in motion
     // and removes several full-screen Gaussian passes from the frame.
     this.bloom.setSize(target.width * 0.25, target.height * 0.25);
+
+    this.rawComposer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    this.rawComposer.setSize(w, h);
   }
 
   render(dt, state) {
+    if (!this.enabled) {
+      // The film grade normally pulls exposure down; without it, use a
+      // slightly lower exposure so raw-mode highlights do not clip.
+      this.renderer.toneMappingExposure = TUNING.visuals.exposure * 0.72;
+      this.rawComposer.render(dt);
+      return;
+    }
     this._frame++;
     const time = performance.now() * 0.001;
     this.film.material.uniforms.uTime.value = time;
     this.film.material.uniforms.uUnderwater.value = state.underwater;
-    this.film.material.uniforms.uWetness.value = Math.max(state.wetness, 0);
+    // A fresh soaking leaves a fresh pattern of drops.
+    const wetNow = Math.max(state.wetness, 0);
+    if (wetNow > (this._lastWet ?? 0) + 0.25) this.film.material.uniforms.uDropSeed.value = Math.floor(Math.random() * 97);
+    this._lastWet = wetNow;
+    this.film.material.uniforms.uWetness.value = wetNow;
     this.film.material.uniforms.uSpeed.value = state.speedNorm;
+    this.film.material.uniforms.uEdgeSmooth.value = TUNING.visuals.edgeSmoothing ? 1 : 0;
 
     this.camera.getWorldDirection(this._forward);
     const facing = this._forward.dot(this.sunDir);
@@ -632,8 +752,11 @@ export class Post {
     vu.uShaft.value = TUNING.visuals.shaftStrength;
     vu.uShaftSteps.value = TUNING.visuals.shaftSteps;
     vu.uCaustic.value = TUNING.visuals.volumetricCaustics;
+    vu.uCausticNet.value = TUNING.visuals.causticNet;
     vu.uHaze.value = TUNING.visuals.surfaceHaze;
     vu.uMist.value = TUNING.visuals.surfaceMist;
+    vu.uSeaMist.value = TUNING.visuals.seaMist;
+    vu.uFogDensity.value = this.scene.fog ? this.scene.fog.density : 0.03;
 
     this.bloom.strength = TUNING.visuals.bloomStrength * (0.7 + state.underwater * 0.45);
     this.bloom.threshold = TUNING.visuals.bloomThreshold;

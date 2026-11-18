@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import { TUNING, PALETTE } from "./config.js";
+import { PALETTE } from "./config.js";
+
+// Longest frame the simulation steps in one go (a hitch beyond it is
+// dropped). The main loop and the dolphin must agree on it, or the water and
+// the body drift apart on a long frame.
+export const MAX_FRAME_DT = 1 / 25;
 
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
@@ -86,6 +91,20 @@ export function fbm(x, y, octaves = 4, lacunarity = 2.02, gain = 0.5) {
  * deeper tidal channels. Shared by the renderer, collision, sand sim and reef
  * placement, so the world stays coherent everywhere.
  */
+// Axis of the big-wave reef canyon: the default swell's dominant direction.
+// The reef sits well east of the opening reef so its canyon, which runs
+// up-swell, passes south of the spawn instead of under it. Mirrored by
+// TUNING.water.surfZoneX/Z.
+const REEF_DIR_X = Math.cos(0.41);
+const REEF_DIR_Z = Math.sin(0.41);
+const REEF_X = 700;
+// Travel direction of the default sea (TUNING.water.swellDirection) and how
+// much deeper the outer shelf is up-swell (see seabedHeight).
+const WAVE_DIR_X = Math.cos(0.61);
+const WAVE_DIR_Z = Math.sin(0.61);
+const OFFSHORE_DROP = 52;
+const REEF_Z = -350;
+
 export function seabedHeight(x, z) {
   const broad = fbm(x * 0.00105 + 13.2, z * 0.00105 - 7.7, 4);
   const mid = fbm(x * 0.0042 - 4.1, z * 0.0042 + 9.3, 3);
@@ -100,13 +119,41 @@ export function seabedHeight(x, z) {
     Math.exp(-((x - 2) * (x - 2) + (z - 26) * (z - 26)) / 4800) * 2.4 +
     Math.exp(-((x + 34) * (x + 34) + (z - 78) * (z - 78)) / 9500) * 1.35;
 
+  // Big-wave reef ~780 m east-south-east of the opening reef. A deep submarine canyon runs in
+  // from the open shelf along the swell direction and ends at a reef ridge
+  // ~24 m down, with a ~13 m lagoon behind it. The canyon lets long-period
+  // swell arrive unbroken; refraction over its walls focuses the sets onto
+  // the reef (WaveField.focusAt), where they stand up to 15-30 m faces and
+  // break. Off the canyon axis the shelf is untouched. Shared by the sand
+  // mesh, reef placement, wave field and physics.
+  const reefS = (x - REEF_X) * REEF_DIR_X + (z - REEF_Z) * REEF_DIR_Z;
+  const reefC = -(x - REEF_X) * REEF_DIR_Z + (z - REEF_Z) * REEF_DIR_X;
+  const canyon = Math.exp(-(reefC * reefC) / (2 * 190 * 190));
+  const spotDepth =
+    24 + 26 * smoothstep(-60, -380, reefS) * canyon + 3 * (1 - canyon) -
+    11 * smoothstep(40, 260, reefS);
+  const spotWeight =
+    Math.exp(-(reefC * reefC) / (2 * 240 * 240)) *
+    smoothstep(-1250, -1000, reefS) *
+    (1 - smoothstep(260, 480, reefS));
+
   // Patchy reef shelf outcrops, slight raised humps.
   const shelf = Math.max(0, fbm(x * 0.0072 + 51.1, z * 0.0072 + 4.4, 2) - 0.5) * 2.7;
 
   const radius = Math.max(Math.abs(x), Math.abs(z));
   const openWater = smoothstep(1120, 1510, radius) * 14;
 
-  const depth = 7.15 + broad * 6.4 + mid * 2.1 + fine * 0.6 + channel - bar - shelf + openWater;
+  // The outer shelf. Up-swell of the inner shelf the bed falls away from
+  // about 14 m to 60-75 m over a kilometre, so a storm sea (30 m waves need
+  // 40 m+ of water to stay unbroken) rolls in at full size and only starts
+  // to break as it climbs onto the inner shelf and the reef. The inner shelf
+  // around the start, its reef patches and seagrass are unchanged.
+  const sWave = x * WAVE_DIR_X + z * WAVE_DIR_Z;
+  const offshore = OFFSHORE_DROP * smoothstep(-250, -1150, sWave);
+
+  const shelfDepth =
+    7.15 + broad * 6.4 + mid * 2.1 + fine * 0.6 + channel - bar - shelf + openWater;
+  const depth = shelfDepth + (spotDepth + fine * 0.6 - shelfDepth) * spotWeight + offshore;
   return -Math.max(2.55, depth);
 }
 
@@ -145,93 +192,6 @@ export function seabedNormal(x, z, out = { x: 0, y: 1, z: 0 }) {
   return out;
 }
 
-/** Shared wind-driven wave spectrum. Same values drive GPU and CPU. */
-function waveTable() {
-  return [
-    { dirOffset: 0.03, wavelength: 61, amp: 0.29, steep: 0.7, phase: 0.2 },
-    { dirOffset: -0.27, wavelength: 37, amp: 0.19, steep: 0.8, phase: 1.7 },
-    { dirOffset: 0.34, wavelength: 23.5, amp: 0.115, steep: 0.75, phase: 4.4 },
-    { dirOffset: -0.57, wavelength: 14.5, amp: 0.068, steep: 0.7, phase: 2.2 },
-    { dirOffset: 0.65, wavelength: 8.2, amp: 0.032, steep: 0.58, phase: 5.3 },
-    { dirOffset: -0.18, wavelength: 4.6, amp: 0.015, steep: 0.5, phase: 3.1 },
-  ];
-}
-
-const WAVES = waveTable();
-
-export function getWaveSet(time) {
-  const w = TUNING.waves;
-  const wind = w.windSpeed / 8.4;
-  const chop = w.choppiness;
-  const baseDir = w.windDirection;
-  return WAVES.slice(0, w.waveCount).map((def, i) => {
-    const dir = baseDir + def.dirOffset * (0.55 + chop * 0.5);
-    const k = (Math.PI * 2) / def.wavelength;
-    const omega = Math.sqrt(9.81 * k);
-    const amp = def.amp * (w.amplitude / 0.47) * Math.pow(wind, 1.25);
-    const phase = def.phase * 10.0 + omega * time;
-    const horizontal = def.steep * amp * (0.44 + chop * 0.36);
-    return {
-      dx: Math.cos(dir),
-      dz: Math.sin(dir),
-      k,
-      omega,
-      amp,
-      phase,
-      q: horizontal,
-      wavelength: def.wavelength,
-      index: i,
-    };
-  });
-}
-
-export function waveHeightAt(x, z, time) {
-  const set = getWaveSet(time);
-  // Gerstner horizontal displacement makes the surface non-parametric.
-  // Invert it with two cheap fixed-point iterations for a true world-space
-  // height readback; this is the shared CPU fallback for physics.
-  let bx = x;
-  let bz = z;
-  for (let iter = 0; iter < 2; iter++) {
-    let ox = 0;
-    let oz = 0;
-    for (let i = 0; i < set.length; i++) {
-      const w = set[i];
-      const arg = w.k * (w.dx * bx + w.dz * bz) + w.phase;
-      const c = Math.cos(arg);
-      ox += w.q * w.dx * c;
-      oz += w.q * w.dz * c;
-    }
-    bx = x - ox;
-    bz = z - oz;
-  }
-  let h = 0;
-  for (let i = 0; i < set.length; i++) {
-    const w = set[i];
-    h += w.amp * Math.sin(w.k * (w.dx * bx + w.dz * bz) + w.phase);
-  }
-  return h * TUNING.waves.shallowFade;
-}
-
-export function waveSampleAt(x, z, time, out = {}) {
-  const e = 0.28;
-  const h = waveHeightAt(x, z, time);
-  const hx1 = waveHeightAt(x + e, z, time);
-  const hx0 = waveHeightAt(x - e, z, time);
-  const hz1 = waveHeightAt(x, z + e, time);
-  const hz0 = waveHeightAt(x, z - e, time);
-  out.height = h;
-  out.nx = (hx0 - hx1) / (2 * e);
-  out.ny = 1;
-  out.nz = (hz0 - hz1) / (2 * e);
-  const l = Math.hypot(out.nx, 1, out.nz);
-  out.nx /= l;
-  out.ny /= l;
-  out.nz /= l;
-  out.velocityX = (waveHeightAt(x, z, time + 0.012) - h) / 0.012;
-  return out;
-}
-
 export const glslNoise = /* glsl */ `
   float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -261,29 +221,38 @@ export const glslNoise = /* glsl */ `
 `;
 
 export const glslCaustics = /* glsl */ `
-  // Domain-warped refracted sunlight. This is the classic iterated inverse
-  // distance construction: sharp filaments with soft, moving cells.
+  // Sunlight refracted through a rippled surface. A ray entering at x lands
+  // at x + grad(h), so the light on the floor is 1 / |det(I + Hess(h))|: a
+  // net of bright fold lines around dimmer cells. h is six crossing wave
+  // trains, so the net never tiles. Returns the relative brightness with a
+  // mean of 1 (cells about 0.5, lines up to 4): scale it, or blend it toward
+  // 1.0 to soften it, and the average light stays the same.
+  #define CAUSTIC_SLOPE(dx, dz, k, w) g += vec2(dx, dz) * (cos((p.x * dx + p.y * dz) * k + t * w + k * 1.7) / k);
+  #define CAUSTIC_CURVE(dx, dz, k, w) sn = sin((q.x * dx + q.y * dz) * k + t * w + k * 1.7); hxx += dx * dx * sn; hzz += dz * dz * sn; hxz += dx * dz * sn;
   float causticNetwork(vec2 p, float t) {
-    vec2 uv = p * 0.18;
-    vec2 q = mod(uv * 6.2831853, 6.2831853) - 250.0;
-    vec2 i = q;
-    float c = 1.0;
-    float inten = 0.005;
-    for (int n = 0; n < 3; n++) {
-      float tt = t * (1.0 - (3.5 / float(n + 1)));
-      i = q + vec2(
-        cos(tt - i.x) + sin(tt + i.y),
-        sin(tt - i.y) + cos(tt + i.x)
-      );
-      c += 1.0 / length(vec2(
-        q.x / (sin(i.x + tt) / inten),
-        q.y / (cos(i.y + tt) / inten)
-      ));
-    }
-    c /= 3.0;
-    c = 1.17 - pow(c, 1.35);
-    float m = clamp(abs(c) / 0.48, 0.0, 1.6);
-    return min(2.4, pow(m, 2.25) * 2.25);
+    const float amp = 0.42;
+    // Where the light landing here entered the surface.
+    vec2 g = vec2(0.0);
+    CAUSTIC_SLOPE(0.978, 0.208, 1.0, 0.9)
+    CAUSTIC_SLOPE(0.225, 0.974, 1.31, -1.1)
+    CAUSTIC_SLOPE(-0.755, 0.656, 1.74, 1.3)
+    CAUSTIC_SLOPE(-0.921, -0.391, 2.19, -0.8)
+    CAUSTIC_SLOPE(-0.326, -0.946, 2.83, 1.6)
+    CAUSTIC_SLOPE(0.743, -0.669, 3.61, -1.9)
+    vec2 q = p - amp * g;
+    // How much that patch of surface focuses or spreads it.
+    float sn;
+    float hxx = 0.0;
+    float hzz = 0.0;
+    float hxz = 0.0;
+    CAUSTIC_CURVE(0.978, 0.208, 1.0, 0.9)
+    CAUSTIC_CURVE(0.225, 0.974, 1.31, -1.1)
+    CAUSTIC_CURVE(-0.755, 0.656, 1.74, 1.3)
+    CAUSTIC_CURVE(-0.921, -0.391, 2.19, -0.8)
+    CAUSTIC_CURVE(-0.326, -0.946, 2.83, 1.6)
+    CAUSTIC_CURVE(0.743, -0.669, 3.61, -1.9)
+    float det = (1.0 - amp * hxx) * (1.0 - amp * hzz) - amp * amp * hxz * hxz;
+    return min(4.0, 4.75 * 0.25 / (abs(det) + 0.25));
   }
 `;
 

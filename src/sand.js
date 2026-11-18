@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
+import { meadowMap } from "./atmosphere.js";
 import {
   clamp,
-  glslCaustics,
   glslFog,
   glslNoise,
   lerp,
@@ -441,6 +441,8 @@ const SAND_FRAG = /* glsl */ `
   uniform vec2 uHoleCenter;
   uniform float uHoleRadius;
   uniform float uHasHole;
+  uniform sampler2D uMeadow;
+  uniform float uMeadowExtent;
   varying vec3 vWorld;
   varying vec3 vNormal;
   varying vec3 vColor;
@@ -448,36 +450,7 @@ const SAND_FRAG = /* glsl */ `
   varying float vDelta;
 
   ${glslNoise}
-  ${glslCaustics}
   ${glslFog}
-
-  // Cellular caustic web: bright seams between drifting Voronoi cells. This
-  // reads as the net of focused sunlight crossing a rippled surface.
-  float causticWeb(vec2 p, float t) {
-    vec2 n = floor(p);
-    vec2 f = fract(p);
-    float d1 = 8.0;
-    float d2 = 8.0;
-    for (int j = -1; j <= 1; j++) {
-      for (int i = -1; i <= 1; i++) {
-        vec2 g = vec2(float(i), float(j));
-        vec2 cell = n + g;
-        float h1 = hash21(cell + 0.17);
-        float h2 = hash21(cell + 7.71);
-        vec2 o = 0.5 + 0.4 * vec2(sin(t * 0.4 + h1 * 6.283), cos(t * 0.33 + h2 * 6.283));
-        vec2 r = g + o - f;
-        float d = dot(r, r);
-        if (d < d1) {
-          d2 = d1;
-          d1 = d;
-        } else if (d < d2) {
-          d2 = d;
-        }
-      }
-    }
-    float edge = sqrt(d2) - sqrt(d1);
-    return 1.0 - smoothstep(0.015, 0.16, edge);
-  }
 
   void main() {
     // The coarse whole-shelf mesh has a hole under the dense local sand mesh.
@@ -494,13 +467,28 @@ const SAND_FRAG = /* glsl */ `
     float micro = fbm2(vWorld.xz * 11.0) - 0.5;
     float rippleGrad = cos(dot(rp, vec2(0.72, 0.69)) * 3.0 + fbm2(rp * 0.6) * 4.5) * 0.19;
     vec3 detailN = normalize(n + vec3(rippleGrad * 0.3, 0.0, rippleGrad * 0.19) + vec3(micro) * 0.055);
+    // Wave ripples: the sharp-crested ridges a hand or two apart that the
+    // swell combs into loose sand, lying across it, forking and dying out.
+    // The side of each ridge toward the light is bright and the far side
+    // falls into shade, which is most of what bare sand looks like under
+    // water. They fade before they are finer than a pixel.
+    vec2 ripDir = vec2(0.82, 0.573);
+    float ripFade = (1.0 - smoothstep(4.0, 26.0, dist)) * smoothstep(-26.0, -14.0, height);
+    float ripWarp = fbm2(vWorld.xz * 0.8 + 2.0) * 2.6 + fbm2(vWorld.xz * 0.21 + 3.0) * 6.0;
+    float ripPhase = dot(vWorld.xz, ripDir) * 24.0 + ripWarp;
+    float ripSlope = cos(ripPhase);
+    float ripCrest = pow(0.5 + 0.5 * sin(ripPhase), 1.7);
+    // Patches where the ripples are washed out flat.
+    float ripPatch = smoothstep(0.25, 0.6, fbm2(vWorld.xz * 0.16 + 21.0));
+    float ripAmt = ripFade * ripPatch;
+    detailN = normalize(detailN - vec3(ripDir.x, 0.0, ripDir.y) * ripSlope * 0.42 * ripAmt);
     float ndl = max(dot(detailN, uSunDir), 0.0);
     float ambient = 0.17 + 0.18 * smoothstep(-5.0, -24.0, height);
 
-    float webA = causticWeb(vWorld.xz * 1.12 + vec2(uTime * 0.055, -uTime * 0.037), uTime);
-    float webB = causticWeb(vWorld.xz * 1.57 - vec2(uTime * 0.031, uTime * 0.047), uTime * 1.17 + 13.0);
+    // Light focused by the wave groups overhead: broad, soft and slow. (The
+    // net of bright lines is laid over every surface in post.)
     float webMask = smoothstep(0.33, 0.76, fbm2(vWorld.xz * 0.11 + uTime * 0.006));
-    float caustics = clamp(webA * 0.3 + webB * 0.14, 0.0, 0.6) * (0.25 + webMask * 1.1);
+    float caustics = 0.6 * (0.5 + webMask * 0.6);
     float causticMask = smoothstep(-16.0, -1.4, height) * (0.4 + 0.6 * smoothstep(0.05, 0.9, detailN.y));
     vec3 causticTint = uSunColor * caustics * uCausticStrength * causticMask * 0.72;
 
@@ -514,6 +502,9 @@ const SAND_FRAG = /* glsl */ `
     sand += causticTint * vec3(0.82, 0.98, 0.76);
     sand += uSunColor * grainMask * 0.09;
     sand *= 0.76 + micro * 0.34 + (0.5 + 0.5 * ripple) * 0.07;
+    // Ridge crests are a little paler (coarser, cleaner grains); the
+    // troughs collect the fine dark stuff.
+    sand *= 1.0 + ripAmt * (ripCrest - 0.42) * 0.55;
     sand *= 0.8 + patches * 0.34;
 
     // A scatter of shell hash, dark organic flecks and small pebbles. Close to
@@ -531,9 +522,56 @@ const SAND_FRAG = /* glsl */ `
     sand = mix(sand, vec3(0.17, 0.15, 0.09), detritus * 0.28);
     sand = mix(sand, sand * vec3(0.56, 0.68, 0.48), siltStain * 0.24);
 
+    // Seagrass carpet. Under a meadow the floor is a mat of short blades:
+    // strands in a few crossing directions, bright yellow-green where the
+    // tips catch the light, dark between them, with sand showing through
+    // thin patches. The instanced blades stand up out of it near the lens.
+    float meadow = texture2D(uMeadow, vWorld.xz / uMeadowExtent + 0.5).r;
+    if (meadow > 0.01) {
+      vec2 q = vWorld.xz;
+      // Leaves lying over in the surge, combed two ways that take turns
+      // across the meadow: streaks a couple of centimetres wide and a hand
+      // long, bright where a leaf faces the light and dark in the gaps
+      // between leaves. They fade to their mean before they are finer than
+      // a pixel; the clumps and the patchwork of the meadow carry it on.
+      float fineFade = 1.0 - smoothstep(2.5, 11.0, dist);
+      float tuftFade = 1.0 - smoothstep(12.0, 46.0, dist);
+      vec2 qa = vec2(q.x * 0.8 + q.y * 0.6, -q.x * 0.6 + q.y * 0.8);
+      vec2 qb = vec2(q.x * 0.97 - q.y * 0.24, q.x * 0.24 + q.y * 0.97);
+      float sway = sin(uTime * 0.86 + q.x * 0.115 + q.y * 0.09) * 0.02;
+      float wA = smoothstep(0.38, 0.62, fbm2(q * 0.4 + 1.0));
+      float sA = vnoise(qa * vec2(8.0, 47.0) + vec2(sway * 8.0, 0.0)) * 0.6 + vnoise(qa * vec2(15.0, 90.0) + 4.0) * 0.4;
+      float sB = vnoise(qb * vec2(8.0, 47.0) + vec2(sway * 8.0, 8.0)) * 0.6 + vnoise(qb * vec2(15.0, 90.0) - 2.0) * 0.4;
+      float leaf = mix(sB, sA, wA);
+      float clump = fbm2(q * 2.6 + 3.0);
+      float tufts = fbm2(q * 0.9 + 2.0);
+      float strands = mix(0.5, leaf, fineFade) * 0.62 + mix(0.5, clump, tuftFade) * 0.4 + (tufts - 0.5) * 0.3;
+      float lit = 0.34 + ndl * 0.66;
+      vec3 grassDark = vec3(0.01, 0.026, 0.012);
+      vec3 grassMid = vec3(0.036, 0.1, 0.034);
+      vec3 grassLit = vec3(0.12, 0.25, 0.07);
+      vec3 carpet = mix(grassDark, grassMid, smoothstep(0.26, 0.52, strands));
+      carpet = mix(carpet, grassLit, smoothstep(0.52, 0.86, strands));
+      // Old leaves and epiphytes: a scatter of straw and brown.
+      float old = smoothstep(0.62, 0.9, fbm2(q * 5.5 + 13.0));
+      carpet = mix(carpet, vec3(0.16, 0.14, 0.06) * (0.4 + strands), old * 0.2);
+      carpet *= lit * (0.8 + 0.4 * tufts);
+      carpet += causticTint * vec3(0.5, 0.95, 0.48) * 0.36 * (0.4 + strands);
+      // A meadow is nearly closed cover, with a few blow-outs of bare sand
+      // and a ragged edge.
+      float thinPatch = smoothstep(0.66, 0.8, fbm2(q * 0.18 + 9.0)) * 0.75;
+      float edge = smoothstep(0.03, 0.3, meadow + (clump - 0.5) * 0.12);
+      float cover = edge * (1.0 - thinPatch) * (0.86 + 0.14 * clump);
+      sand = mix(sand, carpet, clamp(cover, 0.0, 1.0));
+    }
+
     // The water quickly eats warm wavelengths with depth.
     float absorb = smoothstep(2.0, 20.0, -height);
     sand = mix(sand, sand * vec3(0.45, 0.75, 0.7), absorb * 0.42);
+    // Below the sunlit shelf the daylight itself runs out, the red and the
+    // green first: the deep floor is dim and blue, whatever the lens does.
+    float deepLoss = 1.0 - exp(-max(-height - 10.0, 0.0) * 0.045);
+    sand *= mix(vec3(1.0), vec3(0.3, 0.52, 0.8), deepLoss);
 
     // Freshly pushed ridges catch light; damp furrows and caves read darker
     // and a little cooler.
@@ -665,6 +703,8 @@ class SandSurface {
         uHoleCenter: { value: new THREE.Vector2() },
         uHoleRadius: { value: 0 },
         uHasHole: { value: 0 },
+        uMeadow: meadowMap.uniforms.uMeadow,
+        uMeadowExtent: meadowMap.uniforms.uMeadowExtent,
       },
       vertexShader: SAND_VERT,
       fragmentShader: SAND_FRAG,
