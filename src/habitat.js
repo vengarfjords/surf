@@ -2623,6 +2623,8 @@ export class HiddenThings {
     }
 
     const crab = this.crab;
+    crab.visible = TUNING.visuals.crab;
+    if (!crab.visible) return { nearby };
     const cx = crab.position.x;
     const cz = crab.position.z;
     const sandTop = seabedHeight(cx, cz) + this.sand.sampleDelta(cx, cz);
