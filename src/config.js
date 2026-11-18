@@ -589,6 +589,10 @@ export const TUNING = {
     // never submitted. Both distances sit beyond the point where underwater
     // fog makes the geometry unreadable.
     reefChunkSize: 90,
+    // The procedural reef (rock bommies, rubble, dome, table and branching
+    // corals over the whole shelf). Off: only the four scanned NMNH corals
+    // stand on the seabed, with the seagrass and shells.
+    proceduralReef: false,
     reefCullDistance: 120,
     grassChunkSize: 80,
     grassCullDistance: 100,
@@ -815,6 +819,7 @@ export const TUNE_CONTROLS = [
   { path: "visuals.sunGlitter", label: "sun glitter", min: 0, max: 3, step: 0.01 },
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.edgeSmoothing", label: "edge smoothing", type: "toggle" },
+  { path: "visuals.proceduralReef", label: "procedural reef", type: "toggle" },
   { path: "visuals.dynamicQuality", label: "dynamic quality", type: "toggle" },
   { path: "visuals.dynamicQualityMinScale", label: "min render scale", min: 0.4, max: 0.8, step: 0.01 },
   { path: "hydro.waterTorque", label: "water torque", min: 0, max: 2, step: 0.05 },

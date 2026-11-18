@@ -1197,12 +1197,17 @@ export class Reefs {
     this.geometries.push(moundGeo, rubbleGeo, ...branchGeos, brainGeo, tableGeo);
 
     const chunk = TUNING.visuals.reefChunkSize;
-    this.group.add(instanced(moundGeo, this.materials.rock, moundXf, moundCol, chunk));
-    this.group.add(instanced(rubbleGeo, this.materials.rock, rubbleXf, rubbleCol, chunk));
+    // Rocks and procedural corals live in their own group so they can be
+    // switched off (visuals.proceduralReef) leaving only the scanned corals.
+    this.procedural = new THREE.Group();
+    this.procedural.visible = TUNING.visuals.proceduralReef;
+    this.group.add(this.procedural);
+    this.procedural.add(instanced(moundGeo, this.materials.rock, moundXf, moundCol, chunk));
+    this.procedural.add(instanced(rubbleGeo, this.materials.rock, rubbleXf, rubbleCol, chunk));
     // Dome corals (on the rocks and loose on the sand around them) and
     // table corals: one instanced draw each per reef chunk.
-    this.group.add(instanced(brainGeo, this.materials.dome, brainXf, brainCol, chunk));
-    this.group.add(instanced(tableGeo, this.materials.dome, tableXf, tableCol, chunk));
+    this.procedural.add(instanced(brainGeo, this.materials.dome, brainXf, brainCol, chunk));
+    this.procedural.add(instanced(tableGeo, this.materials.dome, tableXf, tableCol, chunk));
 
     // Empty fan shells scattered through the meadow: a small, quiet sign of
     // the living reef that also gives the sand a readable scale.
@@ -1249,13 +1254,14 @@ export class Reefs {
     for (let v = 0; v < branchGeos.length; v++) {
       const xf = branchXf.filter((_, i) => i % 3 === v);
       const cols = branchCol.filter((_, i) => i % 3 === v);
-      if (xf.length) this.group.add(instanced(branchGeos[v], this.materials.branch, xf, cols, chunk));
+      if (xf.length) this.procedural.add(instanced(branchGeos[v], this.materials.branch, xf, cols, chunk));
     }
 
     this.patches = patches;
   }
 
   updateCulling(camera) {
+    this.procedural.visible = TUNING.visuals.proceduralReef;
     cullInstancedChunks(this.group, camera, TUNING.visuals.reefCullDistance);
   }
 
