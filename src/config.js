@@ -585,20 +585,9 @@ export const TUNING = {
     // megapixel makes frame cost predictable on larger displays as well.
     maxPostPixels: 600000,
     maxPixelRatio: 1.15,
-    // The reef is split into spatial chunks so fogged/off-screen regions are
-    // never submitted. Both distances sit beyond the point where underwater
-    // fog makes the geometry unreadable.
-    reefChunkSize: 90,
-    // The procedural reef (rock bommies, rubble, dome, table and branching
-    // corals over the whole shelf). Off: only the four scanned NMNH corals
-    // stand on the seabed, with the seagrass and shells.
-    proceduralReef: false,
-    // Scallop shells: the ones scattered over the opening reef and the
-    // buried ones the dolphin can uncover. Off by default.
-    shells: false,
-    // The buried crab near the start that wakes and scuttles off when the
-    // sand over it is stirred up. Off by default.
-    crab: false,
+    // Fogged/off-screen corals and seagrass chunks are never submitted. The
+    // distances sit beyond the point where underwater fog makes the geometry
+    // unreadable.
     reefCullDistance: 120,
     grassChunkSize: 80,
     grassCullDistance: 100,
@@ -825,9 +814,6 @@ export const TUNE_CONTROLS = [
   { path: "visuals.sunGlitter", label: "sun glitter", min: 0, max: 3, step: 0.01 },
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },
   { path: "visuals.edgeSmoothing", label: "edge smoothing", type: "toggle" },
-  { path: "visuals.proceduralReef", label: "procedural reef", type: "toggle" },
-  { path: "visuals.shells", label: "shells", type: "toggle" },
-  { path: "visuals.crab", label: "crab", type: "toggle" },
   { path: "visuals.dynamicQuality", label: "dynamic quality", type: "toggle" },
   { path: "visuals.dynamicQualityMinScale", label: "min render scale", min: 0.4, max: 0.8, step: 0.01 },
   { path: "hydro.waterTorque", label: "water torque", min: 0, max: 2, step: 0.05 },
