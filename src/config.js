@@ -46,22 +46,24 @@ export const TUNING = {
     tailAccelClamp: 8.0,
     flukePitch: 0.22,
     // Pectoral flippers (dolphin.js _updateFlippers), in radians: how far
-    // they sweep back (`flipperTuckSweep`) and lower (`flipperTuckLift`)
-    // when tucked at speed or in a Shift dive, their share in a held turn
-    // and in pitching, how far they turn against the flow on the brake,
-    // their spread in the air, and the size of the slow balancing strokes
-    // when hovering. The spring (rad/s) and damping ratio set how they ease
-    // in and settle. `flipperMotion` scales it all (0 = still).
+    // they fold back (`flipperTuckSweep`) and lower (`flipperTuckLift`) at
+    // full speed or in a Shift dive, their share in turns, banking and
+    // pitching, how far they turn against the flow on the brake, their
+    // spread in the air, the size of the hover strokes, and how far they
+    // tilt with each tail stroke. The spring (rad/s) and damping ratio set
+    // how they ease in and follow through. `flipperMotion` scales it all
+    // (0 = still).
     flipperMotion: 1,
-    flipperTuckSweep: 0.35,
-    flipperTuckLift: -0.06,
+    flipperTuckSweep: 0.38,
+    flipperTuckLift: -0.08,
     flipperTurn: 1,
-    flipperPitch: 0.18,
-    flipperBrake: 0.45,
-    flipperAirSpread: 0.14,
-    flipperScull: 0.1,
-    flipperSpring: 8,
-    flipperDamping: 0.9,
+    flipperPitch: 0.3,
+    flipperBrake: 0.5,
+    flipperAirSpread: 0.2,
+    flipperScull: 0.16,
+    flipperStroke: 0.06,
+    flipperSpring: 9,
+    flipperDamping: 0.72,
     bodyFollow: 1.35,
     // Per-joint anatomical limits, in radians. Wide enough for a free snout
     // lead, tight enough to keep the neck and torso from folding.

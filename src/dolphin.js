@@ -360,10 +360,15 @@ export class Dolphin {
       target: new THREE.Vector3(),
       pitchRate: 0,
       prevPitch: null,
+      rollRate: 0,
+      prevRoll: null,
       turn: 0,
       brake: 0,
       air: 0,
+      accel: 0,
+      airTime: 0,
       scull: 0,
+      clock: 0,
       qSweep: new THREE.Quaternion(),
       qLift: new THREE.Quaternion(),
       qFeather: new THREE.Quaternion(),
@@ -722,19 +727,30 @@ export class Dolphin {
   }
 
   /**
-   * Pectoral flippers as a dolphin uses them: stiff control surfaces that
-   * mostly hold still and trim. They sweep back along the flanks as speed
-   * builds and in a Shift dive, tilt together into a held turn (the inside
-   * one a little further out, the outer one a little further back) and as
-   * the nose pitches, turn against the flow on S, spread a little in the
-   * air, and make slow, small balancing strokes when hovering.
+   * Pectoral flippers, worked the way a dolphin works them. They are stiff
+   * control surfaces on a mobile shoulder:
+   * - each tail stroke heaves the front of the body, and the flippers work
+   *   against it a quarter-beat behind the flukes (measured lags are 61 to
+   *   123 degrees), so they are never quite still while swimming;
+   * - a held turn rotates both into the turn and draws them in, and the
+   *   inside one reaches out a little further; while the body rolls into
+   *   or out of a bank they tilt against each other like ailerons;
+   * - pitching tilts them together like elevators;
+   * - they fold back along the flanks as speed builds, harder while
+   *   sprinting off the mark and fully in a Shift dive, and ease out when
+   *   coasting;
+   * - S turns them out and against the flow as brakes;
+   * - they spread in the air, and slapping back into the water knocks them
+   *   back before they spring out again;
+   * - hovering, they make slow, uneven balancing strokes.
    *
-   * The head follows the mouse exactly, so the yaw and pitch rates swing
-   * hard with every flick and wiggle. The flippers answer a turn that is
-   * held, not each flick: both rates are smoothed over about a third of a
-   * second with a small dead zone, both sides mostly move together, and each
-   * angle follows its target on a near-critically damped spring, so they
-   * ease in and settle rather than flap.
+   * The head follows the mouse exactly, so the yaw, pitch and roll rates
+   * swing with every flick. Those drives are smoothed over a fifth of a
+   * second or less with small dead zones, the two sides differ mainly in
+   * tilt rather than flapping up and down against each other, and each
+   * angle follows its target on a springy (slightly underdamped) joint, a
+   * touch faster on the left than on the right so the pair never moves as
+   * exact mirror images.
    */
   _updateFlippers(dt, input) {
     const fl = this.flippers;
@@ -743,29 +759,54 @@ export class Dolphin {
     const movement = TUNING.movement;
     const amount = cfg.flipperMotion ?? 1;
     const speed = this.swimSpeed || 0;
+    fl.clock += dt;
 
     // Drives, each 0..1 unless signed.
     const streamline = this.streamline || 0;
     fl.air = damp(fl.air, this._flying ? 1 - streamline : 0, 4, dt);
     const water = 1 - fl.air;
-    fl.brake = damp(fl.brake, input.brake && !this._flying ? smoothRamp(0.5, 3, speed) : 0, 3.5, dt);
-    // Swept back by the flow at speed (not in the air), and fully in a dive.
+    fl.brake = damp(fl.brake, input.brake && !this._flying ? smoothRamp(0.5, 3, speed) : 0, 4, dt);
+    fl.accel = damp(fl.accel, this.swimAccel || 0, 5, dt);
+    const burst = clamp(fl.accel / 5, 0, 1) * water;
+    const coast = clamp(-fl.accel / 4, 0, 1) * water * (1 - fl.brake);
     const tuck = Math.max(
-      smoothRamp(movement.cruiseSpeed * 0.6, movement.boostSpeed * 0.9, speed) * water,
+      smoothRamp(movement.cruiseSpeed * 0.5, movement.boostSpeed * 0.9, speed) * water,
       streamline
     );
     const slow = (1 - smoothRamp(0.8, 3, speed)) * water;
-    fl.turn = damp(fl.turn, clamp(this.yawRate / movement.maxTurnRate, -1, 1) * water, 3, dt);
+    const surf = (this.surfLock || 0) * water;
+
+    fl.turn = damp(fl.turn, clamp(this.yawRate / movement.maxTurnRate, -1, 1) * water, 6, dt);
+    const turn = deadZone(fl.turn, 0.1);
+    const turnSize = Math.abs(turn);
+    if (fl.prevRoll === null) fl.prevRoll = this.roll;
+    const rollRateRaw = wrapAngle(this.roll - fl.prevRoll) / dt;
+    fl.prevRoll = this.roll;
+    fl.rollRate = damp(fl.rollRate, clamp(rollRateRaw / 3, -1, 1) * water, 8, dt);
     if (fl.prevPitch === null) fl.prevPitch = this.pitch;
     const pitchRateRaw = (this.pitch - fl.prevPitch) / dt;
     fl.prevPitch = this.pitch;
-    fl.pitchRate = damp(fl.pitchRate, clamp(pitchRateRaw / movement.maxPitchRate, -1, 1) * water, 3, dt);
-    const turn = deadZone(fl.turn, 0.15);
-    const turnSize = Math.abs(turn);
-    const pitch = deadZone(fl.pitchRate, 0.1);
-    const surf = (this.surfLock || 0) * water;
+    fl.pitchRate = damp(fl.pitchRate, clamp(pitchRateRaw / movement.maxPitchRate, -1, 1) * water, 6, dt);
+    const pitch = deadZone(fl.pitchRate, 0.06);
+
     const stroke = clamp((this.tailHeave || 0) / 0.15, 0, 1.5) * water;
-    fl.scull += dt * Math.PI * 2 * 0.3;
+    const beat = Math.sin(this.tailPhase - (SPINE_Z.length - 1) * cfg.tailWaveTravel - Math.PI * 0.5);
+    // Small, slow trim adjustments while cruising.
+    const idle = water * (1 - slow) * (1 - 0.6 * tuck);
+    fl.scull += dt * Math.PI * 2 * 0.33;
+
+    // Back into the water after a real flight: the slap knocks them back.
+    if (this._flying) fl.airTime += dt;
+    else {
+      if (fl.airTime > 0.25) {
+        const kick = clamp(this.speed / 14, 0, 1) * smoothRamp(0.25, 0.8, fl.airTime) * (1 - 0.6 * streamline);
+        for (let k = 0; k < 2; k++) {
+          fl.rate[k].x += 4 * kick;
+          fl.rate[k].y -= 1.6 * kick;
+        }
+      }
+      fl.airTime = 0;
+    }
 
     const w = cfg.flipperSpring;
     const zeta = cfg.flipperDamping;
@@ -773,41 +814,50 @@ export class Dolphin {
       const side = k === 0 ? 1 : -1;
       const inside = Math.max(0, side * turn);
       const outside = Math.max(0, -side * turn);
-      // Hover strokes: slow, a little irregular, the two sides out of step.
+      // Hover strokes: slow, uneven, the two sides out of step.
       const phase = fl.scull + side * 1.1;
-      const scull = (Math.sin(phase) + 0.35 * Math.sin(phase * 2.3 + side * 0.7)) / 1.35;
+      const scull =
+        ((Math.sin(phase) + 0.35 * Math.sin(phase * 2.3 + side * 0.7)) / 1.35) *
+        (0.65 + 0.35 * Math.sin(fl.scull * 0.31 + side));
+      const drift = (Math.sin(fl.clock * 0.83 + side * 1.7) + 0.6 * Math.sin(fl.clock * 2.11 + side * 0.4)) / 1.6;
 
       // x: sweep (+ tip back), y: lift (+ tip up), z: feather (+ leading
       // edge up), in radians.
       let sweep =
-        tuck * cfg.flipperTuckSweep -
-        fl.brake * 0.16 -
-        fl.air * 0.05 +
-        (-0.06 * inside + 0.08 * outside) * cfg.flipperTurn +
-        slow * cfg.flipperScull * 0.35 * Math.cos(phase);
+        tuck * cfg.flipperTuckSweep +
+        burst * 0.1 -
+        coast * 0.04 -
+        fl.brake * 0.2 -
+        fl.air * 0.06 +
+        (0.08 * turnSize + 0.06 * outside - 0.04 * inside) * cfg.flipperTurn +
+        slow * cfg.flipperScull * 0.4 * Math.cos(phase);
       let lift =
-        tuck * cfg.flipperTuckLift +
-        fl.brake * 0.2 +
+        tuck * cfg.flipperTuckLift -
+        burst * 0.04 +
+        coast * 0.05 +
+        fl.brake * 0.24 +
         fl.air * cfg.flipperAirSpread +
-        slow * 0.05 +
-        surf * 0.05 +
-        (0.04 * turnSize + 0.06 * inside - 0.03 * outside) * cfg.flipperTurn;
+        slow * 0.06 +
+        surf * 0.06 +
+        (0.08 * inside - 0.04 * outside) * cfg.flipperTurn +
+        stroke * cfg.flipperStroke * 0.4 * beat;
       let feather =
         fl.brake * cfg.flipperBrake +
         pitch * cfg.flipperPitch * (1 - 0.5 * tuck) +
-        (0.1 * turnSize + 0.04 * inside - 0.04 * outside) * cfg.flipperTurn +
+        // Into the held turn together; against each other (ailerons)
+        // while the bank changes: the side that drops loses lift.
+        (0.12 * turnSize + side * 0.16 * deadZone(fl.rollRate, 0.05)) * cfg.flipperTurn +
         slow * cfg.flipperScull * scull +
-        // Each tail stroke pitches the body a little; the flippers trim it.
-        0.025 * stroke * Math.sin(this.tailPhase + Math.PI * 0.5);
+        stroke * cfg.flipperStroke * beat +
+        0.035 * idle * drift;
 
-      sweep = clamp(sweep * amount, -0.3, 0.45);
-      lift = clamp(lift * amount, -0.15, 0.35);
-      feather = clamp(feather * amount, -0.35, 0.6);
+      sweep = clamp(sweep * amount, -0.3, 0.5);
+      lift = clamp(lift * amount, -0.2, 0.4);
+      feather = clamp(feather * amount, -0.45, 0.6);
       fl.target.set(sweep, lift, feather);
 
-      // Damped springs toward the targets, the right side a touch slower so
-      // the pair never moves as exact mirror images.
-      const wk = w * (k === 0 ? 1 : 0.93);
+      // Springy joints toward the targets.
+      const wk = w * (k === 0 ? 1.03 : 0.97);
       const a = fl.angle[k];
       const r = fl.rate[k];
       r.x += (wk * wk * (fl.target.x - a.x) - 2 * zeta * wk * r.x) * dt;
