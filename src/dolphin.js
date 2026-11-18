@@ -38,6 +38,39 @@ const SPINE_NAMES = [
 const HEAD_BIND = new THREE.Vector3(0, 0, SPINE_Z[0]);
 const SKIN_BONE_COUNT = SPINE_Z.length;
 
+// Pectoral flippers. The scan has them fused to the body, so each gets its
+// own joint at the root (bind space, mirrored in x; +X is the dolphin's
+// left), hung on the neck segment the root sits on. A flipper turns about
+// its root three ways, in this order: it lifts and lowers about the body's
+// long axis, sweeps back or forward in its own plane (about the plate's
+// normal, so a tucked flipper stays edge-on to the flow), and feathers
+// (leading edge up or down) about its own span.
+const FLIPPER_PARENT = 1;
+const FLIPPER_ROOT = new THREE.Vector3(0.215, -0.395, 0.75);
+const FLIPPER_SPAN = new THREE.Vector3(0.29, -0.135, -0.19).normalize();
+const FLIPPER_NORMAL = new THREE.Vector3(0, 0, 1).cross(FLIPPER_SPAN).normalize();
+// Front view: the flipper leaves the lower flank at (0.212, -0.392) and runs
+// out and down at about 25 degrees as a thin plate.
+const FLIPPER_OUT_X = 0.9037;
+const FLIPPER_OUT_Y = -0.4281;
+
+function smoothRamp(a, b, x) {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+// How much a vertex of the baked mesh belongs to a flipper rather than the
+// body: past the root along the plate, close to its plane, and within the
+// flipper's stretch of the body. The root blends over a few centimetres.
+function flipperWeight(x, y, z) {
+  const ax = Math.abs(x) - 0.212;
+  const ay = y + 0.392;
+  const out = ax * FLIPPER_OUT_X + ay * FLIPPER_OUT_Y;
+  const off = Math.abs(-ax * FLIPPER_OUT_Y + ay * FLIPPER_OUT_X);
+  const along = smoothRamp(0.38, 0.45, z) * (1 - smoothRamp(0.92, 0.98, z));
+  return smoothRamp(0, 0.045, out) * (1 - smoothRamp(0.055, 0.09, off)) * along;
+}
+
 function dampAngle(current, target, lambda, dt) {
   return current + wrapAngle(target - current) * (1 - Math.exp(-lambda * dt));
 }
@@ -307,6 +340,31 @@ export class Dolphin {
     };
     this.skinnedMesh = null;
     this.skeleton = null;
+    // Flipper joints and their springs: per side (left, right) the sweep,
+    // lift and feather angles and their rates, and the shared drives.
+    this.flippers = {
+      bones: [],
+      angle: [new THREE.Vector3(), new THREE.Vector3()],
+      rate: [new THREE.Vector3(), new THREE.Vector3()],
+      target: new THREE.Vector3(),
+      pitchRate: 0,
+      prevPitch: null,
+      brake: 0,
+      air: 0,
+      scull: 0,
+      clock: 0,
+      qSweep: new THREE.Quaternion(),
+      qLift: new THREE.Quaternion(),
+      qFeather: new THREE.Quaternion(),
+      span: [
+        FLIPPER_SPAN.clone(),
+        new THREE.Vector3(-FLIPPER_SPAN.x, FLIPPER_SPAN.y, FLIPPER_SPAN.z),
+      ],
+      normal: [
+        FLIPPER_NORMAL.clone(),
+        new THREE.Vector3(-FLIPPER_NORMAL.x, FLIPPER_NORMAL.y, FLIPPER_NORMAL.z),
+      ],
+    };
     this.wetness = 0;
     this.impact = 0;
     this.turnLean = 0;
@@ -451,10 +509,16 @@ export class Dolphin {
             }
           }
         }
+        // Flipper vertices hand their weight to the flipper's own joint.
+        const fw = flipperWeight(position.getX(v), position.getY(v), z);
         skinIndex[v * 4] = a;
         skinIndex[v * 4 + 1] = b;
-        skinWeight[v * 4] = 1 - t;
-        skinWeight[v * 4 + 1] = t;
+        skinWeight[v * 4] = (1 - t) * (1 - fw);
+        skinWeight[v * 4 + 1] = t * (1 - fw);
+        if (fw > 0) {
+          skinIndex[v * 4 + 2] = SKIN_BONE_COUNT + (position.getX(v) > 0 ? 0 : 1);
+          skinWeight[v * 4 + 2] = fw;
+        }
       }
       geometry.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(skinIndex, 4));
       geometry.setAttribute("skinWeight", new THREE.Float32BufferAttribute(skinWeight, 4));
@@ -471,6 +535,15 @@ export class Dolphin {
         bones.push(bone);
       }
 
+      // The flipper joints (left, then right), after the spine.
+      const flipperBones = [1, -1].map((side) => {
+        const bone = new THREE.Bone();
+        bone.name = side > 0 ? "flipper-left" : "flipper-right";
+        bone.position.set(side * FLIPPER_ROOT.x, FLIPPER_ROOT.y, FLIPPER_ROOT.z - SPINE_Z[FLIPPER_PARENT]);
+        bones[FLIPPER_PARENT].add(bone);
+        return bone;
+      });
+
       const mesh = new THREE.SkinnedMesh(geometry, material);
       mesh.name = "dolphin-skinned";
       mesh.frustumCulled = false;
@@ -479,12 +552,13 @@ export class Dolphin {
       mesh.add(bones[0]);
       this.scene.add(mesh);
       mesh.updateMatrixWorld(true);
-      const skeleton = new THREE.Skeleton(bones);
+      const skeleton = new THREE.Skeleton([...bones, ...flipperBones]);
       mesh.bind(skeleton, new THREE.Matrix4());
 
       this.skinnedMesh = mesh;
       this.skeleton = skeleton;
       this.spine.bones = bones;
+      this.flippers.bones = flipperBones;
       this.model = mesh;
       this.loaded = true;
       this.resetVisualChain();
@@ -634,6 +708,99 @@ export class Dolphin {
     }
 
     this._applySpinePose();
+  }
+
+  /**
+   * Pectoral flippers as a dolphin uses them: control surfaces. They tuck
+   * back along the flanks as speed builds and in a Shift dive, angle into a
+   * turn (the inside one out and up as a pivot, the outer one back), tilt
+   * together as the nose pitches, flare forward like air brakes on S,
+   * spread a little in the air, scull slowly when hovering, and give a
+   * little in the flow at speed. Each angle follows its target on a damped
+   * spring, so they lag and settle rather than snap.
+   */
+  _updateFlippers(dt, input) {
+    const fl = this.flippers;
+    if (fl.bones.length !== 2 || dt <= 0) return;
+    const cfg = TUNING.dolphin;
+    const movement = TUNING.movement;
+    const amount = cfg.flipperMotion ?? 1;
+    const speed = this.swimSpeed || 0;
+    fl.clock += dt;
+
+    // Drives, each 0..1 unless signed.
+    const streamline = this.streamline || 0;
+    fl.brake = damp(fl.brake, input.brake && !this._flying ? smoothRamp(0.4, 3, speed) : 0, 7, dt);
+    fl.air = damp(fl.air, this._flying ? 1 - streamline : 0, 5, dt);
+    // Tucked by the flow at speed (not in the air), and fully in a dive.
+    const tuck = Math.max(
+      smoothRamp(movement.cruiseSpeed * 0.45, movement.boostSpeed * 0.85, speed) * (1 - fl.air),
+      streamline
+    );
+    const hover = (1 - smoothRamp(0.6, 2.6, speed)) * (1 - fl.air);
+    fl.scull += dt * Math.PI * 2 * (0.42 + 0.25 * hover);
+    const turn = clamp(this.yawRate / movement.maxTurnRate, -1, 1);
+    if (fl.prevPitch === null) fl.prevPitch = this.pitch;
+    const pitchRateRaw = (this.pitch - fl.prevPitch) / dt;
+    fl.prevPitch = this.pitch;
+    fl.pitchRate = damp(fl.pitchRate, clamp(pitchRateRaw / movement.maxPitchRate, -1, 1), 10, dt);
+    const surf = (this.surfLock || 0) * (1 - fl.air);
+    const stroke = clamp((this.tailHeave || 0) / 0.15, 0, 1.5) * (1 - fl.air);
+    const buffet = smoothRamp(3, 14, speed) * (1 - fl.air) * (1 - streamline);
+    const t = fl.clock;
+
+    const w = cfg.flipperSpring;
+    const zeta = cfg.flipperDamping;
+    for (let k = 0; k < 2; k++) {
+      const side = k === 0 ? 1 : -1;
+      const inside = Math.max(0, side * turn);
+      const outside = Math.max(0, -side * turn);
+      const lag = side * 0.35;
+
+      // x: sweep (+ tip back), y: lift (+ tip up), z: feather (+ leading
+      // edge up), in radians.
+      let sweep =
+        tuck * cfg.flipperTuckSweep -
+        fl.brake * 0.38 -
+        fl.air * 0.1 +
+        (-0.2 * inside + 0.16 * outside) * cfg.flipperTurn +
+        hover * cfg.flipperScull * 0.45 * Math.sin(fl.scull + lag);
+      let lift =
+        tuck * cfg.flipperTuckLift +
+        fl.brake * 0.42 +
+        fl.air * cfg.flipperAirSpread +
+        hover * 0.1 +
+        surf * 0.08 +
+        (0.32 * inside - 0.08 * outside) * cfg.flipperTurn;
+      let feather =
+        fl.brake * cfg.flipperBrake +
+        fl.pitchRate * cfg.flipperPitch * (1 - 0.6 * tuck) +
+        (0.4 * inside - 0.1 * outside) * cfg.flipperTurn +
+        hover * cfg.flipperScull * Math.sin(fl.scull + Math.PI * 0.5 + lag) +
+        // Each tail stroke pitches the body a little; the flippers trim it.
+        0.05 * stroke * Math.sin(this.tailPhase + Math.PI * 0.5) +
+        cfg.flipperBuffet * buffet * (Math.sin(t * 19.1 + side) * 0.6 + Math.sin(t * 31.7 + side * 2.3) * 0.4);
+
+      sweep = clamp(sweep * amount, -0.5, 0.6);
+      lift = clamp(lift * amount, -0.35, 0.6);
+      feather = clamp(feather * amount, -0.8, 1.0);
+      fl.target.set(sweep, lift, feather);
+
+      // Damped springs toward the targets.
+      const a = fl.angle[k];
+      const r = fl.rate[k];
+      r.x += (w * w * (fl.target.x - a.x) - 2 * zeta * w * r.x) * dt;
+      r.y += (w * w * (fl.target.y - a.y) - 2 * zeta * w * r.y) * dt;
+      r.z += (w * w * (fl.target.z - a.z) - 2 * zeta * w * r.z) * dt;
+      a.addScaledVector(r, dt);
+
+      // Mirrored joints: the right side turns the opposite way about its
+      // mirrored axes. Lift, then sweep in the lifted plane, then feather.
+      fl.qLift.setFromAxisAngle(Z_AXIS, side * a.y);
+      fl.qSweep.setFromAxisAngle(fl.normal[k], side * a.x);
+      fl.qFeather.setFromAxisAngle(fl.span[k], -side * a.z);
+      fl.bones[k].quaternion.copy(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
+    }
   }
 
   get currentInputDir() {
@@ -1666,6 +1833,7 @@ export class Dolphin {
     if (this.skinnedMesh) {
       this.root.quaternion.identity();
       this._updateSpineAnimation(dt);
+      this._updateFlippers(dt, input);
     } else {
       this.root.quaternion.copy(this.orientation);
     }

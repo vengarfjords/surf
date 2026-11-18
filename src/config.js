@@ -45,6 +45,24 @@ export const TUNING = {
     tailEase: 9,
     tailAccelClamp: 8.0,
     flukePitch: 0.22,
+    // Pectoral flippers (dolphin.js _updateFlippers), in radians: how far
+    // they sweep back (`flipperTuckSweep`) and lower (`flipperTuckLift`)
+    // when tucked at speed or in a Shift dive, their share in turns and
+    // pitching, how far they feather against the flow on the brake, their
+    // spread in the air, sculling when hovering, and flutter at speed. The
+    // spring (rad/s) and damping ratio set how they lag and settle.
+    // `flipperMotion` scales it all (0 = still, as before).
+    flipperMotion: 1,
+    flipperTuckSweep: 0.55,
+    flipperTuckLift: -0.2,
+    flipperTurn: 1,
+    flipperPitch: 0.35,
+    flipperBrake: 0.85,
+    flipperAirSpread: 0.18,
+    flipperScull: 0.22,
+    flipperBuffet: 0.025,
+    flipperSpring: 13,
+    flipperDamping: 0.75,
     bodyFollow: 1.35,
     // Per-joint anatomical limits, in radians. Wide enough for a free snout
     // lead, tight enough to keep the neck and torso from folding.
@@ -720,6 +738,7 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.tailWaveTravel", label: "wave travel", min: 0.15, max: 1.2, step: 0.01 },
   { path: "dolphin.tailWaveStart", label: "wave start", min: 0, max: 0.7, step: 0.01 },
   { path: "dolphin.flukePitch", label: "fluke pitch", min: 0, max: 0.4, step: 0.01 },
+  { path: "dolphin.flipperMotion", label: "flipper motion", min: 0, max: 2, step: 0.05 },
   { path: "dolphin.bodyFollow", label: "segment follow", min: 0.25, max: 2.5, step: 0.01 },
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
