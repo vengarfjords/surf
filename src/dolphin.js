@@ -49,9 +49,9 @@ const SKIN_BONE_COUNT = SPINE_Z.length;
 //
 // The root chord is long (22 cm), so any sweep or feather moves its ends a
 // long way across the skin around the root, and with one rigid joint the
-// skin there folded at sprint and brake angles. Instead the base takes all
-// of the lift (which turns about the root line itself and barely moves it)
-// but only part of the sweep and feather, and the blade takes the rest: the
+// skin there folded at sprint and brake angles. Instead the base takes the
+// lift (which turns about the root line itself and barely moves it) but
+// only part of the sweep and feather, and the blade takes the rest: the
 // flipper bends and twists along its length, as a real one does under load,
 // while its root stays one smooth piece of skin.
 const FLIPPER_PARENT = 1;
@@ -66,14 +66,21 @@ const FLIPPER_BASE_FEATHER = 0.4;
 // The skin at the root is skinned this much to the head bone (the rest to
 // the neck bone the flipper hangs on).
 const FLIPPER_HEAD_SHARE = (FLIPPER_ROOT.z - SPINE_Z[FLIPPER_PARENT]) / (SPINE_Z[0] - SPINE_Z[FLIPPER_PARENT]);
+// The base takes the lift up to this. Only the sand pushes a flipper past
+// it, and the blade bends up the rest of the way, so the root does not kink.
+const FLIPPER_BASE_LIFT = 0.45;
 // The most the sand may lift a flipper (tip up, radians).
 const FLIPPER_SAND_LIFT = 0.7;
 // Front view: the flipper leaves the lower flank at (0.212, -0.392) and runs
 // out and down at about 25 degrees as a thin plate.
 const FLIPPER_OUT_X = 0.9037;
 const FLIPPER_OUT_Y = -0.4281;
-// The tip, for seabed contact.
+// The tip, for seabed contact, and the root mirrored to each side.
 const FLIPPER_TIP = new THREE.Vector3(0.51, -0.53, 0.5);
+const FLIPPER_ROOT_SIDE = [
+  FLIPPER_ROOT.clone(),
+  new THREE.Vector3(-FLIPPER_ROOT.x, FLIPPER_ROOT.y, FLIPPER_ROOT.z),
+];
 
 function smoothRamp(a, b, x) {
   const t = clamp((x - a) / (b - a), 0, 1);
@@ -412,6 +419,7 @@ export class Dolphin {
       roots: [new THREE.Vector3(), new THREE.Vector3()],
       tmpA: new THREE.Vector3(),
       tmpB: new THREE.Vector3(),
+      tmpC: new THREE.Vector3(),
       blades: [],
       span: [
         FLIPPER_SPAN.clone(),
@@ -940,8 +948,8 @@ export class Dolphin {
    * The frame the flipper roots move with, and where each root is. The skin
    * around a root is skinned half to the head bone and half to the neck
    * bone, so the flippers hang on the blend of the two rather than on the
-   * neck bone alone; on the neck alone, the hard head turns of a reef ride or
-   * a Shift dive slid the root up to 17 cm across the skin around it.
+   * neck bone alone; on the neck alone, hard head turns slid the root up to
+   * 11 cm across the skin around it.
    */
   _flipperFrame() {
     const fl = this.flippers;
@@ -965,9 +973,9 @@ export class Dolphin {
   /**
    * Pose both flipper chains from their joint angles (after _flipperFrame).
    * The right side turns the opposite way about its mirrored axes: lift,
-   * then sweep in the lifted plane, then feather. The base takes all of the
-   * lift and part of the sweep and feather, and the blade the rest, so the
-   * blade ends up turned the full amount.
+   * then sweep in the lifted plane, then feather. The base takes the lift
+   * (up to FLIPPER_BASE_LIFT) and part of the sweep and feather, and the
+   * blade the rest, so the blade ends up turned the full amount.
    */
   _poseFlippers() {
     const fl = this.flippers;
@@ -979,6 +987,7 @@ export class Dolphin {
       fl.qSweep.setFromAxisAngle(fl.normal[k], side * a.x);
       fl.qFeather.setFromAxisAngle(fl.span[k], -side * a.z);
       fl.qTotal.copy(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
+      fl.qLift.setFromAxisAngle(Z_AXIS, side * Math.min(a.y, FLIPPER_BASE_LIFT));
       fl.qSweep.setFromAxisAngle(fl.normal[k], side * a.x * FLIPPER_BASE_SWEEP);
       fl.qFeather.setFromAxisAngle(fl.span[k], -side * a.z * FLIPPER_BASE_FEATHER);
       fl.qBase.copy(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
@@ -992,22 +1001,31 @@ export class Dolphin {
   /**
    * The lowest lift at which flipper `k`'s tip clears the sand by a couple
    * of centimetres, given its sweep and feather; -Infinity when it already
-   * clears it (or the seabed is out of reach). The flipper is taken as
-   * rigid about its root, which is close enough for a contact.
+   * clears it (or the seabed is out of reach). The tip is carried through
+   * both joints, as _poseFlippers poses them.
    */
   _flipperSandLift(k, side, sweep, lift, feather, seabed) {
     const fl = this.flippers;
     if (!seabed) return -Infinity;
     const root = fl.roots[k];
     if (root.y - seabed.getSurfaceHeight(root.x, root.z) > 0.9) return -Infinity;
+    // Where the blade joint sits on the base (bind frame).
+    const joint = fl.tmpC.set(side * FLIPPER_SPAN.x, FLIPPER_SPAN.y, FLIPPER_SPAN.z).multiplyScalar(FLIPPER_BLADE_AT);
     const clearance = (l) => {
       fl.qLift.setFromAxisAngle(Z_AXIS, side * l);
       fl.qSweep.setFromAxisAngle(fl.normal[k], side * sweep);
       fl.qFeather.setFromAxisAngle(fl.span[k], -side * feather);
       fl.qTotal.copy(fl.qFrame).multiply(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
+      fl.qLift.setFromAxisAngle(Z_AXIS, side * Math.min(l, FLIPPER_BASE_LIFT));
+      fl.qSweep.setFromAxisAngle(fl.normal[k], side * sweep * FLIPPER_BASE_SWEEP);
+      fl.qFeather.setFromAxisAngle(fl.span[k], -side * feather * FLIPPER_BASE_FEATHER);
+      fl.qBase.copy(fl.qFrame).multiply(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
       const tip = fl.tmpB
-        .set(side * (FLIPPER_TIP.x - FLIPPER_ROOT.x), FLIPPER_TIP.y - FLIPPER_ROOT.y, FLIPPER_TIP.z - FLIPPER_ROOT.z)
+        .set(side * FLIPPER_TIP.x, FLIPPER_TIP.y, FLIPPER_TIP.z)
+        .sub(FLIPPER_ROOT_SIDE[k])
+        .sub(joint)
         .applyQuaternion(fl.qTotal)
+        .add(fl.tmpA.copy(joint).applyQuaternion(fl.qBase))
         .add(root);
       return tip.y - seabed.getSurfaceHeight(tip.x, tip.z) - 0.02;
     };
@@ -1016,9 +1034,9 @@ export class Dolphin {
     if (below >= 0 || lo >= FLIPPER_SAND_LIFT) return -Infinity;
     // Raise the tip in steps until it clears, then interpolate. When raising
     // it does not help (the body is steep or on its back, or sunk into the
-    // sand itself) leave the flipper alone. Past FLIPPER_SAND_LIFT the root
-    // would crease, so a flipper pinned under a body rolled flat onto the
-    // sand stays there.
+    // sand itself) leave the flipper alone. Past FLIPPER_SAND_LIFT the blade
+    // would fold, so a flipper pinned under a body rolled flat onto the sand
+    // stays there.
     for (let step = 0; step < 8; step++) {
       const l = Math.min(lo + 0.12, FLIPPER_SAND_LIFT);
       const h = clearance(l);
