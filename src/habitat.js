@@ -1247,7 +1247,9 @@ export class Reefs {
         .offsetHSL((rnd() - 0.5) * 0.025, (rnd() - 0.5) * 0.12, (rnd() - 0.5) * 0.08);
       shellCol.push(color.clone());
     }
-    this.group.add(instanced(shellGeo, shellMat, shellXf, shellCol));
+    this.shellMesh = instanced(shellGeo, shellMat, shellXf, shellCol);
+    this.shellMesh.visible = TUNING.visuals.shells;
+    this.group.add(this.shellMesh);
     this.geometries.push(shellGeo);
 
     // Interleave coral variants into three instanced draws.
@@ -1263,6 +1265,8 @@ export class Reefs {
   updateCulling(camera) {
     this.procedural.visible = TUNING.visuals.proceduralReef;
     cullInstancedChunks(this.group, camera, TUNING.visuals.reefCullDistance);
+    // Culling sets each mesh's own visibility, so the shell toggle goes after.
+    this.shellMesh.visible = this.shellMesh.visible && TUNING.visuals.shells;
   }
 
   async loadReferenceCorals() {
@@ -2592,7 +2596,10 @@ export class HiddenThings {
   update(dt, player, effects) {
     this.lastPlayer.copy(player.position);
     let nearby = false;
+    const showShells = TUNING.visuals.shells;
     for (const shell of this.shells) {
+      shell.visible = showShells;
+      if (!showShells) continue;
       const x = shell.position.x;
       const z = shell.position.z;
       const sandTop = seabedHeight(x, z) + this.sand.sampleDelta(x, z);
