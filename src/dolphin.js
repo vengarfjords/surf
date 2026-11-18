@@ -38,21 +38,42 @@ const SPINE_NAMES = [
 const HEAD_BIND = new THREE.Vector3(0, 0, SPINE_Z[0]);
 const SKIN_BONE_COUNT = SPINE_Z.length;
 
-// Pectoral flippers. The scan has them fused to the body, so each gets its
-// own joint at the root (bind space, mirrored in x; +X is the dolphin's
-// left), hung on the neck segment the root sits on. A flipper turns about
-// its root three ways, in this order: it lifts and lowers about the body's
-// long axis, sweeps back or forward in its own plane (about the plate's
-// normal, so a tucked flipper stays edge-on to the flow), and feathers
-// (leading edge up or down) about its own span.
+// Pectoral flippers. The scan has them fused to the body, so each gets a
+// two-joint chain of its own (bind space, mirrored in x; +X is the
+// dolphin's left): a base joint at the root, hung on the neck segment the
+// root sits on, and a blade joint out along the span. A flipper turns three
+// ways, in this order: it lifts and lowers about the body's long axis,
+// sweeps back or forward in its own plane (about the plate's normal, so a
+// tucked flipper stays edge-on to the flow), and feathers (leading edge up
+// or down) about its own span.
+//
+// The root chord is long (22 cm), so any sweep or feather moves its ends a
+// long way across the skin around the root, and with one rigid joint the
+// skin there folded at sprint and brake angles. Instead the base takes all
+// of the lift (which turns about the root line itself and barely moves it)
+// but only part of the sweep and feather, and the blade takes the rest: the
+// flipper bends and twists along its length, as a real one does under load,
+// while its root stays one smooth piece of skin.
 const FLIPPER_PARENT = 1;
 const FLIPPER_ROOT = new THREE.Vector3(0.215, -0.395, 0.75);
 const FLIPPER_SPAN = new THREE.Vector3(0.29, -0.135, -0.19).normalize();
 const FLIPPER_NORMAL = new THREE.Vector3(0, 0, 1).cross(FLIPPER_SPAN).normalize();
+// The blade joint: this far out along the span from the root (about a third
+// of the way to the tip), and the share of each turn the base takes.
+const FLIPPER_BLADE_AT = 0.116;
+const FLIPPER_BASE_SWEEP = 0.35;
+const FLIPPER_BASE_FEATHER = 0.4;
+// The skin at the root is skinned this much to the head bone (the rest to
+// the neck bone the flipper hangs on).
+const FLIPPER_HEAD_SHARE = (FLIPPER_ROOT.z - SPINE_Z[FLIPPER_PARENT]) / (SPINE_Z[0] - SPINE_Z[FLIPPER_PARENT]);
+// The most the sand may lift a flipper (tip up, radians).
+const FLIPPER_SAND_LIFT = 0.7;
 // Front view: the flipper leaves the lower flank at (0.212, -0.392) and runs
 // out and down at about 25 degrees as a thin plate.
 const FLIPPER_OUT_X = 0.9037;
 const FLIPPER_OUT_Y = -0.4281;
+// The tip, for seabed contact.
+const FLIPPER_TIP = new THREE.Vector3(0.51, -0.53, 0.5);
 
 function smoothRamp(a, b, x) {
   const t = clamp((x - a) / (b - a), 0, 1);
@@ -64,22 +85,34 @@ function deadZone(x, dead) {
   return Math.sign(x) * Math.max(0, Math.abs(x) - dead) / (1 - dead);
 }
 
-// How much a vertex of the baked mesh belongs to a flipper rather than the
-// body: out past the root along the plate, close to its plane, and between
-// its leading edge and its swept-back trailing edge. The flank behind and
-// above the root lies on the same line in the front view, so the trailing
-// edge is followed outward (it runs from z 0.655 at the root back to 0.5 at
-// the tip) instead of cutting at one z; a fixed cut gave that flank up to
-// 40% flipper weight and it tore open whenever the flipper turned. The base
-// blends over 6 cm, so it flexes rather than shears.
+// How far out along the plate a vertex of the baked mesh sits from the root.
+function flipperOut(x, y) {
+  return (Math.abs(x) - 0.212) * FLIPPER_OUT_X + (y + 0.392) * FLIPPER_OUT_Y;
+}
+
+// How much a vertex belongs to a flipper rather than the body: out past the
+// root along the plate, close to its plane, and between its leading edge
+// and its swept-back trailing edge. The flank behind and above the root lies
+// on the same line in the front view, so the trailing edge is followed
+// outward (it runs from z 0.655 at the root back to 0.5 at the tip) instead
+// of cutting at one z; a fixed cut gave that flank up to 40% flipper weight
+// and it tore open whenever the flipper turned. The root blends over 11 cm
+// out from the flank and 8.5 cm behind the trailing edge, so the skin there
+// flexes rather than shears.
 function flipperWeight(x, y, z) {
   const ax = Math.abs(x) - 0.212;
   const ay = y + 0.392;
   const out = ax * FLIPPER_OUT_X + ay * FLIPPER_OUT_Y;
   const off = Math.abs(-ax * FLIPPER_OUT_Y + ay * FLIPPER_OUT_X);
   const trailing = 0.655 - 0.5 * Math.max(out, 0);
-  const along = smoothRamp(trailing - 0.06, trailing - 0.015, z) * (1 - smoothRamp(0.92, 0.98, z));
-  return smoothRamp(0.015, 0.075, out) * (1 - smoothRamp(0.055, 0.09, off)) * along;
+  const along = smoothRamp(trailing - 0.1, trailing - 0.015, z) * (1 - smoothRamp(0.92, 0.98, z));
+  return smoothRamp(-0.01, 0.1, out) * (1 - smoothRamp(0.055, 0.09, off)) * along;
+}
+
+// The blade joint's share of a flipper vertex: none at the root, all of it
+// past 22 cm out, so the bend and twist spread over the inner blade.
+function flipperBladeShare(x, y) {
+  return smoothRamp(0.06, 0.22, flipperOut(x, y));
 }
 
 function dampAngle(current, target, lambda, dt) {
@@ -372,6 +405,14 @@ export class Dolphin {
       qSweep: new THREE.Quaternion(),
       qLift: new THREE.Quaternion(),
       qFeather: new THREE.Quaternion(),
+      qTotal: new THREE.Quaternion(),
+      qBase: new THREE.Quaternion(),
+      qFrame: new THREE.Quaternion(),
+      qParentInv: new THREE.Quaternion(),
+      roots: [new THREE.Vector3(), new THREE.Vector3()],
+      tmpA: new THREE.Vector3(),
+      tmpB: new THREE.Vector3(),
+      blades: [],
       span: [
         FLIPPER_SPAN.clone(),
         new THREE.Vector3(-FLIPPER_SPAN.x, FLIPPER_SPAN.y, FLIPPER_SPAN.z),
@@ -525,15 +566,21 @@ export class Dolphin {
             }
           }
         }
-        // Flipper vertices hand their weight to the flipper's own joint.
-        const fw = flipperWeight(position.getX(v), position.getY(v), z);
+        // Flipper vertices hand their weight to the flipper's two joints.
+        const x = position.getX(v);
+        const y = position.getY(v);
+        const fw = flipperWeight(x, y, z);
         skinIndex[v * 4] = a;
         skinIndex[v * 4 + 1] = b;
         skinWeight[v * 4] = (1 - t) * (1 - fw);
         skinWeight[v * 4 + 1] = t * (1 - fw);
         if (fw > 0) {
-          skinIndex[v * 4 + 2] = SKIN_BONE_COUNT + (position.getX(v) > 0 ? 0 : 1);
-          skinWeight[v * 4 + 2] = fw;
+          const side = x > 0 ? 0 : 1;
+          const share = flipperBladeShare(x, y);
+          skinIndex[v * 4 + 2] = SKIN_BONE_COUNT + side;
+          skinWeight[v * 4 + 2] = fw * (1 - share);
+          skinIndex[v * 4 + 3] = SKIN_BONE_COUNT + 2 + side;
+          skinWeight[v * 4 + 3] = fw * share;
         }
       }
       geometry.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(skinIndex, 4));
@@ -551,12 +598,20 @@ export class Dolphin {
         bones.push(bone);
       }
 
-      // The flipper joints (left, then right), after the spine.
+      // The flipper joints after the spine: the bases (left, then right) on
+      // the neck segment, then the blades (left, then right) on the bases.
       const flipperBones = [1, -1].map((side) => {
         const bone = new THREE.Bone();
         bone.name = side > 0 ? "flipper-left" : "flipper-right";
         bone.position.set(side * FLIPPER_ROOT.x, FLIPPER_ROOT.y, FLIPPER_ROOT.z - SPINE_Z[FLIPPER_PARENT]);
         bones[FLIPPER_PARENT].add(bone);
+        return bone;
+      });
+      const bladeBones = [1, -1].map((side, k) => {
+        const bone = new THREE.Bone();
+        bone.name = side > 0 ? "flipper-blade-left" : "flipper-blade-right";
+        bone.position.set(side * FLIPPER_SPAN.x, FLIPPER_SPAN.y, FLIPPER_SPAN.z).multiplyScalar(FLIPPER_BLADE_AT);
+        flipperBones[k].add(bone);
         return bone;
       });
 
@@ -568,13 +623,14 @@ export class Dolphin {
       mesh.add(bones[0]);
       this.scene.add(mesh);
       mesh.updateMatrixWorld(true);
-      const skeleton = new THREE.Skeleton([...bones, ...flipperBones]);
+      const skeleton = new THREE.Skeleton([...bones, ...flipperBones, ...bladeBones]);
       mesh.bind(skeleton, new THREE.Matrix4());
 
       this.skinnedMesh = mesh;
       this.skeleton = skeleton;
       this.spine.bones = bones;
       this.flippers.bones = flipperBones;
+      this.flippers.blades = bladeBones;
       this.model = mesh;
       this.loaded = true;
       this.resetVisualChain();
@@ -742,7 +798,8 @@ export class Dolphin {
    * - S turns them out and against the flow as brakes;
    * - they spread in the air, and slapping back into the water knocks them
    *   back before they spring out again;
-   * - hovering, they make slow, uneven balancing strokes.
+   * - hovering, they make slow, uneven balancing strokes;
+   * - on the seabed the sand pushes them up instead of the tips sinking in.
    *
    * The head follows the mouse exactly, so the yaw, pitch and roll rates
    * swing with every flick. Those drives are smoothed over a fifth of a
@@ -752,9 +809,9 @@ export class Dolphin {
    * touch faster on the left than on the right so the pair never moves as
    * exact mirror images.
    */
-  _updateFlippers(dt, input) {
+  _updateFlippers(dt, input, seabed) {
     const fl = this.flippers;
-    if (fl.bones.length !== 2 || dt <= 0) return;
+    if (fl.bones.length !== 2 || fl.blades.length !== 2 || dt <= 0) return;
     const cfg = TUNING.dolphin;
     const movement = TUNING.movement;
     const amount = cfg.flipperMotion ?? 1;
@@ -808,6 +865,7 @@ export class Dolphin {
       fl.airTime = 0;
     }
 
+    this._flipperFrame();
     const w = cfg.flipperSpring;
     const zeta = cfg.flipperDamping;
     for (let k = 0; k < 2; k++) {
@@ -854,24 +912,123 @@ export class Dolphin {
       sweep = clamp(sweep * amount, -0.3, 0.5);
       lift = clamp(lift * amount, -0.2, 0.4);
       feather = clamp(feather * amount, -0.45, 0.6);
-      fl.target.set(sweep, lift, feather);
+
+      // On the seabed the sand pushes the flipper up rather than letting
+      // the tip sink into it (the body rests on its belly, and in a roll the
+      // low flipper reaches 20 cm below it).
+      const a = fl.angle[k];
+      const r = fl.rate[k];
+      const floor = this._flipperSandLift(k, side, a.x, lift, a.z, seabed);
+      fl.target.set(sweep, Math.max(lift, floor), feather);
 
       // Springy joints toward the targets.
       const wk = w * (k === 0 ? 1.03 : 0.97);
-      const a = fl.angle[k];
-      const r = fl.rate[k];
       r.x += (wk * wk * (fl.target.x - a.x) - 2 * zeta * wk * r.x) * dt;
       r.y += (wk * wk * (fl.target.y - a.y) - 2 * zeta * wk * r.y) * dt;
       r.z += (wk * wk * (fl.target.z - a.z) - 2 * zeta * wk * r.z) * dt;
       a.addScaledVector(r, dt);
+      if (a.y < floor) {
+        // Quickly, but not in one frame, so a sudden contact does not snap.
+        a.y += Math.min(floor - a.y, 8 * dt);
+        r.y = Math.max(r.y, 0);
+      }
+    }
+    this._poseFlippers();
+  }
 
-      // Mirrored joints: the right side turns the opposite way about its
-      // mirrored axes. Lift, then sweep in the lifted plane, then feather.
+  /**
+   * The frame the flipper roots move with, and where each root is. The skin
+   * around a root is skinned half to the head bone and half to the neck
+   * bone, so the flippers hang on the blend of the two rather than on the
+   * neck bone alone; on the neck alone, the hard head turns of a reef ride or
+   * a Shift dive slid the root up to 17 cm across the skin around it.
+   */
+  _flipperFrame() {
+    const fl = this.flippers;
+    const sp = this.spine;
+    fl.qFrame.copy(sp.quats[FLIPPER_PARENT]).slerp(sp.quats[0], FLIPPER_HEAD_SHARE);
+    fl.qParentInv.copy(sp.quats[FLIPPER_PARENT]).invert();
+    for (let k = 0; k < 2; k++) {
+      const side = k === 0 ? 1 : -1;
+      fl.tmpA
+        .set(side * FLIPPER_ROOT.x, FLIPPER_ROOT.y, FLIPPER_ROOT.z - SPINE_Z[0])
+        .applyQuaternion(sp.quats[0])
+        .add(sp.joints[0]);
+      fl.roots[k]
+        .set(side * FLIPPER_ROOT.x, FLIPPER_ROOT.y, FLIPPER_ROOT.z - SPINE_Z[FLIPPER_PARENT])
+        .applyQuaternion(sp.quats[FLIPPER_PARENT])
+        .add(sp.joints[FLIPPER_PARENT])
+        .lerp(fl.tmpA, FLIPPER_HEAD_SHARE);
+    }
+  }
+
+  /**
+   * Pose both flipper chains from their joint angles (after _flipperFrame).
+   * The right side turns the opposite way about its mirrored axes: lift,
+   * then sweep in the lifted plane, then feather. The base takes all of the
+   * lift and part of the sweep and feather, and the blade the rest, so the
+   * blade ends up turned the full amount.
+   */
+  _poseFlippers() {
+    const fl = this.flippers;
+    const parent = this.spine.joints[FLIPPER_PARENT];
+    for (let k = 0; k < 2; k++) {
+      const side = k === 0 ? 1 : -1;
+      const a = fl.angle[k];
       fl.qLift.setFromAxisAngle(Z_AXIS, side * a.y);
       fl.qSweep.setFromAxisAngle(fl.normal[k], side * a.x);
       fl.qFeather.setFromAxisAngle(fl.span[k], -side * a.z);
-      fl.bones[k].quaternion.copy(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
+      fl.qTotal.copy(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
+      fl.qSweep.setFromAxisAngle(fl.normal[k], side * a.x * FLIPPER_BASE_SWEEP);
+      fl.qFeather.setFromAxisAngle(fl.span[k], -side * a.z * FLIPPER_BASE_FEATHER);
+      fl.qBase.copy(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
+      const base = fl.bones[k];
+      base.quaternion.copy(fl.qParentInv).multiply(fl.qFrame).multiply(fl.qBase);
+      base.position.copy(fl.roots[k]).sub(parent).applyQuaternion(fl.qParentInv);
+      fl.blades[k].quaternion.copy(fl.qBase.invert()).multiply(fl.qTotal);
     }
+  }
+
+  /**
+   * The lowest lift at which flipper `k`'s tip clears the sand by a couple
+   * of centimetres, given its sweep and feather; -Infinity when it already
+   * clears it (or the seabed is out of reach). The flipper is taken as
+   * rigid about its root, which is close enough for a contact.
+   */
+  _flipperSandLift(k, side, sweep, lift, feather, seabed) {
+    const fl = this.flippers;
+    if (!seabed) return -Infinity;
+    const root = fl.roots[k];
+    if (root.y - seabed.getSurfaceHeight(root.x, root.z) > 0.9) return -Infinity;
+    const clearance = (l) => {
+      fl.qLift.setFromAxisAngle(Z_AXIS, side * l);
+      fl.qSweep.setFromAxisAngle(fl.normal[k], side * sweep);
+      fl.qFeather.setFromAxisAngle(fl.span[k], -side * feather);
+      fl.qTotal.copy(fl.qFrame).multiply(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
+      const tip = fl.tmpB
+        .set(side * (FLIPPER_TIP.x - FLIPPER_ROOT.x), FLIPPER_TIP.y - FLIPPER_ROOT.y, FLIPPER_TIP.z - FLIPPER_ROOT.z)
+        .applyQuaternion(fl.qTotal)
+        .add(root);
+      return tip.y - seabed.getSurfaceHeight(tip.x, tip.z) - 0.02;
+    };
+    let lo = lift;
+    let below = clearance(lo);
+    if (below >= 0 || lo >= FLIPPER_SAND_LIFT) return -Infinity;
+    // Raise the tip in steps until it clears, then interpolate. When raising
+    // it does not help (the body is steep or on its back, or sunk into the
+    // sand itself) leave the flipper alone. Past FLIPPER_SAND_LIFT the root
+    // would crease, so a flipper pinned under a body rolled flat onto the
+    // sand stays there.
+    for (let step = 0; step < 8; step++) {
+      const l = Math.min(lo + 0.12, FLIPPER_SAND_LIFT);
+      const h = clearance(l);
+      if (h <= below + 0.004) return step === 0 ? -Infinity : lo;
+      if (h >= 0) return lo + ((l - lo) * -below) / (h - below);
+      lo = l;
+      below = h;
+      if (l >= FLIPPER_SAND_LIFT) break;
+    }
+    return lo;
   }
 
   get currentInputDir() {
@@ -1904,7 +2061,7 @@ export class Dolphin {
     if (this.skinnedMesh) {
       this.root.quaternion.identity();
       this._updateSpineAnimation(dt);
-      this._updateFlippers(dt, input);
+      this._updateFlippers(dt, input, seabed);
     } else {
       this.root.quaternion.copy(this.orientation);
     }
