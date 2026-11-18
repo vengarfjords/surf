@@ -311,15 +311,17 @@ export const TUNING = {
     // even with W or Shift held: gravity on the face does the work. Either
     // way only on the surface: with Space held, or within
     // `glideSurfaceDepth` m of it. The tail eases in and out of it at
-    // `glideRate` /s. With Space held on open water, W porpoises, leaping at
+    // `glideRate` /s. Auto-porpoising (`porpoise`, off by default): with
+    // Space held on open water, W leaps on its own every second or so, at
     // `porpoiseLift` x its speed through the water (m/s up) once above
-    // `porpoiseSpeed` m/s.
+    // `porpoiseSpeed` m/s. Off, Space + W swims along the surface and only
+    // letting go of Space leaps.
     surfGlideSlope: 0.2,
     surfGlideFlow: 8,
     glideDownSlope: 0.12,
     glideSurfaceDepth: 2,
     glideRate: 5,
-    porpoise: 1,
+    porpoise: false,
     porpoiseSpeed: 4.5,
     porpoiseLift: 0.38,
     porpoiseLiftMax: 5.5,
@@ -770,6 +772,7 @@ export const TUNE_CONTROLS = [
   { path: "hydro.surfaceLeap", label: "leap on release (m/s)", min: 0, max: 16, step: 0.5 },
   { path: "hydro.surfaceLeapForward", label: "leap drive on a wave (m/s)", min: 0, max: 30, step: 0.5 },
   { path: "hydro.glideDownSlope", label: "coast down a face from slope", min: 0.03, max: 0.5, step: 0.01 },
+  { path: "hydro.porpoise", label: "auto-porpoise", type: "toggle" },
   { path: "hydro.porpoiseLift", label: "porpoise leap", min: 0, max: 0.8, step: 0.01 },
   { path: "hydro.surfaceCarveGrip", label: "surface carve grip", min: 0, max: 12, step: 0.5 },
   { path: "hydro.surfaceTurnResponse", label: "surface turn response", min: 4, max: 20, step: 0.5 },

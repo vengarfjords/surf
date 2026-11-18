@@ -1874,9 +1874,11 @@ export class Dolphin {
       this._leapOff(up, drive, sx, sz, fx, fz);
     }
 
-    // Porpoising: holding Space and swimming (W) on open water at speed, the
-    // dolphin runs a short stretch just under the surface and then clears it
-    // in a low, long leap, over and over. Leap height grows with speed.
+    // Auto-porpoising (hydro.porpoise, off by default): holding Space and
+    // swimming (W) on open water at speed, the dolphin runs a short stretch
+    // just under the surface and then clears it in a low, long leap, over
+    // and over. Leap height grows with speed. Off, every leap is the
+    // player's own, by letting go of Space.
     const swimming = (input.forward || input.boost) && !input.brake;
     if (
       want &&
@@ -1885,7 +1887,7 @@ export class Dolphin {
       this.surfLock > 0.9 &&
       this.surfGlide < 0.3 &&
       relFwd > cfg.porpoiseSpeed &&
-      cfg.porpoise > 0
+      cfg.porpoise
     ) {
       this.porpoiseClock = (this.porpoiseClock || 0) + dt;
       const interval = clamp(1.5 - 0.05 * relFwd, 0.45, 1.2);
