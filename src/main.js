@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import { Ocean } from "./ocean.js";
 import { Seabed } from "./sand.js";
-import { Reefs, Seagrass, SunShafts, HiddenThings, sharedShader } from "./habitat.js";
+import { Reefs, Seagrass, SunShafts, sharedShader } from "./habitat.js";
 import { Dolphin } from "./dolphin.js";
 import { CameraRig } from "./camera.js";
 import { ParticleFX, MarineSnow, NearMotes } from "./particles.js";
@@ -123,7 +123,6 @@ async function boot() {
     },
     cameraRig,
   });
-  const hidden = new HiddenThings(scene, seabed.sim, (main, sub) => hud.toast(main, sub));
 
   let started = false;
   let elapsed = 0;
@@ -506,8 +505,6 @@ async function boot() {
     waterDebug.setStarted(started);
     waterDebug.update(dt);
 
-    hidden.update(dt, dolphin, effects);
-
     const currentStrength = 1 + Math.sin(total * 0.13) * 0.22;
     current.set(
       TUNING.movement.currentX * currentStrength,
@@ -767,7 +764,6 @@ async function boot() {
     motes,
     snow,
     shafts,
-    hidden,
     audio,
     hud,
     input,

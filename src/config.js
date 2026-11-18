@@ -585,10 +585,9 @@ export const TUNING = {
     // megapixel makes frame cost predictable on larger displays as well.
     maxPostPixels: 600000,
     maxPixelRatio: 1.15,
-    // The reef is split into spatial chunks so fogged/off-screen regions are
-    // never submitted. Both distances sit beyond the point where underwater
-    // fog makes the geometry unreadable.
-    reefChunkSize: 90,
+    // Fogged/off-screen corals and seagrass chunks are never submitted. The
+    // distances sit beyond the point where underwater fog makes the geometry
+    // unreadable.
     reefCullDistance: 120,
     grassChunkSize: 80,
     grassCullDistance: 100,
