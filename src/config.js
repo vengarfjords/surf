@@ -52,16 +52,21 @@ export const TUNING = {
     // spread in the air, the size of the hover strokes, and how far they
     // tilt with each tail stroke. The spring (rad/s) and damping ratio set
     // how they ease in and follow through. `flipperMotion` scales it all
-    // (0 = still).
+    // (0 = still). `flipperBalance` (rad of feather per rad/s) is how hard
+    // they work against the water pitching and rolling the body, and
+    // `flipperLoad` scales how far the water's load bends and twists them
+    // away from their pose (0 = rigid; dolphin.js _flipperLoad).
     flipperMotion: 1,
+    flipperBalance: 0.5,
+    flipperLoad: 1,
     flipperTuckSweep: 0.38,
     flipperTuckLift: -0.08,
     flipperTurn: 1,
-    flipperPitch: 0.3,
+    flipperPitch: 0.45,
     flipperBrake: 0.5,
     flipperAirSpread: 0.2,
     flipperScull: 0.16,
-    flipperStroke: 0.06,
+    flipperStroke: 0.12,
     flipperSpring: 9,
     flipperDamping: 0.72,
     bodyFollow: 1.35,
@@ -740,6 +745,7 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.tailWaveStart", label: "wave start", min: 0, max: 0.7, step: 0.01 },
   { path: "dolphin.flukePitch", label: "fluke pitch", min: 0, max: 0.4, step: 0.01 },
   { path: "dolphin.flipperMotion", label: "flipper motion", min: 0, max: 2, step: 0.05 },
+  { path: "dolphin.flipperLoad", label: "flipper give", min: 0, max: 2, step: 0.05 },
   { path: "dolphin.bodyFollow", label: "segment follow", min: 0.25, max: 2.5, step: 0.01 },
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
