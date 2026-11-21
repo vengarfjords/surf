@@ -2468,7 +2468,16 @@ export class Dolphin {
     // used to switch its reach and its tempo in a single frame.
     this._strokeOn = damp(this._strokeOn || 0, thrusting ? 1 : 0, tailCfg.tailEase, dt);
     this._surgeOn = damp(this._surgeOn || 0, surge ? 1 : 0, tailCfg.tailEase, dt);
-    this._tailWater = damp(this._tailWater ?? 1, underwater ? 1 : movement.airTailScale, tailCfg.tailEase * 1.5, dt);
+    // Out of the water the tail has nothing to push against, so it does not
+    // swim: once the flukes themselves are clear (not just the body's
+    // centre, so the last stroke of a breach still plays out), the beat
+    // dies away over about a tenth of a second and the tail rides the leap
+    // held in line (`movement.airTailScale` of the stroke is left; 0 by
+    // default). The beat's tempo winds down with it, so the tail settles
+    // rather than freezing mid-stroke.
+    const tp = this.tmp.copy(this.bodyParts[2].offset).applyQuaternion(this.orientation).add(this.position);
+    const flukesWet = tp.y < ocean.getWaterHeight(tp.x, tp.z) + (this.surfaceLead || 0);
+    this._tailWater = damp(this._tailWater ?? 1, flukesWet ? 1 : movement.airTailScale, tailCfg.tailEase * 1.5, dt);
     this.tailHeave =
       Math.min(
         (tailCfg.tailHeaveIdle +
@@ -2491,7 +2500,11 @@ export class Dolphin {
     // The tempo changes over a beat, too: speed jumps at a landing or a
     // waterline crossing must not make the tail skip.
     this._beatEased = damp(this._beatEased ?? beatRate, beatRate, tailCfg.tailEase, dt);
-    this.tailPhase += dt * Math.min(this._beatEased, tailCfg.tailBeatMax) * (1 - 0.75 * Math.max(this.tailStill || 0, this._diveHold || 0));
+    this.tailPhase +=
+      dt *
+      Math.min(this._beatEased, tailCfg.tailBeatMax) *
+      (1 - 0.75 * Math.max(this.tailStill || 0, this._diveHold || 0)) *
+      (0.15 + 0.85 * clamp(this._tailWater, 0, 1));
     this.tailUniforms.causticTime.value = ocean.time;
     this.wetness = Math.max(0, this.wetness - dt * 0.13);
     this.impact *= Math.exp(-TUNING.movement.cameraShakeDecay * dt);
