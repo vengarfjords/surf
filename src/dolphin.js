@@ -453,7 +453,9 @@ export class Dolphin {
     // Shift dive (see update): engaged, and how tucked the body is (0..1).
     this.diveState = false;
     this.streamline = 0;
-    this._boostThroughExit = false;
+    this._diveHold = 0;
+    // Shift as last seen, so only a fresh press arms a dive.
+    this._shiftWas = false;
     this.boostBreachCount = 0;
     this.hydro = this.hull.result;
 
@@ -1484,8 +1486,13 @@ export class Dolphin {
     // Do not clamp per-frame mouse deltas. A fast flick can legitimately
     // produce several hundred pixels in one frame, and truncating that motion
     // is immediately felt as drag on the snout.
-    const mx = mouse.dx;
-    const my = mouse.dy;
+    // In a Shift dive the body is tucked and committed: the player can
+    // still nudge it (`movement.diveSteer` of the usual authority, mouse
+    // and keys), but not turn it around. Eased with the tuck, so letting
+    // go hands the full controls back over a few frames.
+    const steerK = lerp(1, movement.diveSteer ?? 1, this._diveHold || 0);
+    const mx = mouse.dx * steerK;
+    const my = mouse.dy * steerK;
     // Screen-right is world -X when the camera follows the dolphin's +Z
     // heading, so a rightward mouse movement must reduce yaw. The keyboard
     // bank controls share the same convention.
@@ -1517,20 +1524,21 @@ export class Dolphin {
         keyTurnRate *= 1 - smoothstep(movement.airYawMax * 0.5, movement.airYawMax, toward);
       }
     }
+    keyTurnRate *= steerK;
     this.targetYaw = wrapAngle(this.targetYaw - keyTurn * keyTurnRate * dt);
     const pitchInput =
       Math.abs(mx) > 0 ||
       Math.abs(my) > 0 ||
       input.pitchUpKeys ||
       input.pitchDownKeys;
-    if (input.pitchUpKeys) this.targetPitch += 0.9 * dt;
-    if (input.pitchDownKeys) this.targetPitch -= 0.9 * dt;
+    if (input.pitchUpKeys) this.targetPitch += 0.9 * steerK * dt;
+    if (input.pitchDownKeys) this.targetPitch -= 0.9 * steerK * dt;
     // How far the player moved the nose up or down this frame (used in the
     // air, where the aim is kept relative to the flight path).
     const aimDelta =
       -my * movement.mouseSensitivity * 0.78 +
-      (input.pitchUpKeys ? 0.9 * dt : 0) -
-      (input.pitchDownKeys ? 0.9 * dt : 0);
+      (input.pitchUpKeys ? 0.9 * steerK * dt : 0) -
+      (input.pitchDownKeys ? 0.9 * steerK * dt : 0);
     if (pitchInput) this.pitchInputTimer = movement.pitchTrimDelay;
     else {
       this.pitchInputTimer -= dt;
@@ -1556,25 +1564,20 @@ export class Dolphin {
     // drag and fin lift, no tail stroke, no ride trim and no surface lock
     // (hull.js, re-entry below). The body carries its whole 3D velocity
     // through the surface and stays tucked until Shift is let go.
-    // Pressing Shift in the air dives at once. Shift still held from a
-    // breach (a boosted breach) arms the dive only past the top of the arc,
-    // so it does not pull the body down on its way up. It never arms from a
-    // Space leap or while Space is held: those belong to the ride (a leap
-    // you land back into, porpoising), and surging riders hold Shift
-    // through them.
+    // Only a fresh press of Shift while the body is already in the air
+    // starts a dive. Shift already held when it left the water (a surging
+    // swim, a boosted breach) never does, however long it stays held: let
+    // go and press again in the air to dive. While the dive lasts the tail
+    // is still (no stroke, see Propulsion) and steering is cut to
+    // `movement.diveSteer`.
     {
       const wetNow = this.hydro ? this.hydro.wetFraction : 1;
       const inAir = wetNow < 0.05 && (this.leaping || this.leapFlight);
-      if (!input.boost) {
-        this.diveState = false;
-        this._boostThroughExit = false;
-      } else if (
-        !this.diveState &&
-        inAir &&
-        (!this._boostThroughExit || (!this.leapFlight && this.velocity.y <= 0 && !input.rise))
-      ) {
-        this.diveState = true;
-      }
+      const shiftDown = !!input.boost;
+      const shiftPress = shiftDown && !this._shiftWas;
+      this._shiftWas = shiftDown;
+      if (!shiftDown) this.diveState = false;
+      else if (shiftPress && inAir) this.diveState = true;
       // The seabed: a diving dolphin knows where the bottom is and pulls out
       // above it. Where the path would reach the sand within about 1.6 s,
       // the body opens out of the tuck (fin lift and drag come back) and
@@ -1805,8 +1808,10 @@ export class Dolphin {
         (this.velocity.y - wvel.y) * this.forward.y +
         (this.velocity.z - wvel.z) * this.forward.z
       : this.velocity.dot(this.forward);
-    const surge = input.boost && !input.brake;
-    const thrusting = (input.forward || surge) && !input.brake;
+    // In a Shift dive neither W nor Shift strokes: the tail is held still.
+    const diving = this.diveState;
+    const surge = input.boost && !input.brake && !diving;
+    const thrusting = (input.forward || surge) && !input.brake && !diving;
 
     // --- Propulsion ------------------------------------------------------
     // Thrust stays an acceleration (the same hand feel as before), while all
@@ -1821,7 +1826,7 @@ export class Dolphin {
       // Speed a wave gives you beyond that is yours to keep.
       const overrun = 1 - smoothstep(1, 1 + movement.thrustTaper, forwardSpeed / targetSpeed);
       thrustAccel = accel * (0.38 + headroom * 0.62) * overrun;
-    } else if (!input.brake && forwardSpeed < movement.idleGlide) {
+    } else if (!input.brake && !diving && forwardSpeed < movement.idleGlide) {
       // A slow, always-present tail scull keeps the creature alive at rest.
       // Capped: swept backwards through fast water (or just after a
       // teleport), the scull must not turn into a sprint.
@@ -1840,8 +1845,12 @@ export class Dolphin {
     }
     if (this.tailStill > 0 && thrustAccel > 0) thrustAccel *= 1 - this.tailStill;
     // Tucked in a Shift dive the tail is still: the body glides on what it
-    // carried in.
-    if (this.streamline > 0 && thrustAccel > 0) thrustAccel *= 1 - this.streamline;
+    // carried in, and the stroke comes back over a few frames once Shift is
+    // let go. (`_diveHold` follows the dive itself, not the tuck, which
+    // opens up near the seabed: the tail stays still there too.)
+    this._diveHold = damp(this._diveHold || 0, diving ? 1 : 0, diving ? 14 : 8, dt);
+    if (this._diveHold < 1e-3) this._diveHold = 0;
+    if (this._diveHold > 0 && thrustAccel > 0) thrustAccel *= 1 - this._diveHold;
 
     let reverseAccel = 0;
     if (input.brake) {
@@ -2181,8 +2190,6 @@ export class Dolphin {
     const clearOfWater = this.position.y > centerHeight + 0.3;
     if (!this.leaping && clearOfWater) {
       this.leaping = true;
-      // Shift held through the breach: the dive arms only past the apex.
-      this._boostThroughExit = !!input.boost;
       const exitSpeed = this.velocity.length();
       const breachPower = clamp(Math.abs(this.velocity.y) * 0.38 + exitSpeed * 0.08, 0.2, 2.1);
       this.surfaceImpulseAll(ocean, centerWater, breachPower);
@@ -2473,7 +2480,7 @@ export class Dolphin {
         tailCfg.tailHeaveMax * strokeScale
       ) *
       this._tailWater *
-      (1 - 0.92 * (this.tailStill || 0));
+      (1 - 0.92 * Math.max(this.tailStill || 0, this._diveHold || 0));
 
     const beatRate =
       tailCfg.tailBeatBase +
@@ -2484,7 +2491,7 @@ export class Dolphin {
     // The tempo changes over a beat, too: speed jumps at a landing or a
     // waterline crossing must not make the tail skip.
     this._beatEased = damp(this._beatEased ?? beatRate, beatRate, tailCfg.tailEase, dt);
-    this.tailPhase += dt * Math.min(this._beatEased, tailCfg.tailBeatMax) * (1 - 0.75 * (this.tailStill || 0));
+    this.tailPhase += dt * Math.min(this._beatEased, tailCfg.tailBeatMax) * (1 - 0.75 * Math.max(this.tailStill || 0, this._diveHold || 0));
     this.tailUniforms.causticTime.value = ocean.time;
     this.wetness = Math.max(0, this.wetness - dt * 0.13);
     this.impact *= Math.exp(-TUNING.movement.cameraShakeDecay * dt);
@@ -2564,7 +2571,7 @@ export class Dolphin {
     this.diveState = false;
     this.streamline = 0;
     this.floorPull = 0;
-    this._boostThroughExit = false;
+    this._diveHold = 0;
     this._lockSettle = 0;
     this.rideCmd = undefined;
     this.tailStill = 0;
