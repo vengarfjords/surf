@@ -685,7 +685,7 @@ const SAND_FRAG = /* glsl */ `
     // Ridge crests are a little paler (coarser, cleaner grains); the
     // troughs collect the fine dark stuff.
     sand *= 1.0 + ripAmt * (ripCrest - 0.3125) * 0.6 * (1.0 - smoothstep(0.08, 0.3, footprint * uRipK.x));
-    sand *= 1.0 + sheet * 0.22;
+    sand *= 1.0 + sheet * 0.08;
     sand *= 0.8 + patches * 0.34;
 
     // A scatter of shell hash, dark organic flecks and small pebbles. Close to
@@ -747,6 +747,13 @@ const SAND_FRAG = /* glsl */ `
       sand = mix(sand, carpet, clamp(cover, 0.0, 1.0));
     }
 
+    // Sand hanging in the water over the bed veils it: a little paler and
+    // flatter, lit like the bed under it (applied before the depth loss, so
+    // a deep cloud is as dim as the deep sand).
+    float veil = clamp(cloud * 0.35, 0.0, 0.25);
+    float sandLum = dot(sand, vec3(0.333));
+    sand = mix(sand, vec3(sandLum) * vec3(1.12, 1.06, 0.9) * 1.12, veil);
+
     // The water quickly eats warm wavelengths with depth.
     float absorb = smoothstep(2.0, 20.0, -height);
     sand = mix(sand, sand * vec3(0.45, 0.75, 0.7), absorb * 0.42);
@@ -759,9 +766,6 @@ const SAND_FRAG = /* glsl */ `
     // and a little cooler.
     sand *= 1.0 - clamp(-vDelta * 0.3, 0.0, 0.34);
     sand += vec3(0.035, 0.028, 0.012) * clamp(vDelta * 1.3, 0.0, 0.26);
-
-    // Sand hanging in the water over the bed veils it, paler and flatter.
-    sand = mix(sand, vec3(0.42, 0.4, 0.31) * (0.35 + 0.4 * ambient + 0.25 * ndl), clamp(cloud * 0.55, 0.0, 0.5));
 
     vec3 halfV = normalize(uSunDir + vViewDir);
     float spec = pow(max(dot(detailN, halfV), 0.0), 32.0) * 0.05;

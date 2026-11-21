@@ -876,9 +876,20 @@ export class ParticleFX {
    * (its base velocity is the bed flow) and settles back out.
    */
   sandCloud(x, z, strength, surfaceY, vx = 0, vz = 0) {
-    const count = 1 + Math.floor(strength * 2.5);
+    const count = 1 + Math.floor(strength * 1.5);
+    // The particles are unlit, so give them the light the bed gets at this
+    // depth (as the sand shader does): dim, and bluer the deeper it is.
+    const depth = Math.max(0, -surfaceY);
+    const deep = 1 - Math.exp(-Math.max(depth - 10, 0) * 0.045);
+    const absorb = smoothstep(2, 20, depth) * 0.42;
+    const lr = 0.5 * (1 - deep * 0.7) * (1 - absorb * 0.55);
+    const lg = 0.5 * (1 - deep * 0.48) * (1 - absorb * 0.25);
+    const lb = 0.5 * (1 - deep * 0.2) * (1 - absorb * 0.3);
     for (let i = 0; i < count; i++) {
       const c = colorTint(0xb5a780, 0.08);
+      c.r *= lr;
+      c.g *= lg;
+      c.b *= lb;
       this.sediment.spawn({
         x: x + (Math.random() - 0.5) * 2.2,
         y: surfaceY + 0.05 + Math.random() * (0.25 + strength * 0.9),
@@ -889,11 +900,11 @@ export class ParticleFX {
         bx: vx * 0.8,
         bz: vz * 0.8,
         life: 2.5 + Math.random() * 3.5,
-        size: 0.35 + Math.random() * (0.6 + strength * 0.9),
+        size: 0.3 + Math.random() * (0.45 + strength * 0.6),
         drag: 0.9,
         gravity: -0.012,
         wobble: 0.03,
-        alpha: 0.08 + Math.random() * 0.16 * (0.4 + strength),
+        alpha: 0.05 + Math.random() * 0.1 * (0.4 + strength),
         r: c.r,
         g: c.g,
         b: c.b,

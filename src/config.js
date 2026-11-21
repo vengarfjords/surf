@@ -634,7 +634,7 @@ export const TUNING = {
     // stand at about 0.15).
     heightRatio: 0.16,
     // A shorter cross set, at this angle (rad) and length ratio.
-    secondSet: 0.3,
+    secondSet: 0,
     secondRatio: 1.65,
     secondAngle: 0.55,
     // Crest creep with the waves (m/s at full bed speed).
@@ -659,7 +659,7 @@ export const TUNING = {
     stirRate: 0.35,
     breakerStir: 1.4,
     settleTime: 4.5,
-    cloudParticles: 26,
+    cloudParticles: 12,
     cloudReach: 22,
   },
 
