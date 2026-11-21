@@ -130,6 +130,9 @@ export class SandSimulation {
     const dirZ = opts.dirZ ?? 0;
     const stretch = opts.stretch ?? 1.3;
     const rim = opts.rim ?? 1;
+    // How much this stamp wipes the swell ripples (direct contact: fully;
+    // a low glide's pressure wash: barely).
+    const eraseScale = opts.erase ?? 1;
     const speed = opts.speed ?? 1;
     const crater = opts.crater ?? 0;
     const n = this.n;
@@ -207,7 +210,9 @@ export class SandSimulation {
         const change = Math.abs(this.heights[idx] - before);
         displaced += change;
         // Disturbed sand loses its ripples.
-        if (change > 0) this.erase[idx] = Math.min(1, this.erase[idx] + change / TUNING.sandSwell.eraseDepth);
+        if (change > 0 && eraseScale > 0) {
+          this.erase[idx] = Math.min(1, this.erase[idx] + (change * eraseScale) / TUNING.sandSwell.eraseDepth);
+        }
         if (add < 0) deepest = Math.max(deepest, -add);
       }
     }
@@ -277,6 +282,7 @@ export class SandSimulation {
       stretch: 1.85,
       rim: 0.48,
       speed: speed * 0.25,
+      erase: 0.08,
     });
     // A broader, shallower pressure wash travels with the body ahead of the
     // fluke trough. It is deliberately low amplitude and mass-conserving.
@@ -288,6 +294,7 @@ export class SandSimulation {
         rim: 0.12,
         speed: speed * 0.12,
         notify: false,
+        erase: 0,
       });
     }
     if (this.onRipple && closeness > 0.04) {
@@ -372,6 +379,9 @@ export class SandSimulation {
     // filter. This runs every rendered frame and removes the simulation-step
     // stutter without adding a full previous/next texture crossfade.
     const alpha = 1 - Math.exp(-TUNING.sand.visualResponse * dt);
+    // Ripples flatten over about a third of a second where sand is pushed,
+    // instead of vanishing in a frame.
+    const alphaErase = 1 - Math.exp(-3 * dt);
     let changed = false;
     const h = this.heights;
     const v = this.visualHeights;
@@ -387,7 +397,7 @@ export class SandSimulation {
       }
       const de = e[i] - ve[i];
       if (de > 1e-5 || de < -1e-5) {
-        ve[i] += de * alpha;
+        ve[i] += de * alphaErase;
         tex[i * 2 + 1] = ve[i];
         changed = true;
       }
@@ -438,18 +448,16 @@ export class SandSimulation {
           Math.abs(s[i + 1]) < 1e-4 &&
           Math.abs(s[i - n]) < 1e-4 &&
           Math.abs(s[i + n]) < 1e-4;
-        let foam = 0;
         let mobility = 0;
         const fi = col[x];
-        if (rowOk && fi >= 0) {
-          const f = fj * fn + fi;
-          foam = sw.foam[f];
-          mobility = sw.mobility[f];
-        }
-        if (er > 1e-4 || foam > 0.02) {
-          // Ripples need moving water to grow back; breakers flatten them.
-          const next = er * (1 - regrow * mobility) + foam * cfg.breakerWipe * dt;
-          e[i] = next < 1e-4 ? 0 : Math.min(1, next);
+        if (rowOk && fi >= 0) mobility = sw.mobility[fj * fn + fi];
+        if (er > 1e-4) {
+          // Ripples need moving water to grow back. (Breakers are not wiped
+          // in here: the field only covers the dense mesh, so a wipe ended
+          // in a hard edge that jumped when the mesh recentered. Breaking
+          // flattens ripples through the depth table instead.)
+          const next = er * (1 - regrow * mobility);
+          e[i] = next < 1e-4 ? 0 : next;
           erased = true;
         }
         if (quiet || mobility <= 0.02) continue;
@@ -569,8 +577,9 @@ const SAND_VERT = /* glsl */ `
     // mesh's edge, where the coarse shelf mesh takes over, and when the
     // ridges are too short for a 31 cm grid to draw.
     if (uUseDelta > 0.5 && uRipShape.w > 0.5) {
-      vec2 local = abs(world.xz - modelMatrix[3].xz);
-      float edge = 1.0 - smoothstep(0.5 * ${TUNING.sand.nearMeshExtent.toFixed(1)} - 10.0, 0.5 * ${TUNING.sand.nearMeshExtent.toFixed(1)} - 4.0, max(local.x, local.y));
+      // Faded by distance from the camera (which the dense mesh follows),
+      // well inside the mesh, so nothing moves when the mesh recenters.
+      float edge = 1.0 - smoothstep(14.0, 24.0, distance(world.xz, uCameraPos.xz));
       float amp = uRipShape.x * ripEq(-vBaseY) * ripPatch(world.xz) * (1.0 - er) * edge *
         smoothstep(0.85, 1.25, uRipShape.z);
       float ph1 = uRipK.x * (dot(world.xz, uRipDir.xy) - uRipK.z) + ripWarp(world.xz);
@@ -646,11 +655,18 @@ const SAND_FRAG = /* glsl */ `
     // disturbed the sand and growing back after. Sharp crests catch the
     // light, the broad troughs fall into shade.
     float ripEqHere = ripEq(-vBaseY) * uRipShape.w;
-    float ripAmp = uRipShape.x * ripEqHere * ripPatch(vWorld.xz) * (1.0 - clamp(vErase, 0.0, 1.0));
+    // Crests rise and sink along their length (shader only: a few cm).
+    float crestBreak = 0.45 + 1.1 * fbm2(vWorld.xz * 0.42 + 13.0);
+    float ripAmp = uRipShape.x * ripEqHere * ripPatch(vWorld.xz) * crestBreak * (1.0 - clamp(vErase, 0.0, 1.0));
     vec3 rip = ripples(vWorld.xz, ripAmp, footprint);
-    // Normal of the rippled surface. The gradient is exact; 0.9 keeps the
-    // far side of a crest from turning fully away from the light.
-    vec3 detailN = normalize(n - vec3(rip.y, 0.0, rip.z) * 0.9 + vec3(micro) * 0.055);
+    // Loose sand is never smooth: lumps a hand across and grain-scale
+    // roughness, each faded by footprint, break up the ridge shading so it
+    // does not read as moulded plastic.
+    float lumpFade = 1.0 - smoothstep(0.05, 0.16, footprint);
+    vec2 lumps = vec2(fbm2(vWorld.xz * 3.3 + 2.0), fbm2(vWorld.xz * 3.3 + 9.0)) - 0.5;
+    vec2 grit = vec2(fbm2(vWorld.xz * 14.0 + 4.0), fbm2(vWorld.xz * 14.0 + 1.0)) - 0.5;
+    vec2 rough = lumps * 0.12 * lumpFade + grit * 0.1 * (1.0 - smoothstep(0.015, 0.05, footprint));
+    vec3 detailN = normalize(n - vec3(rip.y, 0.0, rip.z) * 0.95 + vec3(rough.x, 0.0, rough.y) + vec3(micro) * 0.055);
     float ripCrest = ripAmp > 1e-4 ? clamp(rip.x / max(ripAmp, 1e-4) + 0.3125, 0.0, 1.0) : 0.3125;
     float ripAmt = clamp(ripAmp / max(uRipShape.x, 1e-3), 0.0, 1.0);
 
@@ -684,7 +700,7 @@ const SAND_FRAG = /* glsl */ `
     sand *= 0.795 + micro * 0.34;
     // Ridge crests are a little paler (coarser, cleaner grains); the
     // troughs collect the fine dark stuff.
-    sand *= 1.0 + ripAmt * (ripCrest - 0.3125) * 0.6 * (1.0 - smoothstep(0.08, 0.3, footprint * uRipK.x));
+    sand *= 1.0 + ripAmt * (ripCrest - 0.3125) * (0.35 + 0.5 * fbm2(vWorld.xz * 1.7)) * (1.0 - smoothstep(0.08, 0.3, footprint * uRipK.x));
     sand *= 1.0 + sheet * 0.08;
     sand *= 0.8 + patches * 0.34;
 
@@ -768,7 +784,8 @@ const SAND_FRAG = /* glsl */ `
     sand += vec3(0.035, 0.028, 0.012) * clamp(vDelta * 1.3, 0.0, 0.26);
 
     vec3 halfV = normalize(uSunDir + vViewDir);
-    float spec = pow(max(dot(detailN, halfV), 0.0), 32.0) * 0.05;
+    // Wet sand is matte: a faint, broad sheen only.
+    float spec = pow(max(dot(detailN, halfV), 0.0), 12.0) * 0.012;
     sand += uSunColor * spec;
 
     // Water column absorption and depth fog.

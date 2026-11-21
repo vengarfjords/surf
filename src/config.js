@@ -643,8 +643,6 @@ export const TUNING = {
     // regrowTime seconds of full swell (slower where the bed speed is low).
     eraseDepth: 0.05,
     regrowTime: 75,
-    // Breakers wipe ripples at this rate (1/s at full foam).
-    breakerWipe: 0.35,
     // Surge rounds off trenches and rims: diffusion (m^2/s) at full bed speed.
     smoothRate: 0.0012,
     // Bed flow window: cells, size (m), rows refreshed per frame = cells/passes.

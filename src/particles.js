@@ -882,9 +882,9 @@ export class ParticleFX {
     const depth = Math.max(0, -surfaceY);
     const deep = 1 - Math.exp(-Math.max(depth - 10, 0) * 0.045);
     const absorb = smoothstep(2, 20, depth) * 0.42;
-    const lr = 0.5 * (1 - deep * 0.7) * (1 - absorb * 0.55);
-    const lg = 0.5 * (1 - deep * 0.48) * (1 - absorb * 0.25);
-    const lb = 0.5 * (1 - deep * 0.2) * (1 - absorb * 0.3);
+    const lr = 0.36 * (1 - deep * 0.7) * (1 - absorb * 0.55);
+    const lg = 0.36 * (1 - deep * 0.48) * (1 - absorb * 0.25);
+    const lb = 0.36 * (1 - deep * 0.2) * (1 - absorb * 0.3);
     for (let i = 0; i < count; i++) {
       const c = colorTint(0xb5a780, 0.08);
       c.r *= lr;
