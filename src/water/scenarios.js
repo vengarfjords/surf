@@ -704,9 +704,10 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
           }
         } else if (program === "dive") {
           // Breach and dive back in with Shift, over and over: Shift held
-          // through the breach (a boosted breach; the dive arms past the
-          // top) or let go on the way up and pressed again near the top,
-          // then held in the water for a while and let go.
+          // through the breach (a boosted breach; no dive, since only a
+          // fresh press in the air dives) or let go on the way up and
+          // pressed again near the top, then held in the water for a while
+          // and let go.
           control.forward = true;
           control.rise = false;
           const wetNow = dolphin.hydro ? dolphin.hydro.wetFraction : 1;
@@ -1381,7 +1382,8 @@ export function createScenarios({ ocean, dolphin, input, water, effects, seabed,
      *   opts.breach: "boost" (Shift held through the breach) or "plain"
      *                (Shift let go 2.5 m below the surface).
      *   opts.air: "none" (no Shift in the air), "hold" (Shift kept from the
-     *             breach) or "press" (Shift pressed at the top of the arc).
+     *             breach: no dive, only a fresh press dives) or "press"
+     *             (Shift let go, then pressed at the top of the arc).
      *   opts.release: s after re-entry to let go of Shift (default: never).
      * Reports the exit speed, the top of the arc above the surface, air
      * time and length, entry speed and angle, speed 0.5 s and 1 s after

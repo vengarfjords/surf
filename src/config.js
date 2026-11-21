@@ -148,8 +148,11 @@ export const TUNING = {
     // this fraction. Shift held through a breach arms the dive only after
     // the top of the arc. In the water the dive's low drag is
     // `hydro.diveDragCut`; it lasts until Shift is let go.
-    airDiveAccel: 8,
+    airDiveAccel: 14,
     airDiveDrag: 0.3,
+    // Share of the usual steering (mouse and keys) left while a Shift dive
+    // lasts: enough to nudge the line, not to turn it around.
+    diveSteer: 0.35,
     // A dive heading for the seabed pulls out on its own: within ~1.6 s of
     // reaching `diveFloorClear` metres above the sand, the body opens up
     // and the nose comes up toward `diveFloorPitch` at up to
@@ -421,6 +424,20 @@ export const TUNING = {
     // Blend rates (1/s): in is unhurried, out is quicker so a dive reads.
     surfBlendIn: 1.4,
     surfBlendOut: 2.2,
+    // Shift dive camera: the lens swings round to sit straight behind the
+    // dolphin, along the way its body faces (no shoulder or height offset),
+    // and dolly-zooms: the field of view narrows by `diveFovDrop` degrees
+    // while the lens backs off just enough to keep the dolphin the same
+    // size on screen, so the water it is heading for looms closer. Negative
+    // reverses it (lens closer, wider view). Blend rates are 1/s.
+    diveCam: true,
+    diveFovDrop: 9,
+    diveBlendIn: 3.2,
+    diveBlendOut: 2.0,
+    // How fast the shot follows the body's facing while it dives (1/s).
+    diveFollow: 7,
+    // How tightly the lens follows the body's position in a dive (1/s).
+    divePositionLag: 18,
   },
 
   /**
@@ -736,6 +753,7 @@ export const TUNE_CONTROLS = [
   { path: "movement.breachBoost", label: "boosted breach (Shift)", min: 0, max: 15, step: 0.1 },
   { path: "movement.airDiveAccel", label: "dive pull in air (Shift)", min: 0, max: 20, step: 0.1 },
   { path: "movement.airDiveDrag", label: "dive air drag", min: 0, max: 1, step: 0.01 },
+  { path: "movement.diveSteer", label: "dive steering (Shift)", min: 0, max: 1, step: 0.01 },
   { path: "dolphin.tailBeatSpeed", label: "tail beat", min: 0.15, max: 2.6, step: 0.01 },
   { path: "dolphin.tailBeatAccel", label: "accel beat", min: 0, max: 1.8, step: 0.01 },
   { path: "dolphin.tailWaveAmplitude", label: "tail stroke", min: 0.4, max: 5, step: 0.05 },
@@ -854,4 +872,6 @@ export const TUNE_CONTROLS = [
   { path: "camera.surfCam", label: "surf camera", type: "toggle" },
   { path: "camera.surfDistance", label: "surf cam distance", min: 3, max: 16, step: 0.1 },
   { path: "camera.surfHeight", label: "surf cam height", min: 0.5, max: 6, step: 0.1 },
+  { path: "camera.diveCam", label: "dive camera", type: "toggle" },
+  { path: "camera.diveFovDrop", label: "dive dolly zoom (deg)", min: -15, max: 20, step: 0.5 },
 ];
