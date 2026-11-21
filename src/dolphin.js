@@ -137,6 +137,17 @@ const FLIPPER_BRACE_FALL = 0.3;
 // both, since giving to it would roll the body: this share of the
 // difference in lift between the sides reaches the blades.
 const FLIPPER_LIFT_PAIR = 0.5;
+// The body turns by meeting the water at an angle, so in a held bank the
+// flow reaches the two flippers from the belly side at different angles:
+// the inside one about 5 degrees more steeply at cruise. Its extra lift
+// would roll the body back out of the bank, so the dolphin twists each
+// blade against its share of that difference and the two carry the same
+// load. It goes by the flow it has been meeting for the last
+// FLIPPER_EVEN_TIME, so it holds a bank without chasing every eddy. The
+// water twists the more loaded blade a little further itself (its give), so
+// the muscles take FLIPPER_EVEN of the difference.
+const FLIPPER_EVEN_TIME = 0.3;
+const FLIPPER_EVEN = 0.75;
 // The most the load turns a blade from its pose (sweep, lift, feather, rad),
 // and the share of that give taken at the base joint; the rest bends the
 // blade along its length. A blade bends along its length but is stiff in
@@ -545,6 +556,12 @@ export class Dolphin {
       // How hard the muscles brace each blade, as the flow torque scale
       // they have caught up with (FLIPPER_BRACE_RISE).
       brace: [0, 0],
+      // The flow's angle to each blade untwisted (its lift and sweep, no
+      // feather), now and as the muscles have been meeting it
+      // (FLIPPER_EVEN_TIME), and how fast that flow runs.
+      flowAngle: [0, 0],
+      flowHeld: [0, 0],
+      flowSpeed: [0, 0],
       balPitch: 0,
       balRoll: 0,
       spring: [0, 0],
@@ -1049,6 +1066,18 @@ export class Dolphin {
     this._flipperLoad(1, -1, fl.act[1], giveScale, dt);
     const pairLift = 0.5 * (fl.load[0].y + fl.load[1].y);
     for (let k = 0; k < 2; k++) fl.load[k].y = pairLift + FLIPPER_LIFT_PAIR * (fl.load[k].y - pairLift);
+    // Holding a bank (FLIPPER_EVEN): each blade twists against its share of
+    // the difference in the flow's angle to the two, while both are in clean
+    // water fast enough to load them, and not in a Shift dive, where they
+    // are folded flat.
+    for (let k = 0; k < 2; k++) {
+      fl.flowHeld[k] = fl.body.fresh
+        ? fl.flowAngle[k]
+        : damp(fl.flowHeld[k], fl.flowAngle[k], 1 / FLIPPER_EVEN_TIME, dt);
+    }
+    const flowMean = 0.5 * (fl.flowHeld[0] + fl.flowHeld[1]);
+    const clean = (k) => fl.wet[k] * (1 - fl.aer[k]) * smoothRamp(1.5, 4, fl.flowSpeed[k]);
+    const even = FLIPPER_EVEN * Math.min(clean(0), clean(1)) * water * (1 - streamline);
     const w = cfg.flipperSpring;
     const zeta = cfg.flipperDamping;
     const balance = cfg.flipperBalance ?? 0;
@@ -1097,6 +1126,9 @@ export class Dolphin {
         // Against the water's pitching (both, leading edge up when it
         // drops the nose) and rolling (the rising side leading edge down).
         softLimit(balance * (fl.balPitch - side * fl.balRoll), 0.25) +
+        // Holding a bank: the blade the flow meets more steeply (the inside
+        // one) twists further into it.
+        softLimit(flowMean - fl.flowHeld[k], 0.2) * even +
         slow * cfg.flipperScull * scull +
         stroke * cfg.flipperStroke * beat +
         0.05 * idle * drift;
@@ -1288,6 +1320,13 @@ export class Dolphin {
     const axial = f.U.dot(this.forward);
     const un0 = axial * this.forward.dot(f.N);
     const uc0 = axial * this.forward.dot(f.C);
+    // The flow's angle to the blade untwisted, before turbulence: what the
+    // two blades meet differently in a held bank (FLIPPER_EVEN). The sweep
+    // turns the blade about its own normal, so the lifted normal (eS) is
+    // already the untwisted one.
+    f.tmp.crossVectors(f.S, f.eS).multiplyScalar(side);
+    fl.flowAngle[k] = Math.atan2(f.U.dot(f.eS), Math.abs(f.U.dot(f.tmp)) + 1e-6);
+    fl.flowSpeed[k] = f.U.length();
     // Turbulence: a few per cent of the flow always, much more in broken
     // and aerated water.
     let speed = f.U.length();
