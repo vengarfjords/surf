@@ -71,6 +71,11 @@ async function boot() {
     const surface = seabed.getSurfaceHeight(event.x, event.z);
     effects.sandPlume(event.x, event.z, event.amount, event.radius, surface);
   };
+  seabed.ocean = ocean;
+  seabed.swell.onCloud = (event) => {
+    const surface = seabed.getSurfaceHeight(event.x, event.z);
+    effects.sandCloud(event.x, event.z, event.strength, surface, event.vx, event.vz);
+  };
   seabed.sim.onRipple = (event) => {
     const surface = seabed.getSurfaceHeight(event.x, event.z);
     effects.rippleDust(event.x, event.z, event.strength, surface);

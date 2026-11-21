@@ -871,6 +871,36 @@ export class ParticleFX {
     }
   }
 
+  /**
+   * Sand the swell lifts off the bed: a soft puff that rides the surge
+   * (its base velocity is the bed flow) and settles back out.
+   */
+  sandCloud(x, z, strength, surfaceY, vx = 0, vz = 0) {
+    const count = 1 + Math.floor(strength * 2.5);
+    for (let i = 0; i < count; i++) {
+      const c = colorTint(0xb5a780, 0.08);
+      this.sediment.spawn({
+        x: x + (Math.random() - 0.5) * 2.2,
+        y: surfaceY + 0.05 + Math.random() * (0.25 + strength * 0.9),
+        z: z + (Math.random() - 0.5) * 2.2,
+        vx: vx * 0.6 + (Math.random() - 0.5) * 0.3,
+        vy: 0.04 + Math.random() * 0.22 * (0.5 + strength),
+        vz: vz * 0.6 + (Math.random() - 0.5) * 0.3,
+        bx: vx * 0.8,
+        bz: vz * 0.8,
+        life: 2.5 + Math.random() * 3.5,
+        size: 0.35 + Math.random() * (0.6 + strength * 0.9),
+        drag: 0.9,
+        gravity: -0.012,
+        wobble: 0.03,
+        alpha: 0.08 + Math.random() * 0.16 * (0.4 + strength),
+        r: c.r,
+        g: c.g,
+        b: c.b,
+      });
+    }
+  }
+
   rippleDust(x, z, strength, surfaceY) {
     if (Math.random() > 0.5) return;
     const count = 1 + Math.floor(strength * 3.5);
