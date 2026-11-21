@@ -208,9 +208,11 @@ export const TUNING = {
     airForwardQuadraticDrag: 0.0004,
     airLateralDrag: 0.08,
     airVerticalDrag: 0.02,
-    airThrustScale: 0.1,
+    // In the air the tail has nothing to push against: no thrust from W or
+    // Shift, and the stroke animation dies away (`airTailScale` of it left).
+    airThrustScale: 0,
     airVerticalScale: 0.15,
-    airTailScale: 0.35,
+    airTailScale: 0,
 
     // A quiet, always-present current keeps world and camera alive.
     currentX: 0.2,
