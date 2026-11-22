@@ -640,7 +640,13 @@ const SAND_FRAG = /* glsl */ `
     vec2 sunFlat = uSunDir.xz / 1.333;
     vec3 lightDir = vec3(sunFlat.x, sqrt(max(1.0 - dot(sunFlat, sunFlat), 0.0)), sunFlat.y);
     vec3 ripN = normalize(vec3(-rip.y, 1.0, -rip.z));
-    float ripLit = clamp(1.0 + (dot(ripN, lightDir) / max(lightDir.y, 0.3) - 1.0) * 2.6, 0.15, 2.0);
+    // Light under water is soft: much of it is scattered, so no flank
+    // falls into deep shade. The shading also eases off as the ripples get
+    // small on screen (seen from high above or far off), where a pixel
+    // averages a lit flank with a shaded one.
+    float ripPix = max(max(abs(dot(wdx, uRipDir.xy)), abs(dot(wdy, uRipDir.xy))), 0.4 * footprint) * uRipK.x;
+    float ripShadeK = mix(1.0, 0.45, smoothstep(0.2, 1.1, ripPix));
+    float ripLit = clamp(1.0 + (dot(ripN, lightDir) / max(lightDir.y, 0.3) - 1.0) * 1.7 * ripShadeK, 0.55, 1.5);
 
     // Stirred sand: the cloud the surge lifts off the bed.
     vec4 flow = flowAt(vWorld.xz);
@@ -665,8 +671,8 @@ const SAND_FRAG = /* glsl */ `
     // overhead, so a flank that tilts away from it is dimmer whichever way
     // it faces: steep flanks either side of each crest read as dark lines
     // even when the sun runs along the crests.
-    float ripSky = pow(ripN.y, 6.0);
-    sand *= ripLit * ripSky * (1.0 + ripTone * 0.35);
+    float ripSky = 1.0 + (pow(ripN.y, 3.0) - 1.0) * ripShadeK;
+    sand *= ripLit * ripSky * (1.0 + ripTone * 0.3 * ripShadeK);
     // Sand is a mix of grains of different colours: a speckle at the scale
     // of grain clusters, fading to its mean before it is smaller than a
     // pixel.

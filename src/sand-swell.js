@@ -129,7 +129,7 @@ export const GLSL_RIPPLES = /* glsl */ `
     amp *= 1.0 - smoothstep(1.2, 2.1, pixel * uRipK.x);
     if (amp < 1e-5) return vec3(0.0);
     amp *= ripAmpMod(p);
-    float soft = clamp(pixel * uRipK.x * 0.318310 * 1.6, 0.03, 0.7);
+    float soft = clamp(pixel * uRipK.x * 0.318310 * 1.6, 0.1, 0.7);
     float e = 0.25 / uRipK.x;
     float c0 = 1.0, cx = 1.0, cz = 1.0;
     float h0 = amp * ripProfile(ripPhase(p, c0), soft) * c0;
