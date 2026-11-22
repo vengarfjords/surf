@@ -45,6 +45,33 @@ export const TUNING = {
     tailEase: 9,
     tailAccelClamp: 8.0,
     flukePitch: 0.22,
+    // Pectoral flippers (dolphin.js _updateFlippers), in radians: how far
+    // they fold back (`flipperTuckSweep`) and lower (`flipperTuckLift`) at
+    // full speed or in a Shift dive, their share in turns, banking and
+    // pitching, how far they turn against the flow on the brake, their
+    // spread in the air, the size of the hover strokes, and how far they
+    // tilt with each tail stroke. The spring (rad/s) and damping ratio set
+    // how they ease in and follow through. `flipperMotion` scales it all
+    // (0 = still). `flipperBalance` (rad of feather per rad/s) is how hard
+    // they work against the water pitching and rolling the body, and
+    // `flipperLoad` scales how far the water's load bends and twists them
+    // away from their pose (0 = rigid; dolphin.js _flipperLoad).
+    flipperMotion: 1,
+    flipperBalance: 0.5,
+    flipperLoad: 1,
+    flipperTuckSweep: 0.38,
+    flipperTuckLift: -0.08,
+    flipperTurn: 1,
+    // Feather (rad, leading edge down) of the inside flipper in a full bank;
+    // the outside one opens by about a third of it the other way.
+    flipperBankTwist: 0.3,
+    flipperPitch: 0.45,
+    flipperBrake: 0.5,
+    flipperAirSpread: 0.2,
+    flipperScull: 0.16,
+    flipperStroke: 0.12,
+    flipperSpring: 9,
+    flipperDamping: 0.72,
     bodyFollow: 1.35,
     // Per-joint anatomical limits, in radians. Wide enough for a free snout
     // lead, tight enough to keep the neck and torso from folding.
@@ -124,8 +151,11 @@ export const TUNING = {
     // this fraction. Shift held through a breach arms the dive only after
     // the top of the arc. In the water the dive's low drag is
     // `hydro.diveDragCut`; it lasts until Shift is let go.
-    airDiveAccel: 8,
+    airDiveAccel: 14,
     airDiveDrag: 0.3,
+    // Share of the usual steering (mouse and keys) left while a Shift dive
+    // lasts: enough to nudge the line, not to turn it around.
+    diveSteer: 0.35,
     // A dive heading for the seabed pulls out on its own: within ~1.6 s of
     // reaching `diveFloorClear` metres above the sand, the body opens up
     // and the nose comes up toward `diveFloorPitch` at up to
@@ -181,9 +211,11 @@ export const TUNING = {
     airForwardQuadraticDrag: 0.0004,
     airLateralDrag: 0.08,
     airVerticalDrag: 0.02,
-    airThrustScale: 0.1,
+    // In the air the tail has nothing to push against: no thrust from W or
+    // Shift, and the stroke animation dies away (`airTailScale` of it left).
+    airThrustScale: 0,
     airVerticalScale: 0.15,
-    airTailScale: 0.35,
+    airTailScale: 0,
 
     // A quiet, always-present current keeps world and camera alive.
     currentX: 0.2,
@@ -311,15 +343,17 @@ export const TUNING = {
     // even with W or Shift held: gravity on the face does the work. Either
     // way only on the surface: with Space held, or within
     // `glideSurfaceDepth` m of it. The tail eases in and out of it at
-    // `glideRate` /s. With Space held on open water, W porpoises, leaping at
+    // `glideRate` /s. Auto-porpoising (`porpoise`, off by default): with
+    // Space held on open water, W leaps on its own every second or so, at
     // `porpoiseLift` x its speed through the water (m/s up) once above
-    // `porpoiseSpeed` m/s.
+    // `porpoiseSpeed` m/s. Off, Space + W swims along the surface and only
+    // letting go of Space leaps.
     surfGlideSlope: 0.2,
     surfGlideFlow: 8,
     glideDownSlope: 0.12,
     glideSurfaceDepth: 2,
     glideRate: 5,
-    porpoise: 1,
+    porpoise: false,
     porpoiseSpeed: 4.5,
     porpoiseLift: 0.38,
     porpoiseLiftMax: 5.5,
@@ -395,6 +429,20 @@ export const TUNING = {
     // Blend rates (1/s): in is unhurried, out is quicker so a dive reads.
     surfBlendIn: 1.4,
     surfBlendOut: 2.2,
+    // Shift dive camera: the lens swings round to sit straight behind the
+    // dolphin, along the way its body faces (no shoulder or height offset),
+    // and dolly-zooms: the field of view narrows by `diveFovDrop` degrees
+    // while the lens backs off just enough to keep the dolphin the same
+    // size on screen, so the water it is heading for looms closer. Negative
+    // reverses it (lens closer, wider view). Blend rates are 1/s.
+    diveCam: true,
+    diveFovDrop: 9,
+    diveBlendIn: 3.2,
+    diveBlendOut: 2.0,
+    // How fast the shot follows the body's facing while it dives (1/s).
+    diveFollow: 7,
+    // How tightly the lens follows the body's position in a dive (1/s).
+    divePositionLag: 18,
   },
 
   /**
@@ -710,14 +758,18 @@ export const TUNE_CONTROLS = [
   { path: "movement.breachBoost", label: "boosted breach (Shift)", min: 0, max: 15, step: 0.1 },
   { path: "movement.airDiveAccel", label: "dive pull in air (Shift)", min: 0, max: 20, step: 0.1 },
   { path: "movement.airDiveDrag", label: "dive air drag", min: 0, max: 1, step: 0.01 },
+  { path: "movement.diveSteer", label: "dive steering (Shift)", min: 0, max: 1, step: 0.01 },
   { path: "dolphin.tailBeatSpeed", label: "tail beat", min: 0.15, max: 2.6, step: 0.01 },
   { path: "dolphin.tailBeatAccel", label: "accel beat", min: 0, max: 1.8, step: 0.01 },
   { path: "dolphin.tailWaveAmplitude", label: "tail stroke", min: 0.4, max: 5, step: 0.05 },
   { path: "dolphin.tailHeaveSpeed", label: "tail heave", min: 0, max: 0.4, step: 0.005 },
   { path: "dolphin.tailHeaveAccel", label: "accel heave", min: 0, max: 0.5, step: 0.005 },
   { path: "dolphin.tailWaveTravel", label: "wave travel", min: 0.15, max: 1.2, step: 0.01 },
+  { path: "dolphin.flipperBankTwist", label: "flipper bank twist", min: 0, max: 0.6, step: 0.01 },
   { path: "dolphin.tailWaveStart", label: "wave start", min: 0, max: 0.7, step: 0.01 },
   { path: "dolphin.flukePitch", label: "fluke pitch", min: 0, max: 0.4, step: 0.01 },
+  { path: "dolphin.flipperMotion", label: "flipper motion", min: 0, max: 2, step: 0.05 },
+  { path: "dolphin.flipperLoad", label: "flipper give", min: 0, max: 2, step: 0.05 },
   { path: "dolphin.bodyFollow", label: "segment follow", min: 0.25, max: 2.5, step: 0.01 },
   { path: "dolphin.headBendLimit", label: "neck bend limit", min: 0.1, max: 1.1, step: 0.01 },
   { path: "dolphin.bodyBendLimit", label: "spine bend limit", min: 0.05, max: 0.9, step: 0.01 },
@@ -770,6 +822,7 @@ export const TUNE_CONTROLS = [
   { path: "hydro.surfaceLeap", label: "leap on release (m/s)", min: 0, max: 16, step: 0.5 },
   { path: "hydro.surfaceLeapForward", label: "leap drive on a wave (m/s)", min: 0, max: 30, step: 0.5 },
   { path: "hydro.glideDownSlope", label: "coast down a face from slope", min: 0.03, max: 0.5, step: 0.01 },
+  { path: "hydro.porpoise", label: "auto-porpoise", type: "toggle" },
   { path: "hydro.porpoiseLift", label: "porpoise leap", min: 0, max: 0.8, step: 0.01 },
   { path: "hydro.surfaceCarveGrip", label: "surface carve grip", min: 0, max: 12, step: 0.5 },
   { path: "hydro.surfaceTurnResponse", label: "surface turn response", min: 4, max: 20, step: 0.5 },
@@ -825,4 +878,6 @@ export const TUNE_CONTROLS = [
   { path: "camera.surfCam", label: "surf camera", type: "toggle" },
   { path: "camera.surfDistance", label: "surf cam distance", min: 3, max: 16, step: 0.1 },
   { path: "camera.surfHeight", label: "surf cam height", min: 0.5, max: 6, step: 0.1 },
+  { path: "camera.diveCam", label: "dive camera", type: "toggle" },
+  { path: "camera.diveFovDrop", label: "dive dolly zoom (deg)", min: -15, max: 20, step: 0.5 },
 ];

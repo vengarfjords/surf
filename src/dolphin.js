@@ -6,6 +6,7 @@ import {
   damp,
   lerp,
   MAX_FRAME_DT,
+  noise2,
   seabedHeight,
   smoothstep,
   wrapAngle,
@@ -37,6 +38,207 @@ const SPINE_NAMES = [
 ];
 const HEAD_BIND = new THREE.Vector3(0, 0, SPINE_Z[0]);
 const SKIN_BONE_COUNT = SPINE_Z.length;
+
+// Pectoral flippers. The scan has them fused to the body, so each gets a
+// two-joint chain of its own (bind space, mirrored in x; +X is the
+// dolphin's left): a base joint at the root, hung on the neck segment the
+// root sits on, and a blade joint out along the span. A flipper turns three
+// ways, in this order: it lifts and lowers about the body's long axis,
+// sweeps back or forward in its own plane (about the plate's normal, so a
+// tucked flipper stays edge-on to the flow), and feathers (leading edge up
+// or down) about its own span.
+//
+// The root chord is long (22 cm), so any sweep or feather moves its ends a
+// long way across the skin around the root, and with one rigid joint the
+// skin there folded at sprint and brake angles. Instead the base takes the
+// lift (which turns about the root line itself and barely moves it) but
+// only part of the sweep and feather, and the blade takes the rest: the
+// flipper bends and twists along its length, as a real one does under load,
+// while its root stays one smooth piece of skin.
+const FLIPPER_PARENT = 1;
+const FLIPPER_ROOT = new THREE.Vector3(0.215, -0.395, 0.75);
+const FLIPPER_SPAN = new THREE.Vector3(0.29, -0.135, -0.19).normalize();
+const FLIPPER_NORMAL = new THREE.Vector3(0, 0, 1).cross(FLIPPER_SPAN).normalize();
+// The blade joint: this far out along the span from the root (about a third
+// of the way to the tip), and the share of each turn the base takes.
+const FLIPPER_BLADE_AT = 0.116;
+const FLIPPER_BASE_SWEEP = 0.35;
+const FLIPPER_BASE_FEATHER = 0.4;
+// The skin at the root is skinned this much to the head bone (the rest to
+// the neck bone the flipper hangs on).
+const FLIPPER_HEAD_SHARE = (FLIPPER_ROOT.z - SPINE_Z[FLIPPER_PARENT]) / (SPINE_Z[0] - SPINE_Z[FLIPPER_PARENT]);
+// The base takes the lift up to this. Only the sand pushes a flipper past
+// it, and the blade bends up the rest of the way, so the root does not kink.
+const FLIPPER_BASE_LIFT = 0.45;
+// The most the sand may lift a flipper (tip up, radians).
+const FLIPPER_SAND_LIFT = 0.7;
+// Front view: the flipper leaves the lower flank at (0.212, -0.392) and runs
+// out and down at about 25 degrees as a thin plate.
+const FLIPPER_OUT_X = 0.9037;
+const FLIPPER_OUT_Y = -0.4281;
+// The tip, for seabed contact, and the root mirrored to each side.
+const FLIPPER_TIP = new THREE.Vector3(0.51, -0.53, 0.5);
+const FLIPPER_ROOT_SIDE = [
+  FLIPPER_ROOT.clone(),
+  new THREE.Vector3(-FLIPPER_ROOT.x, FLIPPER_ROOT.y, FLIPPER_ROOT.z),
+];
+
+// How the water loads a flipper. Each one is a stiff hydrofoil on a
+// muscular shoulder: the muscles hold the pose the dolphin chooses, and the
+// flow over the blade bends and twists it away from that pose in proportion
+// to the load, more out along the blade than at the root. The flow is the
+// body's own motion through the water, the waves' orbital flow at the flank,
+// the current, and the churn of broken water. The foil numbers are a
+// bottlenose flipper's: Weber et al. (2009) measured lift coefficients of
+// 1.2 to 1.4 at 28 to 41 degrees with a gradual stall, and least drag
+// coefficients of 0.02 to 0.04.
+const RHO_WATER = 1025;
+const RHO_AIR = 1.225;
+const GRAVITY = 9.81;
+// One blade's planform (m^2), its centre of pressure (m out along the span,
+// and m behind the feathering axis), its centre of mass (m out along the
+// span), its mass (kg, a little denser than water) and the water that moves
+// with it when it moves broadside (kg).
+const FLIPPER_AREA = 0.05;
+const FLIPPER_CP = 0.17;
+const FLIPPER_CP_AFT = 0.015;
+const FLIPPER_CG = 0.15;
+const FLIPPER_MASS = 1.4;
+const FLIPPER_VOLUME = FLIPPER_MASS / 1080;
+const FLIPPER_ADDED_MASS = 3.3;
+// Normal force per unit dynamic pressure and area at incidence a:
+// FLIPPER_LIFT_SLOPE sin(a) cos(a) + FLIPPER_CROSSFLOW sin(a)^2. That
+// reaches the measured lift near the measured stall angles and a flat
+// plate's push broadside on. Skin friction acts along the blade.
+const FLIPPER_LIFT_SLOPE = 2.7;
+const FLIPPER_CROSSFLOW = 1.4;
+const FLIPPER_SKIN = 0.03;
+// Muscle stiffness of each joint (N m/rad): a floor, plus this many times
+// the flow's torque scale (dynamic pressure x area x centre of pressure), so
+// the dolphin braces harder the faster the water runs. Once braced, a blade
+// bends up or down by about three quarters of any change in its angle to
+// the flow (10 degrees more at cruise is about a kilonewton of lift on it),
+// and twists toward the flow by about as much, where the flow itself also
+// turns it. The twist's floor holds a blade against the water's small pushes
+// at a hover or a slow turn, where the flow meets it from the side, so it
+// does not weathervane loosely.
+const FLIPPER_STIFF_SWEEP = [30, 2];
+const FLIPPER_STIFF_LIFT = [45, 3.5];
+const FLIPPER_STIFF_FEATHER = [4, 0.07];
+// The bracing is not instant: the muscles take about a tenth of a second
+// to stiffen against a rising load (a stretch reflex and the muscle's own
+// rise time) and a little longer to relax. So a sudden load, the blade
+// meeting the water on the way in, a wave or broken water slapping it, a
+// burst of speed, bends it further for a moment before they catch it.
+const FLIPPER_BRACE_RISE = 0.1;
+const FLIPPER_BRACE_FALL = 0.3;
+// A roll loads the two flippers against each other, one up and one down,
+// and the dolphin holds them against that harder than against a load on
+// both, since giving to it would roll the body: this share of the
+// difference in lift between the sides reaches the blades.
+const FLIPPER_LIFT_PAIR = 0.5;
+// The body turns by meeting the water at an angle, so in a held bank the
+// flow reaches the two flippers from the belly side at different angles:
+// the inside one about 5 degrees more steeply at cruise. Its extra lift
+// would roll the body back out of the bank, so the dolphin twists each
+// blade against its share of that difference and the two carry the same
+// load. It goes by the flow it has been meeting for the last
+// FLIPPER_EVEN_TIME, so it holds a bank without chasing every eddy. The
+// water twists the more loaded blade a little further itself (its give), so
+// the muscles take FLIPPER_EVEN of the difference.
+const FLIPPER_EVEN_TIME = 0.3;
+const FLIPPER_EVEN = 0.75;
+// The most the load turns a blade from its pose (sweep, lift, feather, rad),
+// and the share of that give taken at the base joint; the rest bends the
+// blade along its length. A blade bends along its length but is stiff in
+// torsion, so nearly half of its twist is the whole flipper turning at the
+// shoulder (and twisting it more than that past the blade joint creases the
+// skin there).
+const FLIPPER_GIVE = new THREE.Vector3(0.22, 0.3, 0.36);
+const FLIPPER_GIVE_BASE = new THREE.Vector3(0.2, 0.3, 0.45);
+// What the joints reach in all, the pose and the give together. The sweep
+// and the feather ease into their ends over the last FLIPPER_RANGE_KNEE
+// rather than stopping dead; a blade twisted leading edge up much past 0.6
+// rad creases the skin where the blade meets the root.
+const FLIPPER_RANGE_SWEEP = [-0.36, 0.56];
+const FLIPPER_RANGE_LIFT = [-0.32, 0.7];
+const FLIPPER_RANGE_FEATHER = [-0.62, 0.66];
+const FLIPPER_RANGE_KNEE = 0.12;
+
+function smoothRamp(a, b, x) {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+// x pressed smoothly into +-lim.
+function softLimit(x, lim) {
+  return lim * Math.tanh(x / lim);
+}
+
+// x kept inside [lo, hi], easing into each end over the last `knee` of the
+// range instead of stopping dead at it.
+function softRange(x, lo, hi, knee) {
+  if (x > hi - knee) return hi - knee + knee * Math.tanh((x - hi + knee) / knee);
+  if (x < lo + knee) return lo + knee - knee * Math.tanh((lo + knee - x) / knee);
+  return x;
+}
+
+// Step a damped spring (x'' = w^2 (target - x) - 2 zeta w x', zeta < 1) by
+// dt exactly, so a stiff joint stays stable on a long frame. Writes the new
+// position and rate into out[0] and out[1].
+function springStep(x, v, target, w, zeta, dt, out) {
+  const z = Math.min(zeta, 0.995);
+  const x0 = x - target;
+  const sigma = z * w;
+  const wd = w * Math.sqrt(1 - z * z);
+  const e = Math.exp(-sigma * dt);
+  const c = Math.cos(wd * dt);
+  const s = Math.sin(wd * dt);
+  const b = (v + sigma * x0) / wd;
+  out[0] = target + e * (x0 * c + b * s);
+  out[1] = e * (v * c - (sigma * b + wd * x0) * s);
+  return out;
+}
+
+// Smooth turbulence, about -1..1, a second or so per swing.
+function churn(t, seed) {
+  return (noise2(t * 1.7, seed) - 0.5) * 3.2;
+}
+
+// Zero inside +-`dead`, then rising from zero to +-1 at +-1.
+function deadZone(x, dead) {
+  return Math.sign(x) * Math.max(0, Math.abs(x) - dead) / (1 - dead);
+}
+
+// How far out along the plate a vertex of the baked mesh sits from the root.
+function flipperOut(x, y) {
+  return (Math.abs(x) - 0.212) * FLIPPER_OUT_X + (y + 0.392) * FLIPPER_OUT_Y;
+}
+
+// How much a vertex belongs to a flipper rather than the body: out past the
+// root along the plate, close to its plane, and between its leading edge
+// and its swept-back trailing edge. The flank behind and above the root lies
+// on the same line in the front view, so the trailing edge is followed
+// outward (it runs from z 0.655 at the root back to 0.5 at the tip) instead
+// of cutting at one z; a fixed cut gave that flank up to 40% flipper weight
+// and it tore open whenever the flipper turned. The root blends over 11 cm
+// out from the flank and 8.5 cm behind the trailing edge, so the skin there
+// flexes rather than shears.
+function flipperWeight(x, y, z) {
+  const ax = Math.abs(x) - 0.212;
+  const ay = y + 0.392;
+  const out = ax * FLIPPER_OUT_X + ay * FLIPPER_OUT_Y;
+  const off = Math.abs(-ax * FLIPPER_OUT_Y + ay * FLIPPER_OUT_X);
+  const trailing = 0.655 - 0.5 * Math.max(out, 0);
+  const along = smoothRamp(trailing - 0.1, trailing - 0.015, z) * (1 - smoothRamp(0.92, 0.98, z));
+  return smoothRamp(-0.01, 0.1, out) * (1 - smoothRamp(0.055, 0.09, off)) * along;
+}
+
+// The blade joint's share of a flipper vertex: none at the root, all of it
+// past 22 cm out, so the bend and twist spread over the inner blade.
+function flipperBladeShare(x, y) {
+  return smoothRamp(0.06, 0.22, flipperOut(x, y));
+}
 
 function dampAngle(current, target, lambda, dt) {
   return current + wrapAngle(target - current) * (1 - Math.exp(-lambda * dt));
@@ -262,7 +464,9 @@ export class Dolphin {
     // Shift dive (see update): engaged, and how tucked the body is (0..1).
     this.diveState = false;
     this.streamline = 0;
-    this._boostThroughExit = false;
+    this._diveHold = 0;
+    // Shift as last seen, so only a fresh press arms a dive.
+    this._shiftWas = false;
     this.boostBreachCount = 0;
     this.hydro = this.hull.result;
 
@@ -291,6 +495,8 @@ export class Dolphin {
       qRoll: new THREE.Quaternion(),
       qParentInverse: new THREE.Quaternion(),
       qPitchLocal: new THREE.Quaternion(),
+      qSwing: new THREE.Quaternion(),
+      prevAxis: new THREE.Vector3(),
       forwardTarget: new THREE.Vector3(),
       backTarget: new THREE.Vector3(),
       upTarget: new THREE.Vector3(),
@@ -307,6 +513,104 @@ export class Dolphin {
     };
     this.skinnedMesh = null;
     this.skeleton = null;
+    // Flipper joints and their springs: per side (left, right) the sweep,
+    // lift and feather angles and their rates, and the shared drives.
+    this.flippers = {
+      bones: [],
+      angle: [new THREE.Vector3(), new THREE.Vector3()],
+      rate: [new THREE.Vector3(), new THREE.Vector3()],
+      target: new THREE.Vector3(),
+      pitchRate: 0,
+      prevPitch: null,
+      rollRate: 0,
+      prevRoll: null,
+      turn: 0,
+      brake: 0,
+      air: 0,
+      accel: 0,
+      scull: 0,
+      clock: 0,
+      qSweep: new THREE.Quaternion(),
+      qLift: new THREE.Quaternion(),
+      qFeather: new THREE.Quaternion(),
+      qTotal: new THREE.Quaternion(),
+      qBase: new THREE.Quaternion(),
+      qFrame: new THREE.Quaternion(),
+      qParentInv: new THREE.Quaternion(),
+      roots: [new THREE.Vector3(), new THREE.Vector3()],
+      tmpA: new THREE.Vector3(),
+      tmpB: new THREE.Vector3(),
+      tmpC: new THREE.Vector3(),
+      blades: [],
+      // The angle above is the pose the muscles hold (`act`, with its rate)
+      // plus the blade's give under the water's load (`give`, with its rate).
+      // `load` is the give the load asks for this frame, `wet` how far each
+      // blade is in the water, `aer` how aerated that water is, and `panel`
+      // the hull panel whose water sample each blade reads.
+      act: [new THREE.Vector3(), new THREE.Vector3()],
+      actRate: [new THREE.Vector3(), new THREE.Vector3()],
+      give: [new THREE.Vector3(), new THREE.Vector3()],
+      giveRate: [new THREE.Vector3(), new THREE.Vector3()],
+      load: [new THREE.Vector3(), new THREE.Vector3()],
+      wet: [0, 0],
+      aer: [0, 0],
+      panel: [-1, -1],
+      // How hard the muscles brace each blade, as the flow torque scale
+      // they have caught up with (FLIPPER_BRACE_RISE).
+      brace: [0, 0],
+      // The flow's angle to each blade untwisted (its lift and sweep, no
+      // feather), now and as the muscles have been meeting it
+      // (FLIPPER_EVEN_TIME), and how fast that flow runs.
+      flowAngle: [0, 0],
+      flowHeld: [0, 0],
+      flowSpeed: [0, 0],
+      balPitch: 0,
+      balRoll: 0,
+      spring: [0, 0],
+      // The physical body's motion, smoothed: angular velocity, angular and
+      // linear acceleration, and last frame's state to difference against.
+      body: {
+        valid: false,
+        fresh: true,
+        w: new THREE.Vector3(),
+        alpha: new THREE.Vector3(),
+        a: new THREE.Vector3(),
+        prevP: new THREE.Vector3(),
+        prevV: new THREE.Vector3(),
+        prevQ: new THREE.Quaternion(),
+        prevW: new THREE.Vector3(),
+        q: new THREE.Quaternion(),
+        raw: new THREE.Vector3(),
+      },
+      flow: {
+        q: new THREE.Quaternion(),
+        N: new THREE.Vector3(),
+        C: new THREE.Vector3(),
+        S: new THREE.Vector3(),
+        eL: new THREE.Vector3(),
+        eS: new THREE.Vector3(),
+        r: new THREE.Vector3(),
+        v: new THREE.Vector3(),
+        U: new THREE.Vector3(),
+        wv: new THREE.Vector3(),
+        P: new THREE.Vector3(),
+        F: new THREE.Vector3(),
+        arm: new THREE.Vector3(),
+        tau: new THREE.Vector3(),
+        acg: new THREE.Vector3(),
+        Fin: new THREE.Vector3(),
+        tmp: new THREE.Vector3(),
+        tmp2: new THREE.Vector3(),
+      },
+      span: [
+        FLIPPER_SPAN.clone(),
+        new THREE.Vector3(-FLIPPER_SPAN.x, FLIPPER_SPAN.y, FLIPPER_SPAN.z),
+      ],
+      normal: [
+        FLIPPER_NORMAL.clone(),
+        new THREE.Vector3(-FLIPPER_NORMAL.x, FLIPPER_NORMAL.y, FLIPPER_NORMAL.z),
+      ],
+    };
     this.wetness = 0;
     this.impact = 0;
     this.turnLean = 0;
@@ -451,10 +755,22 @@ export class Dolphin {
             }
           }
         }
+        // Flipper vertices hand their weight to the flipper's two joints.
+        const x = position.getX(v);
+        const y = position.getY(v);
+        const fw = flipperWeight(x, y, z);
         skinIndex[v * 4] = a;
         skinIndex[v * 4 + 1] = b;
-        skinWeight[v * 4] = 1 - t;
-        skinWeight[v * 4 + 1] = t;
+        skinWeight[v * 4] = (1 - t) * (1 - fw);
+        skinWeight[v * 4 + 1] = t * (1 - fw);
+        if (fw > 0) {
+          const side = x > 0 ? 0 : 1;
+          const share = flipperBladeShare(x, y);
+          skinIndex[v * 4 + 2] = SKIN_BONE_COUNT + side;
+          skinWeight[v * 4 + 2] = fw * (1 - share);
+          skinIndex[v * 4 + 3] = SKIN_BONE_COUNT + 2 + side;
+          skinWeight[v * 4 + 3] = fw * share;
+        }
       }
       geometry.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(skinIndex, 4));
       geometry.setAttribute("skinWeight", new THREE.Float32BufferAttribute(skinWeight, 4));
@@ -471,6 +787,23 @@ export class Dolphin {
         bones.push(bone);
       }
 
+      // The flipper joints after the spine: the bases (left, then right) on
+      // the neck segment, then the blades (left, then right) on the bases.
+      const flipperBones = [1, -1].map((side) => {
+        const bone = new THREE.Bone();
+        bone.name = side > 0 ? "flipper-left" : "flipper-right";
+        bone.position.set(side * FLIPPER_ROOT.x, FLIPPER_ROOT.y, FLIPPER_ROOT.z - SPINE_Z[FLIPPER_PARENT]);
+        bones[FLIPPER_PARENT].add(bone);
+        return bone;
+      });
+      const bladeBones = [1, -1].map((side, k) => {
+        const bone = new THREE.Bone();
+        bone.name = side > 0 ? "flipper-blade-left" : "flipper-blade-right";
+        bone.position.set(side * FLIPPER_SPAN.x, FLIPPER_SPAN.y, FLIPPER_SPAN.z).multiplyScalar(FLIPPER_BLADE_AT);
+        flipperBones[k].add(bone);
+        return bone;
+      });
+
       const mesh = new THREE.SkinnedMesh(geometry, material);
       mesh.name = "dolphin-skinned";
       mesh.frustumCulled = false;
@@ -479,12 +812,14 @@ export class Dolphin {
       mesh.add(bones[0]);
       this.scene.add(mesh);
       mesh.updateMatrixWorld(true);
-      const skeleton = new THREE.Skeleton(bones);
+      const skeleton = new THREE.Skeleton([...bones, ...flipperBones, ...bladeBones]);
       mesh.bind(skeleton, new THREE.Matrix4());
 
       this.skinnedMesh = mesh;
       this.skeleton = skeleton;
       this.spine.bones = bones;
+      this.flippers.bones = flipperBones;
+      this.flippers.blades = bladeBones;
       this.model = mesh;
       this.loaded = true;
       this.resetVisualChain();
@@ -520,24 +855,17 @@ export class Dolphin {
     if (!bones.length || !this.skinnedMesh) return;
 
     sp.quats[0].copy(sp.targetQ);
+    sp.prevAxis.copy(sp.forwardTarget);
     for (let i = 1; i < SPINE_Z.length; i++) {
       // Point the bone's +Z toward the head along the trailing chain.
       sp.tmp.subVectors(sp.joints[i - 1], sp.joints[i]);
-      if (sp.tmp.lengthSq() < 1e-8) sp.tmp.copy(sp.forwardTarget);
+      if (sp.tmp.lengthSq() < 1e-8) sp.tmp.copy(sp.prevAxis);
       else sp.tmp.normalize();
-
-      sp.tmpUp.copy(sp.upTarget);
-      sp.tmpUp.addScaledVector(sp.tmp, -sp.tmpUp.dot(sp.tmp));
-      if (sp.tmpUp.lengthSq() < 1e-5) {
-        sp.tmpUp.set(0, 0, 1).addScaledVector(sp.tmp, -sp.tmp.z);
-        if (sp.tmpUp.lengthSq() < 1e-5) {
-          sp.tmpUp.set(1, 0, 0).addScaledVector(sp.tmp, -sp.tmp.x);
-        }
-      }
-      sp.tmpUp.normalize();
-      sp.tmpRight.crossVectors(sp.tmpUp, sp.tmp).normalize();
-      sp.tmpMatrix.makeBasis(sp.tmpRight, sp.tmpUp, sp.tmp);
-      sp.quats[i].setFromRotationMatrix(sp.tmpMatrix);
+      // Carry the frame of the bone ahead round the bend by the smallest
+      // turn, so the body's roll passes down the tail without twisting.
+      sp.qSwing.setFromUnitVectors(sp.prevAxis, sp.tmp);
+      sp.quats[i].copy(sp.qSwing).multiply(sp.quats[i - 1]).normalize();
+      sp.prevAxis.copy(sp.tmp);
     }
 
     // The last bone is the fluke pair. Pitch it around its spanwise axis so
@@ -616,12 +944,20 @@ export class Dolphin {
     // Layer the swim wave on top as a real dorsoventral displacement wave.
     // Keeping it out of the steering dampers preserves the full stroke
     // amplitude and the torso→fluke phase all the way to the tip.
+    // Each joint heaves along its own segment's back-to-belly axis: the
+    // head's up carried down the steering chain the same way as the bones.
+    sp.prevAxis.copy(sp.forwardTarget);
+    sp.tmpUp.copy(sp.upTarget);
     for (let i = 1; i < SPINE_Z.length; i++) {
+      sp.tmp.copy(sp.segDirs[i - 1]).negate();
+      sp.qSwing.setFromUnitVectors(sp.prevAxis, sp.tmp);
+      sp.tmpUp.applyQuaternion(sp.qSwing);
+      sp.prevAxis.copy(sp.tmp);
       const along = i / segmentCount;
       const envelope = smoothstep(cfg.tailWaveStart, 1.0, along);
       const phase = this.tailPhase - i * cfg.tailWaveTravel;
       const heave = Math.sin(phase) * this.tailHeave * envelope;
-      sp.joints[i].addScaledVector(sp.upTarget, heave);
+      sp.joints[i].addScaledVector(sp.tmpUp, heave);
     }
 
     // Reconnect the displaced joints with fixed-length links. The fluke can
@@ -634,6 +970,553 @@ export class Dolphin {
     }
 
     this._applySpinePose();
+  }
+
+  /**
+   * Pectoral flippers, worked the way a dolphin works them. They are stiff
+   * control surfaces on a mobile shoulder, and the muscles choose a pose:
+   * - each tail stroke heaves the front of the body, and the flippers work
+   *   against it a quarter-beat behind the flukes (measured lags are 61 to
+   *   123 degrees), so they are never quite still while swimming;
+   * - a held turn rotates both into the turn and draws them in, and the
+   *   inside one reaches out a little further; while the body rolls into
+   *   or out of a bank they tilt against each other like ailerons; riding
+   *   a face, they steer the carve harder and are held further out;
+   * - pitching tilts them together like elevators;
+   * - when the water itself pitches or rolls the body (a wave, a bore, the
+   *   wash of a breaker), they work against it the same way;
+   * - they fold back along the flanks as speed builds, harder while
+   *   sprinting off the mark and fully in a Shift dive, and ease out when
+   *   coasting;
+   * - S turns them out and against the flow as brakes;
+   * - they spread in the air;
+   * - hovering, they make slow, uneven balancing strokes;
+   * - on the seabed the sand pushes them up instead of the tips sinking in.
+   *
+   * The water then loads that pose (_flipperLoad): the flow the body meets
+   * as it turns, pitches, skids and brakes, the waves' orbital flow, the
+   * churn of broken water, the slap of the surface on the way in and the
+   * blade's own weight and inertia. The blade gives under it, mostly along
+   * its length, quickly and heavily damped in the water and lightly in the
+   * air, where there is nothing to damp it.
+   *
+   * The head follows the mouse exactly, so the yaw, pitch and roll rates
+   * swing with every flick. Those drives are smoothed over a fifth of a
+   * second or less with small dead zones, the two sides differ mainly in
+   * tilt rather than flapping up and down against each other, and each
+   * pose follows its target on a springy (slightly underdamped) joint, a
+   * touch faster on the left than on the right so the pair never moves as
+   * exact mirror images. The load is taken on the physical body, not on the
+   * visible head that leads it, so a flick does not slap the flippers.
+   */
+  _updateFlippers(dt, input, seabed) {
+    const fl = this.flippers;
+    if (fl.bones.length !== 2 || fl.blades.length !== 2 || dt <= 0) return;
+    const cfg = TUNING.dolphin;
+    const movement = TUNING.movement;
+    const amount = cfg.flipperMotion ?? 1;
+    const giveScale = cfg.flipperLoad ?? 1;
+    const speed = this.swimSpeed || 0;
+    fl.clock += dt;
+
+    // Drives, each 0..1 unless signed.
+    const streamline = this.streamline || 0;
+    fl.air = damp(fl.air, this._flying ? 1 - streamline : 0, 4, dt);
+    const water = 1 - fl.air;
+    fl.brake = damp(fl.brake, input.brake && !this._flying ? smoothRamp(0.5, 3, speed) : 0, 4, dt);
+    fl.accel = damp(fl.accel, this.swimAccel || 0, 5, dt);
+    const burst = clamp(fl.accel / 5, 0, 1) * water;
+    const coast = clamp(-fl.accel / 4, 0, 1) * water * (1 - fl.brake);
+    const tuck = Math.max(
+      smoothRamp(movement.cruiseSpeed * 0.5, movement.boostSpeed * 0.9, speed) * water,
+      streamline
+    );
+    const slow = (1 - smoothRamp(0.8, 3, speed)) * water;
+    const surf = (this.surfLock || 0) * water;
+
+    fl.turn = damp(fl.turn, clamp(this.yawRate / movement.maxTurnRate, -1, 1) * water, 6, dt);
+    const turn = deadZone(fl.turn, 0.1);
+    const turnSize = Math.abs(turn);
+    if (fl.prevRoll === null) fl.prevRoll = this.roll;
+    const rollRateRaw = wrapAngle(this.roll - fl.prevRoll) / dt;
+    fl.prevRoll = this.roll;
+    fl.rollRate = damp(fl.rollRate, clamp(rollRateRaw / 3, -1, 1) * water, 8, dt);
+    if (fl.prevPitch === null) fl.prevPitch = this.pitch;
+    const pitchRateRaw = (this.pitch - fl.prevPitch) / dt;
+    fl.prevPitch = this.pitch;
+    fl.pitchRate = damp(fl.pitchRate, clamp(pitchRateRaw / movement.maxPitchRate, -1, 1) * water, 6, dt);
+    const pitch = deadZone(fl.pitchRate, 0.06);
+    // The water's own pitching (+ nose down) and rolling (+ left side up)
+    // of the body, in rad/s: not the player's steering.
+    const wt = this.waterTiltRate;
+    fl.balPitch = damp(fl.balPitch, clamp(wt.x, -1.5, 1.5) * water, 10, dt);
+    fl.balRoll = damp(fl.balRoll, clamp(wt.z, -1.5, 1.5) * water, 10, dt);
+
+    // The stroke's work fades as the flippers fold back at speed, so a
+    // sprint does not shake them.
+    const stroke = clamp((this.tailHeave || 0) / 0.15, 0, 1.5) * water * (1 - 0.45 * tuck);
+    const beat = Math.sin(this.tailPhase - (SPINE_Z.length - 1) * cfg.tailWaveTravel - Math.PI * 0.5);
+    // Small, slow trim adjustments while cruising.
+    const idle = water * (1 - slow) * (1 - 0.6 * tuck);
+    fl.scull += dt * Math.PI * 2 * 0.33;
+
+    this._flipperFrame();
+    this._flipperBodyMotion(dt);
+    // The water's load on the pose the muscles hold now, as the give it
+    // asks of each blade (the difference in lift between the sides held
+    // harder, FLIPPER_LIFT_PAIR).
+    this._flipperLoad(0, 1, fl.act[0], giveScale, dt);
+    this._flipperLoad(1, -1, fl.act[1], giveScale, dt);
+    const pairLift = 0.5 * (fl.load[0].y + fl.load[1].y);
+    for (let k = 0; k < 2; k++) fl.load[k].y = pairLift + FLIPPER_LIFT_PAIR * (fl.load[k].y - pairLift);
+    // Holding a bank (FLIPPER_EVEN): each blade twists against its share of
+    // the difference in the flow's angle to the two, while both are in clean
+    // water fast enough to load them, and not in a Shift dive, where they
+    // are folded flat.
+    for (let k = 0; k < 2; k++) {
+      fl.flowHeld[k] = fl.body.fresh
+        ? fl.flowAngle[k]
+        : damp(fl.flowHeld[k], fl.flowAngle[k], 1 / FLIPPER_EVEN_TIME, dt);
+    }
+    const flowMean = 0.5 * (fl.flowHeld[0] + fl.flowHeld[1]);
+    const clean = (k) => fl.wet[k] * (1 - fl.aer[k]) * smoothRamp(1.5, 4, fl.flowSpeed[k]);
+    const even = FLIPPER_EVEN * Math.min(clean(0), clean(1)) * water * (1 - streamline);
+    const w = cfg.flipperSpring;
+    const zeta = cfg.flipperDamping;
+    const balance = cfg.flipperBalance ?? 0;
+    for (let k = 0; k < 2; k++) {
+      const side = k === 0 ? 1 : -1;
+      const inside = Math.max(0, side * turn);
+      const outside = Math.max(0, -side * turn);
+      // Hover strokes: slow, uneven, the two sides out of step.
+      const phase = fl.scull + side * 1.1;
+      const scull =
+        ((Math.sin(phase) + 0.35 * Math.sin(phase * 2.3 + side * 0.7)) / 1.35) *
+        (0.65 + 0.35 * Math.sin(fl.scull * 0.31 + side));
+      const drift = (Math.sin(fl.clock * 0.83 + side * 1.7) + 0.6 * Math.sin(fl.clock * 2.11 + side * 0.4)) / 1.6;
+      const drift2 = (Math.sin(fl.clock * 0.61 + side * 0.9) + 0.5 * Math.sin(fl.clock * 1.37 + side * 2.3)) / 1.5;
+      // Riding a face, the flippers steer the carve as much as the body.
+      const carve = 1 + 0.5 * surf;
+      // How far the body is laid over toward this side (0..1 of maxBank):
+      // in a held bank the inside blade (the low one) twists leading edge
+      // down into the turn and reaches a little, the outside one opens a
+      // touch, so the bank reads in the flippers (cfg.flipperBankTwist).
+      const bankIn = clamp((-side * this.roll) / movement.maxBank, 0, 1) * water * (1 - streamline);
+      const bankOut = clamp((side * this.roll) / movement.maxBank, 0, 1) * water * (1 - streamline);
+      const bankTwist = cfg.flipperBankTwist ?? 0;
+
+      // x: sweep (+ tip back), y: lift (+ tip up), z: feather (+ leading
+      // edge up), in radians.
+      let sweep =
+        tuck * cfg.flipperTuckSweep +
+        burst * 0.1 -
+        coast * 0.04 -
+        fl.brake * 0.2 -
+        fl.air * 0.06 -
+        surf * 0.05 +
+        (0.1 * turnSize + 0.08 * outside - 0.05 * inside) * carve * cfg.flipperTurn +
+        slow * cfg.flipperScull * 0.4 * Math.cos(phase);
+      let lift =
+        tuck * cfg.flipperTuckLift -
+        burst * 0.04 +
+        coast * 0.05 +
+        fl.brake * 0.24 +
+        fl.air * cfg.flipperAirSpread +
+        slow * 0.06 +
+        surf * 0.06 +
+        (0.06 * inside - 0.03 * outside) * carve * cfg.flipperTurn +
+        bankTwist * 0.3 * bankIn +
+        stroke * cfg.flipperStroke * 0.8 * beat +
+        0.025 * idle * drift2;
+      let feather =
+        fl.brake * cfg.flipperBrake +
+        pitch * cfg.flipperPitch * (1 - 0.5 * tuck) +
+        // Into the held turn together; against each other (ailerons)
+        // while the bank changes: the side that drops loses lift.
+        (0.2 * turnSize * carve + side * 0.2 * deadZone(fl.rollRate, 0.05)) * cfg.flipperTurn +
+        // Against the water's pitching (both, leading edge up when it
+        // drops the nose) and rolling (the rising side leading edge down).
+        softLimit(balance * (fl.balPitch - side * fl.balRoll), 0.25) +
+        // Holding a bank: the blade the flow meets more steeply (the inside
+        // one) twists further into it.
+        softLimit(flowMean - fl.flowHeld[k], 0.2) * even +
+        bankTwist * (0.35 * bankOut - bankIn) +
+        slow * cfg.flipperScull * scull +
+        stroke * cfg.flipperStroke * beat +
+        0.05 * idle * drift;
+
+      sweep = clamp(sweep * amount, -0.3, 0.5);
+      lift = clamp(lift * amount, -0.2, 0.4);
+      feather = clamp(feather * amount, -0.45, 0.6);
+
+      // The blade follows the give its load asks for on a stiff spring:
+      // lightly damped in the air, heavily in the water.
+      const a = fl.act[k];
+      const r = fl.actRate[k];
+      const g = fl.give[k];
+      const gr = fl.giveRate[k];
+      const want = fl.load[k];
+      const wet = fl.wet[k];
+      const wg = lerp(32, 24, wet);
+      const zg = lerp(0.35, 0.85, wet);
+      const out = fl.spring;
+      springStep(g.x, gr.x, want.x, wg, zg, dt, out);
+      g.x = out[0];
+      gr.x = out[1];
+      springStep(g.y, gr.y, want.y, wg, zg, dt, out);
+      g.y = out[0];
+      gr.y = out[1];
+      springStep(g.z, gr.z, want.z, wg, zg, dt, out);
+      g.z = out[0];
+      gr.z = out[1];
+
+      // On the seabed the sand pushes the flipper up rather than letting
+      // the tip sink into it (the body rests on its belly, and in a roll the
+      // low flipper reaches 20 cm below it).
+      const floor = this._flipperSandLift(k, side, a.x + g.x, lift + g.y, a.z + g.z, seabed);
+      fl.target.set(sweep, Math.max(lift, floor - g.y), feather);
+
+      // Springy joints toward the targets.
+      const wk = w * (k === 0 ? 1.03 : 0.97);
+      r.x += (wk * wk * (fl.target.x - a.x) - 2 * zeta * wk * r.x) * dt;
+      r.y += (wk * wk * (fl.target.y - a.y) - 2 * zeta * wk * r.y) * dt;
+      r.z += (wk * wk * (fl.target.z - a.z) - 2 * zeta * wk * r.z) * dt;
+      a.addScaledVector(r, dt);
+      if (a.y + g.y < floor) {
+        // Quickly, but not in one frame, so a sudden contact does not snap.
+        a.y += Math.min(floor - a.y - g.y, 8 * dt);
+        r.y = Math.max(r.y, 0);
+      }
+
+      // The pose and the give together.
+      const t = fl.angle[k];
+      t.set(
+        softRange(a.x + g.x, FLIPPER_RANGE_SWEEP[0], FLIPPER_RANGE_SWEEP[1], FLIPPER_RANGE_KNEE),
+        clamp(a.y + g.y, FLIPPER_RANGE_LIFT[0], FLIPPER_RANGE_LIFT[1]),
+        softRange(a.z + g.z, FLIPPER_RANGE_FEATHER[0], FLIPPER_RANGE_FEATHER[1], FLIPPER_RANGE_KNEE)
+      );
+      fl.rate[k].copy(r).add(gr);
+    }
+    fl.body.fresh = false;
+    this._poseFlippers();
+  }
+
+  /**
+   * The physical body's angular velocity and its angular and linear
+   * acceleration, from frame to frame and smoothed over a few hundredths of
+   * a second. A teleport or a scripted pose (a jump the velocity does not
+   * explain) starts it afresh.
+   */
+  _flipperBodyMotion(dt) {
+    const b = this.flippers.body;
+    if (b.valid) {
+      b.raw.copy(this.position).sub(b.prevP).addScaledVector(this.velocity, -dt);
+      const q = b.q.copy(b.prevQ).invert().premultiply(this.orientation);
+      if (q.w < 0) q.set(-q.x, -q.y, -q.z, -q.w);
+      const s = Math.hypot(q.x, q.y, q.z);
+      const angle = 2 * Math.atan2(s, q.w);
+      if (b.raw.lengthSq() > 0.25 || angle > 0.6) b.valid = false;
+      else {
+        if (s > 1e-9) b.raw.set(q.x / s, q.y / s, q.z / s).multiplyScalar(angle / dt);
+        else b.raw.set(0, 0, 0);
+        b.prevW.copy(b.w);
+        b.w.lerp(b.raw, 1 - Math.exp(-dt / 0.04));
+        b.raw.copy(b.w).sub(b.prevW).divideScalar(dt);
+        b.alpha.lerp(b.raw, 1 - Math.exp(-dt / 0.06));
+        b.raw.copy(this.velocity).sub(b.prevV).divideScalar(dt);
+        b.a.lerp(b.raw, 1 - Math.exp(-dt / 0.05));
+      }
+    }
+    if (!b.valid) {
+      b.w.set(0, 0, 0);
+      b.alpha.set(0, 0, 0);
+      b.a.set(0, 0, 0);
+      b.valid = true;
+      b.fresh = true;
+    }
+    b.prevP.copy(this.position);
+    b.prevV.copy(this.velocity);
+    b.prevQ.copy(this.orientation);
+  }
+
+  /**
+   * The water at flipper `k`'s centre of pressure P: how far the blade is in
+   * it (returned, 0..1), its velocity (written to `vel`, with the current)
+   * and its aeration (fl.aer[k]). Read from the hull's own sample of the
+   * wave field at the panel nearest the root, carried along the sampled
+   * slope to P.
+   */
+  _flipperWater(k, P, vel) {
+    const fl = this.flippers;
+    const h = this.hull;
+    if (fl.panel[k] < 0 && h && h.panels) {
+      let best = 0;
+      let bestD = Infinity;
+      for (let i = 0; i < h.panels.length; i++) {
+        const dd = h.panels[i].offset.distanceToSquared(FLIPPER_ROOT_SIDE[k]);
+        if (dd < bestD) {
+          bestD = dd;
+          best = i;
+        }
+      }
+      fl.panel[k] = best;
+    }
+    const i = fl.panel[k];
+    const p = i >= 0 ? h.panels[i] : null;
+    if (p && this.hydro && p.world.distanceToSquared(P) < 1) {
+      const bt = h.batch;
+      const ny = Math.max(0.05, bt.ny[i]);
+      const surface = bt.height[i] - (bt.nx[i] / ny) * (P.x - p.world.x) - (bt.nz[i] / ny) * (P.z - p.world.z);
+      vel.set(bt.velocityX[i], bt.velocityY[i], bt.velocityZ[i]).add(this.tmpCurrent);
+      fl.aer[k] = bt.aeration[i];
+      // The blade spans about 20 cm of depth around its centre of pressure.
+      return smoothRamp(-0.1, 0.1, surface - P.y);
+    }
+    vel.copy(this.tmpCurrent);
+    fl.aer[k] = 0;
+    return this.hydro ? clamp(this.hydro.wetFraction * 1.5, 0, 1) : 1;
+  }
+
+  /**
+   * The water's load on flipper `k` held in pose `a` (sweep, lift, feather),
+   * as the give it asks of the blade (fl.load[k], radians, the same order);
+   * also how wet the blade is (fl.wet[k]).
+   *
+   * The flow is taken at the centre of pressure on the physical body: its
+   * velocity and spin, against the water's velocity there plus turbulence,
+   * which is always a little (a few per cent of the flow) and much more in
+   * broken, aerated water. The normal force on the blade comes from its
+   * incidence to that flow, with skin friction along it, and the blade's
+   * weight, buoyancy and inertia (with the water it carries broadside) act
+   * at its centre of mass. Their moments about the three joints, over the
+   * muscles' stiffness, are the give. Feathering only answers the flow the
+   * dolphin did not choose: the normal force beyond what its pose meets in
+   * a straight run through the water at this pace, so a held brake or turn
+   * is not blown flat, while a gust, a wave or a skid twists the blade
+   * toward the flow.
+   */
+  _flipperLoad(k, side, a, scale, dt) {
+    const fl = this.flippers;
+    const f = fl.flow;
+    const b = fl.body;
+    const want = fl.load[k];
+    // The blade's axes in its pose, on the body: the lift joint turns about
+    // the long axis, the sweep joint about the lifted plate's normal, and
+    // the feather joint about the span.
+    const qBody = this.orientation;
+    fl.qLift.setFromAxisAngle(Z_AXIS, side * a.y);
+    fl.qSweep.setFromAxisAngle(fl.normal[k], side * a.x);
+    fl.qFeather.setFromAxisAngle(fl.span[k], -side * a.z);
+    f.eL.copy(Z_AXIS).applyQuaternion(qBody);
+    const q = f.q.copy(qBody).multiply(fl.qLift);
+    f.eS.copy(fl.normal[k]).applyQuaternion(q);
+    q.multiply(fl.qSweep);
+    f.S.copy(fl.span[k]).applyQuaternion(q);
+    q.multiply(fl.qFeather);
+    f.N.copy(fl.normal[k]).applyQuaternion(q);
+    // Toward the leading edge on both sides (the right side is a mirror image).
+    f.C.crossVectors(f.S, f.N).multiplyScalar(side);
+
+    // Where the blade is (the visible one, for the waterline) and the water there.
+    f.q.copy(fl.qFrame).multiply(fl.qLift).multiply(fl.qSweep);
+    f.P.copy(fl.span[k]).applyQuaternion(f.q).multiplyScalar(FLIPPER_CP).add(fl.roots[k]);
+    const wet = this._flipperWater(k, f.P, f.wv);
+    const aer = fl.aer[k];
+    fl.wet[k] = wet;
+
+    // The flow at the centre of pressure on the body, and the part of it
+    // the dolphin expects: straight along its body at its pace.
+    f.r.copy(FLIPPER_ROOT_SIDE[k]).applyQuaternion(qBody).addScaledVector(f.S, FLIPPER_CP);
+    f.v.crossVectors(b.w, f.r).add(this.velocity);
+    f.U.copy(f.wv).sub(f.v);
+    const axial = f.U.dot(this.forward);
+    const un0 = axial * this.forward.dot(f.N);
+    const uc0 = axial * this.forward.dot(f.C);
+    // The flow's angle to the blade untwisted, before turbulence: what the
+    // two blades meet differently in a held bank (FLIPPER_EVEN). The sweep
+    // turns the blade about its own normal, so the lifted normal (eS) is
+    // already the untwisted one.
+    f.tmp.crossVectors(f.S, f.eS).multiplyScalar(side);
+    fl.flowAngle[k] = Math.atan2(f.U.dot(f.eS), Math.abs(f.U.dot(f.tmp)) + 1e-6);
+    fl.flowSpeed[k] = f.U.length();
+    // Turbulence: a few per cent of the flow always, much more in broken
+    // and aerated water.
+    let speed = f.U.length();
+    const hydro = this.hydro;
+    const broken = hydro ? Math.max(hydro.breaking || 0, (hydro.breakMask || 0) * 0.15) : 0;
+    const gust = wet * ((0.03 + 0.12 * broken + 0.08 * aer) * speed + 0.5 * broken + 0.25 * aer);
+    if (gust > 1e-4) {
+      const t = fl.clock;
+      f.U.x += gust * churn(t, 3.1 + k * 7.3);
+      f.U.y += gust * churn(t * 1.13, 11.7 + k * 7.3);
+      f.U.z += gust * churn(t * 0.89, 19.9 + k * 7.3);
+      speed = f.U.length();
+    }
+
+    const half = 0.5 * (wet * RHO_WATER * (1 - 0.5 * aer) + (1 - wet) * RHO_AIR) * FLIPPER_AREA;
+    const un = f.U.dot(f.N);
+    const uc = f.U.dot(f.C);
+    const us = f.U.dot(f.S);
+    const normal = half * (FLIPPER_LIFT_SLOPE * Math.abs(uc) + FLIPPER_CROSSFLOW * Math.abs(un)) * un;
+    const expected = half * (FLIPPER_LIFT_SLOPE * Math.abs(uc0) + FLIPPER_CROSSFLOW * Math.abs(un0)) * un0;
+    const skin = half * FLIPPER_SKIN * speed;
+    f.F.copy(f.N).multiplyScalar(normal).addScaledVector(f.C, skin * uc).addScaledVector(f.S, skin * us);
+    f.arm.copy(f.S).multiplyScalar(FLIPPER_CP).addScaledVector(f.C, -FLIPPER_CP_AFT);
+    f.tau.crossVectors(f.arm, f.F);
+
+    // Weight less buoyancy, and inertia (with the water carried broadside),
+    // at the centre of mass: a = a_body + alpha x r + w x (w x r).
+    f.tmp.copy(FLIPPER_ROOT_SIDE[k]).applyQuaternion(qBody).addScaledVector(f.S, FLIPPER_CG);
+    f.acg.crossVectors(b.alpha, f.tmp).add(b.a);
+    f.tmp2.crossVectors(b.w, f.tmp);
+    f.acg.add(f.tmp.crossVectors(b.w, f.tmp2));
+    f.Fin.set(0, -GRAVITY * (FLIPPER_MASS - wet * RHO_WATER * FLIPPER_VOLUME), 0)
+      .addScaledVector(f.acg, -FLIPPER_MASS)
+      .addScaledVector(f.N, -wet * FLIPPER_ADDED_MASS * f.acg.dot(f.N));
+    f.tmp.copy(f.S).multiplyScalar(FLIPPER_CG);
+    f.tau.add(f.tmp2.crossVectors(f.tmp, f.Fin));
+
+    // Over the muscles' stiffness, which catches up with the flow a moment
+    // late (FLIPPER_BRACE_RISE). The feather joint is also turned toward the
+    // flow by the flow itself, at once (its centre of pressure is behind the
+    // axis).
+    const torque = 0.5 * RHO_WATER * wet * speed * speed * FLIPPER_AREA * FLIPPER_CP;
+    let brace = fl.brace[k];
+    if (b.fresh) brace = torque;
+    else brace += (torque - brace) * (1 - Math.exp(-dt / (torque > brace ? FLIPPER_BRACE_RISE : FLIPPER_BRACE_FALL)));
+    fl.brace[k] = brace;
+    const kSweep = FLIPPER_STIFF_SWEEP[0] + FLIPPER_STIFF_SWEEP[1] * brace;
+    const kLift = FLIPPER_STIFF_LIFT[0] + FLIPPER_STIFF_LIFT[1] * brace;
+    const kFeather =
+      FLIPPER_STIFF_FEATHER[0] +
+      FLIPPER_STIFF_FEATHER[1] * brace +
+      (FLIPPER_CP_AFT * FLIPPER_LIFT_SLOPE * torque) / FLIPPER_CP;
+    want.set(
+      softLimit((scale * side * f.tau.dot(f.eS)) / kSweep, FLIPPER_GIVE.x),
+      softLimit((scale * side * f.tau.dot(f.eL)) / kLift, FLIPPER_GIVE.y),
+      softLimit((-scale * FLIPPER_CP_AFT * (normal - expected)) / kFeather, FLIPPER_GIVE.z)
+    );
+  }
+
+  /**
+   * The frame the flipper roots move with, and where each root is. The skin
+   * around a root is skinned half to the head bone and half to the neck
+   * bone, so the flippers hang on the blend of the two rather than on the
+   * neck bone alone; on the neck alone, hard head turns slid the root up to
+   * 11 cm across the skin around it.
+   */
+  _flipperFrame() {
+    const fl = this.flippers;
+    const sp = this.spine;
+    fl.qFrame.copy(sp.quats[FLIPPER_PARENT]).slerp(sp.quats[0], FLIPPER_HEAD_SHARE);
+    fl.qParentInv.copy(sp.quats[FLIPPER_PARENT]).invert();
+    for (let k = 0; k < 2; k++) {
+      const side = k === 0 ? 1 : -1;
+      fl.tmpA
+        .set(side * FLIPPER_ROOT.x, FLIPPER_ROOT.y, FLIPPER_ROOT.z - SPINE_Z[0])
+        .applyQuaternion(sp.quats[0])
+        .add(sp.joints[0]);
+      fl.roots[k]
+        .set(side * FLIPPER_ROOT.x, FLIPPER_ROOT.y, FLIPPER_ROOT.z - SPINE_Z[FLIPPER_PARENT])
+        .applyQuaternion(sp.quats[FLIPPER_PARENT])
+        .add(sp.joints[FLIPPER_PARENT])
+        .lerp(fl.tmpA, FLIPPER_HEAD_SHARE);
+    }
+  }
+
+  /**
+   * Pose both flipper chains from their joint angles (after _flipperFrame).
+   * The right side turns the opposite way about its mirrored axes: lift,
+   * then sweep in the lifted plane, then feather. The base takes part of
+   * each turn (_flipperBaseTurn) and the blade the rest, so the blade ends up
+   * turned the full amount.
+   */
+  _poseFlippers() {
+    const fl = this.flippers;
+    const parent = this.spine.joints[FLIPPER_PARENT];
+    for (let k = 0; k < 2; k++) {
+      const side = k === 0 ? 1 : -1;
+      const a = fl.angle[k];
+      fl.qLift.setFromAxisAngle(Z_AXIS, side * a.y);
+      fl.qSweep.setFromAxisAngle(fl.normal[k], side * a.x);
+      fl.qFeather.setFromAxisAngle(fl.span[k], -side * a.z);
+      fl.qTotal.copy(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
+      this._flipperBaseTurn(k, side, a.x, a.y, a.z);
+      const base = fl.bones[k];
+      base.quaternion.copy(fl.qParentInv).multiply(fl.qFrame).multiply(fl.qBase);
+      base.position.copy(fl.roots[k]).sub(parent).applyQuaternion(fl.qParentInv);
+      fl.blades[k].quaternion.copy(fl.qBase.invert()).multiply(fl.qTotal);
+    }
+  }
+
+  /**
+   * The base joint's turn (into fl.qBase, on the root frame) for flipper
+   * `k` at these joint angles. Of the pose the muscles hold, the base takes
+   * the lift up to FLIPPER_BASE_LIFT (only the sand pushes past it) and
+   * FLIPPER_BASE_SWEEP and FLIPPER_BASE_FEATHER of the sweep and feather;
+   * of the give under load (fl.give) it takes FLIPPER_GIVE_BASE, so the
+   * load mostly bends and twists the blade along its length, as it does a
+   * real one, rather than swinging the whole flipper at the shoulder.
+   */
+  _flipperBaseTurn(k, side, sweep, lift, feather) {
+    const fl = this.flippers;
+    const g = fl.give[k];
+    const baseLift = Math.min(lift - (1 - FLIPPER_GIVE_BASE.y) * g.y, FLIPPER_BASE_LIFT);
+    const baseSweep = FLIPPER_BASE_SWEEP * (sweep - g.x) + FLIPPER_GIVE_BASE.x * g.x;
+    const baseFeather = FLIPPER_BASE_FEATHER * (feather - g.z) + FLIPPER_GIVE_BASE.z * g.z;
+    fl.qLift.setFromAxisAngle(Z_AXIS, side * baseLift);
+    fl.qSweep.setFromAxisAngle(fl.normal[k], side * baseSweep);
+    fl.qFeather.setFromAxisAngle(fl.span[k], -side * baseFeather);
+    return fl.qBase.copy(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
+  }
+
+  /**
+   * The lowest lift at which flipper `k`'s tip clears the sand by a couple
+   * of centimetres, given its sweep and feather (all three the pose and the
+   * give together); -Infinity when it already clears it (or the seabed is
+   * out of reach). The tip is carried through both joints, as _poseFlippers
+   * poses them.
+   */
+  _flipperSandLift(k, side, sweep, lift, feather, seabed) {
+    const fl = this.flippers;
+    if (!seabed) return -Infinity;
+    const root = fl.roots[k];
+    if (root.y - seabed.getSurfaceHeight(root.x, root.z) > 0.9) return -Infinity;
+    // Where the blade joint sits on the base (bind frame).
+    const joint = fl.tmpC.set(side * FLIPPER_SPAN.x, FLIPPER_SPAN.y, FLIPPER_SPAN.z).multiplyScalar(FLIPPER_BLADE_AT);
+    const clearance = (l) => {
+      fl.qLift.setFromAxisAngle(Z_AXIS, side * l);
+      fl.qSweep.setFromAxisAngle(fl.normal[k], side * sweep);
+      fl.qFeather.setFromAxisAngle(fl.span[k], -side * feather);
+      fl.qTotal.copy(fl.qFrame).multiply(fl.qLift).multiply(fl.qSweep).multiply(fl.qFeather);
+      this._flipperBaseTurn(k, side, sweep, l, feather).premultiply(fl.qFrame);
+      const tip = fl.tmpB
+        .set(side * FLIPPER_TIP.x, FLIPPER_TIP.y, FLIPPER_TIP.z)
+        .sub(FLIPPER_ROOT_SIDE[k])
+        .sub(joint)
+        .applyQuaternion(fl.qTotal)
+        .add(fl.tmpA.copy(joint).applyQuaternion(fl.qBase))
+        .add(root);
+      return tip.y - seabed.getSurfaceHeight(tip.x, tip.z) - 0.02;
+    };
+    let lo = lift;
+    let below = clearance(lo);
+    if (below >= 0 || lo >= FLIPPER_SAND_LIFT) return -Infinity;
+    // Raise the tip in steps until it clears, then interpolate. When raising
+    // it does not help (the body is steep or on its back, or sunk into the
+    // sand itself) leave the flipper alone. Past FLIPPER_SAND_LIFT the blade
+    // would fold, so a flipper pinned under a body rolled flat onto the sand
+    // stays there.
+    for (let step = 0; step < 8; step++) {
+      const l = Math.min(lo + 0.12, FLIPPER_SAND_LIFT);
+      const h = clearance(l);
+      if (h <= below + 0.004) return step === 0 ? -Infinity : lo;
+      if (h >= 0) return lo + ((l - lo) * -below) / (h - below);
+      lo = l;
+      below = h;
+      if (l >= FLIPPER_SAND_LIFT) break;
+    }
+    return lo;
   }
 
   get currentInputDir() {
@@ -654,8 +1537,13 @@ export class Dolphin {
     // Do not clamp per-frame mouse deltas. A fast flick can legitimately
     // produce several hundred pixels in one frame, and truncating that motion
     // is immediately felt as drag on the snout.
-    const mx = mouse.dx;
-    const my = mouse.dy;
+    // In a Shift dive the body is tucked and committed: the player can
+    // still nudge it (`movement.diveSteer` of the usual authority, mouse
+    // and keys), but not turn it around. Eased with the tuck, so letting
+    // go hands the full controls back over a few frames.
+    const steerK = lerp(1, movement.diveSteer ?? 1, this._diveHold || 0);
+    const mx = mouse.dx * steerK;
+    const my = mouse.dy * steerK;
     // Screen-right is world -X when the camera follows the dolphin's +Z
     // heading, so a rightward mouse movement must reduce yaw. The keyboard
     // bank controls share the same convention.
@@ -687,20 +1575,21 @@ export class Dolphin {
         keyTurnRate *= 1 - smoothstep(movement.airYawMax * 0.5, movement.airYawMax, toward);
       }
     }
+    keyTurnRate *= steerK;
     this.targetYaw = wrapAngle(this.targetYaw - keyTurn * keyTurnRate * dt);
     const pitchInput =
       Math.abs(mx) > 0 ||
       Math.abs(my) > 0 ||
       input.pitchUpKeys ||
       input.pitchDownKeys;
-    if (input.pitchUpKeys) this.targetPitch += 0.9 * dt;
-    if (input.pitchDownKeys) this.targetPitch -= 0.9 * dt;
+    if (input.pitchUpKeys) this.targetPitch += 0.9 * steerK * dt;
+    if (input.pitchDownKeys) this.targetPitch -= 0.9 * steerK * dt;
     // How far the player moved the nose up or down this frame (used in the
     // air, where the aim is kept relative to the flight path).
     const aimDelta =
       -my * movement.mouseSensitivity * 0.78 +
-      (input.pitchUpKeys ? 0.9 * dt : 0) -
-      (input.pitchDownKeys ? 0.9 * dt : 0);
+      (input.pitchUpKeys ? 0.9 * steerK * dt : 0) -
+      (input.pitchDownKeys ? 0.9 * steerK * dt : 0);
     if (pitchInput) this.pitchInputTimer = movement.pitchTrimDelay;
     else {
       this.pitchInputTimer -= dt;
@@ -726,25 +1615,20 @@ export class Dolphin {
     // drag and fin lift, no tail stroke, no ride trim and no surface lock
     // (hull.js, re-entry below). The body carries its whole 3D velocity
     // through the surface and stays tucked until Shift is let go.
-    // Pressing Shift in the air dives at once. Shift still held from a
-    // breach (a boosted breach) arms the dive only past the top of the arc,
-    // so it does not pull the body down on its way up. It never arms from a
-    // Space leap or while Space is held: those belong to the ride (a leap
-    // you land back into, porpoising), and surging riders hold Shift
-    // through them.
+    // Only a fresh press of Shift while the body is already in the air
+    // starts a dive. Shift already held when it left the water (a surging
+    // swim, a boosted breach) never does, however long it stays held: let
+    // go and press again in the air to dive. While the dive lasts the tail
+    // is still (no stroke, see Propulsion) and steering is cut to
+    // `movement.diveSteer`.
     {
       const wetNow = this.hydro ? this.hydro.wetFraction : 1;
       const inAir = wetNow < 0.05 && (this.leaping || this.leapFlight);
-      if (!input.boost) {
-        this.diveState = false;
-        this._boostThroughExit = false;
-      } else if (
-        !this.diveState &&
-        inAir &&
-        (!this._boostThroughExit || (!this.leapFlight && this.velocity.y <= 0 && !input.rise))
-      ) {
-        this.diveState = true;
-      }
+      const shiftDown = !!input.boost;
+      const shiftPress = shiftDown && !this._shiftWas;
+      this._shiftWas = shiftDown;
+      if (!shiftDown) this.diveState = false;
+      else if (shiftPress && inAir) this.diveState = true;
       // The seabed: a diving dolphin knows where the bottom is and pulls out
       // above it. Where the path would reach the sand within about 1.6 s,
       // the body opens out of the tuck (fin lift and drag come back) and
@@ -975,8 +1859,10 @@ export class Dolphin {
         (this.velocity.y - wvel.y) * this.forward.y +
         (this.velocity.z - wvel.z) * this.forward.z
       : this.velocity.dot(this.forward);
-    const surge = input.boost && !input.brake;
-    const thrusting = (input.forward || surge) && !input.brake;
+    // In a Shift dive neither W nor Shift strokes: the tail is held still.
+    const diving = this.diveState;
+    const surge = input.boost && !input.brake && !diving;
+    const thrusting = (input.forward || surge) && !input.brake && !diving;
 
     // --- Propulsion ------------------------------------------------------
     // Thrust stays an acceleration (the same hand feel as before), while all
@@ -991,7 +1877,7 @@ export class Dolphin {
       // Speed a wave gives you beyond that is yours to keep.
       const overrun = 1 - smoothstep(1, 1 + movement.thrustTaper, forwardSpeed / targetSpeed);
       thrustAccel = accel * (0.38 + headroom * 0.62) * overrun;
-    } else if (!input.brake && forwardSpeed < movement.idleGlide) {
+    } else if (!input.brake && !diving && forwardSpeed < movement.idleGlide) {
       // A slow, always-present tail scull keeps the creature alive at rest.
       // Capped: swept backwards through fast water (or just after a
       // teleport), the scull must not turn into a sprint.
@@ -1010,8 +1896,12 @@ export class Dolphin {
     }
     if (this.tailStill > 0 && thrustAccel > 0) thrustAccel *= 1 - this.tailStill;
     // Tucked in a Shift dive the tail is still: the body glides on what it
-    // carried in.
-    if (this.streamline > 0 && thrustAccel > 0) thrustAccel *= 1 - this.streamline;
+    // carried in, and the stroke comes back over a few frames once Shift is
+    // let go. (`_diveHold` follows the dive itself, not the tuck, which
+    // opens up near the seabed: the tail stays still there too.)
+    this._diveHold = damp(this._diveHold || 0, diving ? 1 : 0, diving ? 14 : 8, dt);
+    if (this._diveHold < 1e-3) this._diveHold = 0;
+    if (this._diveHold > 0 && thrustAccel > 0) thrustAccel *= 1 - this._diveHold;
 
     let reverseAccel = 0;
     if (input.brake) {
@@ -1351,8 +2241,6 @@ export class Dolphin {
     const clearOfWater = this.position.y > centerHeight + 0.3;
     if (!this.leaping && clearOfWater) {
       this.leaping = true;
-      // Shift held through the breach: the dive arms only past the apex.
-      this._boostThroughExit = !!input.boost;
       const exitSpeed = this.velocity.length();
       const breachPower = clamp(Math.abs(this.velocity.y) * 0.38 + exitSpeed * 0.08, 0.2, 2.1);
       this.surfaceImpulseAll(ocean, centerWater, breachPower);
@@ -1631,7 +2519,16 @@ export class Dolphin {
     // used to switch its reach and its tempo in a single frame.
     this._strokeOn = damp(this._strokeOn || 0, thrusting ? 1 : 0, tailCfg.tailEase, dt);
     this._surgeOn = damp(this._surgeOn || 0, surge ? 1 : 0, tailCfg.tailEase, dt);
-    this._tailWater = damp(this._tailWater ?? 1, underwater ? 1 : movement.airTailScale, tailCfg.tailEase * 1.5, dt);
+    // Out of the water the tail has nothing to push against, so it does not
+    // swim: once the flukes themselves are clear (not just the body's
+    // centre, so the last stroke of a breach still plays out), the beat
+    // dies away over about a tenth of a second and the tail rides the leap
+    // held in line (`movement.airTailScale` of the stroke is left; 0 by
+    // default). The beat's tempo winds down with it, so the tail settles
+    // rather than freezing mid-stroke.
+    const tp = this.tmp.copy(this.bodyParts[2].offset).applyQuaternion(this.orientation).add(this.position);
+    const flukesWet = tp.y < ocean.getWaterHeight(tp.x, tp.z) + (this.surfaceLead || 0);
+    this._tailWater = damp(this._tailWater ?? 1, flukesWet ? 1 : movement.airTailScale, tailCfg.tailEase * 1.5, dt);
     this.tailHeave =
       Math.min(
         (tailCfg.tailHeaveIdle +
@@ -1643,7 +2540,7 @@ export class Dolphin {
         tailCfg.tailHeaveMax * strokeScale
       ) *
       this._tailWater *
-      (1 - 0.92 * (this.tailStill || 0));
+      (1 - 0.92 * Math.max(this.tailStill || 0, this._diveHold || 0));
 
     const beatRate =
       tailCfg.tailBeatBase +
@@ -1654,7 +2551,11 @@ export class Dolphin {
     // The tempo changes over a beat, too: speed jumps at a landing or a
     // waterline crossing must not make the tail skip.
     this._beatEased = damp(this._beatEased ?? beatRate, beatRate, tailCfg.tailEase, dt);
-    this.tailPhase += dt * Math.min(this._beatEased, tailCfg.tailBeatMax) * (1 - 0.75 * (this.tailStill || 0));
+    this.tailPhase +=
+      dt *
+      Math.min(this._beatEased, tailCfg.tailBeatMax) *
+      (1 - 0.75 * Math.max(this.tailStill || 0, this._diveHold || 0)) *
+      (0.15 + 0.85 * clamp(this._tailWater, 0, 1));
     this.tailUniforms.causticTime.value = ocean.time;
     this.wetness = Math.max(0, this.wetness - dt * 0.13);
     this.impact *= Math.exp(-TUNING.movement.cameraShakeDecay * dt);
@@ -1666,6 +2567,7 @@ export class Dolphin {
     if (this.skinnedMesh) {
       this.root.quaternion.identity();
       this._updateSpineAnimation(dt);
+      this._updateFlippers(dt, input, seabed);
     } else {
       this.root.quaternion.copy(this.orientation);
     }
@@ -1733,7 +2635,7 @@ export class Dolphin {
     this.diveState = false;
     this.streamline = 0;
     this.floorPull = 0;
-    this._boostThroughExit = false;
+    this._diveHold = 0;
     this._lockSettle = 0;
     this.rideCmd = undefined;
     this.tailStill = 0;
@@ -1874,9 +2776,11 @@ export class Dolphin {
       this._leapOff(up, drive, sx, sz, fx, fz);
     }
 
-    // Porpoising: holding Space and swimming (W) on open water at speed, the
-    // dolphin runs a short stretch just under the surface and then clears it
-    // in a low, long leap, over and over. Leap height grows with speed.
+    // Auto-porpoising (hydro.porpoise, off by default): holding Space and
+    // swimming (W) on open water at speed, the dolphin runs a short stretch
+    // just under the surface and then clears it in a low, long leap, over
+    // and over. Leap height grows with speed. Off, every leap is the
+    // player's own, by letting go of Space.
     const swimming = (input.forward || input.boost) && !input.brake;
     if (
       want &&
@@ -1885,7 +2789,7 @@ export class Dolphin {
       this.surfLock > 0.9 &&
       this.surfGlide < 0.3 &&
       relFwd > cfg.porpoiseSpeed &&
-      cfg.porpoise > 0
+      cfg.porpoise
     ) {
       this.porpoiseClock = (this.porpoiseClock || 0) + dt;
       const interval = clamp(1.5 - 0.05 * relFwd, 0.45, 1.2);

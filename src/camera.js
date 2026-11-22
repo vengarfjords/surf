@@ -51,6 +51,9 @@ export class CameraRig {
     this.surfFwd = new THREE.Vector3();
     this.surfPos = new THREE.Vector3();
     this.surfLook = new THREE.Vector3();
+    // Shift dive shot blend (0..1) and the facing it follows.
+    this.dive = 0;
+    this.diveFwd = new THREE.Vector3(0, 0, 1);
   }
 
   /**
@@ -133,18 +136,44 @@ export class CameraRig {
     );
     this.orbitRight.set(Math.cos(this.orbitYaw), 0, -Math.sin(this.orbitYaw));
 
-    const distance = camCfg.chaseDistance + speedNorm * camCfg.speedPullback;
+    // Shift dive: the shot swings round to sit straight behind the body,
+    // along the way it faces, and dolly-zooms (narrower view, lens backed
+    // off to keep the dolphin the same size). One continuous blend, so the
+    // move in and back out is a single eased swing, never a cut.
+    const diveT = camCfg.diveCam && started && dolphin.diveState ? 1 : 0;
+    // A dive starting from the ordinary shot swings from where the lens
+    // already looks.
+    if (this.dive === 0 && diveT) this.diveFwd.copy(fwd);
+    this.dive = damp(this.dive, diveT, diveT > this.dive ? camCfg.diveBlendIn : camCfg.diveBlendOut, dt);
+    if (this.dive < 1e-4) this.dive = 0;
+    // Smoothstepped, so the swing starts and lands gently.
+    const dive = this.dive * this.dive * (3 - 2 * this.dive);
+    if (dive > 0) {
+      // Follow the physical body's facing (not the mouse target, which
+      // leads it), filtered so the tuck's quick realignment reads as one
+      // smooth turn of the lens.
+      const k = 1 - Math.exp(-(camCfg.diveFollow ?? 7) * dt);
+      this.diveFwd.lerp(dolphin.forward, k).normalize();
+      fwd.lerp(this.diveFwd, dive).normalize();
+    }
+
+    // Dolly zoom: the lens backs off by the ratio that keeps the subject's
+    // size fixed as the field of view narrows (d tan(f/2) held constant).
+    const fov0 = camCfg.baseFov + speedNorm * camCfg.speedFov;
+    const fovDive = fov0 - dive * (camCfg.diveFovDrop ?? 0);
+    const dolly = Math.tan((fov0 * Math.PI) / 360) / Math.tan((Math.max(20, fovDive) * Math.PI) / 360);
+    const distance = (camCfg.chaseDistance + speedNorm * camCfg.speedPullback) * dolly;
     const height = camCfg.chaseHeight * (0.78 + 0.22 * Math.cos(dolphin.roll * 0.6));
 
     const targetPos = this.desiredPos.copy(dolphin.position);
     targetPos.addScaledVector(fwd, -distance);
-    targetPos.addScaledVector(worldUp, height + speedNorm * 0.26);
-    targetPos.addScaledVector(this.orbitRight, camCfg.shoulder);
-    targetPos.addScaledVector(dolphin.up, 0.2);
+    targetPos.addScaledVector(worldUp, (height + speedNorm * 0.26) * (1 - dive));
+    targetPos.addScaledVector(this.orbitRight, camCfg.shoulder * (1 - dive));
+    targetPos.addScaledVector(dolphin.up, 0.2 * (1 - dive));
 
     const targetLook = this.desiredLook.copy(dolphin.position);
     targetLook.addScaledVector(fwd, camCfg.targetAhead + speedNorm * 1.4);
-    targetLook.addScaledVector(worldUp, camCfg.lookUp);
+    targetLook.addScaledVector(worldUp, camCfg.lookUp * (1 - dive));
 
     if (surf > 0) {
       // Surf follow: behind along the steering heading, level, lifted toward
@@ -193,8 +222,9 @@ export class CameraRig {
         sp.lerp(lp, lock);
         sl.lerp(ll, lock);
       }
-      targetPos.lerp(sp, surf);
-      targetLook.lerp(sl, surf);
+      // A dive's shot takes over from the surf shot.
+      targetPos.lerp(sp, surf * (1 - dive));
+      targetLook.lerp(sl, surf * (1 - dive));
     }
 
     if (!started) {
@@ -264,7 +294,9 @@ export class CameraRig {
         this.position.addScaledVector(dolphin.velocity, dt * carry);
         this.look.addScaledVector(dolphin.velocity, dt * carry);
       }
-      const lag = lerp(camCfg.positionLag, camCfg.surfPositionLag, surf) * (started ? 1 : 0.55);
+      // In a dive the lens holds the line behind the body more tightly, so
+      // the falling arc does not leave it sitting above the dolphin.
+      const lag = lerp(lerp(camCfg.positionLag, camCfg.surfPositionLag, surf), camCfg.divePositionLag ?? camCfg.positionLag, dive) * (started ? 1 : 0.55);
       dampVec3(this.position, targetPos, lag, dt);
       dampVec3(this.look, targetLook, camCfg.rotationLag, dt);
     }
@@ -275,6 +307,7 @@ export class CameraRig {
     dbg.sub = submerged ? 1 : 0;
     dbg.near = nearSurface ? 1 : 0;
     dbg.surf = +surf.toFixed(2);
+    dbg.dive = +dive.toFixed(2);
     dbg.tgtY = +(targetPos.y - waterAtDolphin).toFixed(2);
     // Re-check after damping; the smoothed camera can otherwise still pass
     // through a steep bank or a crest.
@@ -339,10 +372,12 @@ export class CameraRig {
     const targetFov =
       camCfg.baseFov +
       speedNorm * camCfg.speedFov +
-      surf * camCfg.surfFov +
+      surf * camCfg.surfFov * (1 - dive) +
       Math.sin(this.time * 0.18) * 0.18;
     this.fov = damp(this.fov, targetFov, 2.8, dt);
-    this.camera.fov = this.fov;
+    // The dive's narrowing is applied undamped (the blend already eases
+    // it), so it stays in step with the lens backing off.
+    this.camera.fov = this.fov - dive * (camCfg.diveFovDrop ?? 0);
     this.camera.updateProjectionMatrix();
 
     this.underwaterTarget = this.camera.position.y < smoothedSurf.height - 0.02 ? 1 : 0;
