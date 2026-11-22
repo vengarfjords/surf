@@ -44,6 +44,32 @@ export const GLSL_RIPPLES = /* glsl */ `
   uniform vec2 uFlowCenter;
   uniform float uFlowExtent;
 
+  // Smooth noise for natural, unaligned variation: value noise with a
+  // quintic fade (no creases at the lattice lines) whose octaves are each
+  // turned by a different angle, so no lattice direction survives. Plain
+  // fbm2 lines its features up with the world axes, which shows as straight
+  // bands across the bed from a distance.
+  float vnoiseQ(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  }
+  float fbmR(vec2 p) {
+    p = mat2(0.809, 0.588, -0.588, 0.809) * p;
+    float v = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 4; i++) {
+      v += vnoiseQ(p) * amp;
+      p = mat2(1.62, 1.18, -1.18, 1.62) * p + 7.1;
+      amp *= 0.5;
+    }
+    return v;
+  }
   float ripWarp(vec2 p) {
     return 1.25 * sin(0.23 * p.x + 0.31 * p.y + 1.3) +
       0.8 * sin(-0.41 * p.x + 0.17 * p.y + 2.9) +
@@ -96,14 +122,14 @@ export const GLSL_RIPPLES = /* glsl */ `
   float ripPhase(vec2 p, inout float core) {
     vec2 q = p * uRipK.x * 0.159155;
     float w = ripWarp(p) +
-      (fbm2(q * 0.18 + 3.0) - 0.5) * 5.0 +
-      (fbm2(q * 0.55 + 11.0) - 0.5) * 1.0 +
+      (fbmR(q * 0.18 + 3.0) - 0.5) * 5.0 +
+      (fbmR(q * 0.55 + 11.0) - 0.5) * 1.0 +
       ripFork(q, 5.0, 0.0, core) + ripFork(q + 2.5, 7.0, 31.0, core);
     return uRipK.x * (dot(p, uRipDir.xy) - uRipK.z) + w;
   }
   float ripAmpMod(vec2 p) {
     vec2 q = p * uRipK.x * 0.159155;
-    return 0.7 + 0.3 * smoothstep(0.3, 0.62, fbm2(q * 0.075 + 7.0));
+    return 0.7 + 0.3 * smoothstep(0.3, 0.62, fbmR(q * 0.075 + 7.0));
   }
   // Peaked crests and broad rounded troughs, as wave ripples stand: two
   // flanks meeting at an edge on the crest (where the light breaks from
@@ -126,7 +152,7 @@ export const GLSL_RIPPLES = /* glsl */ `
   vec3 ripples(vec2 p, float amp, vec2 wdx, vec2 wdy) {
     float across = max(abs(dot(wdx, uRipDir.xy)), abs(dot(wdy, uRipDir.xy)));
     float pixel = max(across, 0.4 * max(length(wdx), length(wdy)));
-    amp *= 1.0 - smoothstep(1.2, 2.1, pixel * uRipK.x);
+    amp *= 1.0 - smoothstep(1.3, 2.7, pixel * uRipK.x);
     if (amp < 1e-5) return vec3(0.0);
     amp *= ripAmpMod(p);
     float soft = clamp(pixel * uRipK.x * 0.318310 * 1.6, 0.1, 0.7);

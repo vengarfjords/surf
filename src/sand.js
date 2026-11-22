@@ -620,7 +620,7 @@ const SAND_FRAG = /* glsl */ `
     vec2 wdy = dFdy(vWorld.xz);
     float footprint = max(length(wdx), length(wdy));
 
-    float micro = (fbm2(vWorld.xz * 11.0) - 0.5) * (1.0 - smoothstep(0.03, 0.08, footprint));
+    float micro = (fbmR(vWorld.xz * 11.0) - 0.5) * (1.0 - smoothstep(0.03, 0.08, footprint));
 
     // Swell ripples (sand-swell.js): ridges lying across the swell, as tall
     // as the bed speed at this depth allows, wiped where the dolphin has
@@ -645,7 +645,7 @@ const SAND_FRAG = /* glsl */ `
     // small on screen (seen from high above or far off), where a pixel
     // averages a lit flank with a shaded one.
     float ripPix = max(max(abs(dot(wdx, uRipDir.xy)), abs(dot(wdy, uRipDir.xy))), 0.4 * footprint) * uRipK.x;
-    float ripShadeK = mix(1.0, 0.45, smoothstep(0.2, 1.1, ripPix));
+    float ripShadeK = mix(1.0, 0.6, smoothstep(0.2, 1.1, ripPix));
     float ripLit = clamp(1.0 + (dot(ripN, lightDir) / max(lightDir.y, 0.3) - 1.0) * 1.2 * ripShadeK, 0.7, 1.35);
 
     // Stirred sand: the cloud the surge lifts off the bed.
@@ -656,12 +656,12 @@ const SAND_FRAG = /* glsl */ `
 
     // Light focused by the wave groups overhead: broad, soft and slow. (The
     // net of bright lines is laid over every surface in post.)
-    float webMask = smoothstep(0.33, 0.76, fbm2(vWorld.xz * 0.11 + uTime * 0.006));
+    float webMask = smoothstep(0.33, 0.76, fbmR(vWorld.xz * 0.11 + uTime * 0.006));
     float caustics = 0.6 * (0.5 + webMask * 0.6);
     float causticMask = smoothstep(-16.0, -1.4, height) * (0.4 + 0.6 * smoothstep(0.05, 0.9, detailN.y));
     vec3 causticTint = uSunColor * caustics * uCausticStrength * causticMask * 0.72;
 
-    float patches = fbm2(vWorld.xz * 0.27 + 4.1);
+    float patches = fbmR(vWorld.xz * 0.27 + 4.1);
     float siltStain = smoothstep(0.55, 0.82, patches);
     vec3 sand = vColor;
     sand *= 0.29 + ndl * 0.52 + ambient * 0.18;
