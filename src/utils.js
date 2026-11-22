@@ -193,10 +193,14 @@ export function seabedNormal(x, z, out = { x: 0, y: 1, z: 0 }) {
 }
 
 export const glslNoise = /* glsl */ `
+  // Small multipliers keep the hash exact in float32 out to the edge of the
+  // shelf. The old fract(p * 456.21) lost its low bits once p reached the
+  // thousands (fine noise far from the origin), and the rounding showed as
+  // straight grid lines and stripes in the sand.
   float hash21(vec2 p) {
-    p = fract(p * vec2(123.34, 456.21));
-    p += dot(p, p + 45.32);
-    return fract(p.x * p.y);
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
   }
   float vnoise(vec2 p) {
     vec2 i = floor(p);

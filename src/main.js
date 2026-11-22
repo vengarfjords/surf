@@ -71,6 +71,11 @@ async function boot() {
     const surface = seabed.getSurfaceHeight(event.x, event.z);
     effects.sandPlume(event.x, event.z, event.amount, event.radius, surface);
   };
+  seabed.ocean = ocean;
+  seabed.swell.onCloud = (event) => {
+    const surface = seabed.getSurfaceHeight(event.x, event.z);
+    effects.sandCloud(event.x, event.z, event.strength, surface, event.vx, event.vz);
+  };
   seabed.sim.onRipple = (event) => {
     const surface = seabed.getSurfaceHeight(event.x, event.z);
     effects.rippleDust(event.x, event.z, event.strength, surface);
@@ -203,7 +208,16 @@ async function boot() {
     camera.updateProjectionMatrix();
     post.setSize(w, h);
   }
-  window.addEventListener("resize", resize);
+  // Resizing the canvas clears it. Done between frames (after a render, or
+  // from the resize event), the browser shows that cleared, black canvas
+  // until the next frame is drawn; Safari takes long enough reallocating
+  // the render targets that it reads as a black flash. So a resize is only
+  // requested here and carried out at the top of the next frame, in the
+  // same task as the render that refills the canvas.
+  let resizePending = false;
+  window.addEventListener("resize", () => {
+    resizePending = true;
+  });
 
   canvas.addEventListener("click", () => {
     if (started && !hud.tunerOpen && !document.pointerLockElement) input.requestPointerLock();
@@ -397,6 +411,10 @@ async function boot() {
     }
   }
   function animate(now = performance.now()) {
+    if (resizePending) {
+      resizePending = false;
+      resize();
+    }
     const rawDt = (now - lastFrameTime) / 1000;
     lastFrameTime = now;
     const dt = Math.min(Math.max(rawDt, 0.0001), MAX_FRAME_DT);
@@ -687,7 +705,8 @@ async function boot() {
         );
         if (next < TUNING.visuals.renderScale - 1e-4) {
           TUNING.visuals.renderScale = next;
-          post.setSize(window.innerWidth, window.innerHeight);
+          // Applied before the next render, not now: see resizePending.
+          resizePending = true;
           slowQualityTime = 0;
           qualityCooldown = 2.5;
         }

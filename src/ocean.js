@@ -1173,13 +1173,11 @@ export class Ocean {
             tir += uTopColor * pow(max(0.0, 1.0 - cosI), 1.25) * 0.08;
             float undersideSheen = pow(max(dot(reflect(-view, microN), uSunDir), 0.0), 24.0);
             tir += uSunColor * undersideSheen * 0.1;
-            // Ripple lines on the ceiling: a soft net near the lens, even
-            // beyond it (the mean is the same, so the far ceiling is clean).
-            float veinSharp = 0.3 * (1.0 - smoothstep(8.0, 40.0, vDistance));
+            // No caustic net on the ceiling: caustics form where the light
+            // lands (the seabed, the dolphin), not on the surface it comes
+            // through. Seen from below the surface is only broken up by its
+            // own ripples (microHeight). The net's mean keeps the brightness.
             float veins = 2.3;
-            if (veinSharp > 0.01) {
-              veins *= mix(1.0, causticNetwork(vWorld.xz * 0.9 + vec2(uTime * 0.04, -uTime * 0.03), uTime * 0.55), veinSharp);
-            }
             tir += uTopColor * veins * 0.03 * (0.45 + 0.55 * wav);
 
             vec3 winCol = skyColor(winDir, uSunDir, uTime, 0.6);

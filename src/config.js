@@ -617,6 +617,51 @@ export const TUNING = {
     interactionStrength: 1.0,
   },
 
+  // What the swell does to the sand (sand-swell.js). Bed speeds are the
+  // significant orbital speed at the bottom from linear wave theory.
+  sandSwell: {
+    ripples: true,
+    // Ripples start forming above `onset` m/s, are full height by `full`,
+    // and wash flat between washStart and washEnd (sheet flow); breaking
+    // water flattens them by breakWash.
+    onset: 0.15,
+    full: 0.9,
+    washStart: 3.4,
+    washEnd: 5.4,
+    breakWash: 0.3,
+    // Grain size (m): medium sand. Sets the ripple length with the orbital
+    // diameter (sand-swell.js), clamped to lambdaMin..lambdaMax.
+    grainSize: 0.0004,
+    lambdaMin: 0.1,
+    lambdaMax: 0.8,
+    // Peak-to-trough height as a fraction of the length (vortex ripples
+    // stand at about 0.15).
+    heightRatio: 0.15,
+    // Crest creep with the waves (m/s at full bed speed): real ripples
+    // creep centimetres a minute.
+    migration: 0.0012,
+    // Sand moved this deep (m) wipes the ripples; they grow back in about
+    // regrowTime seconds of full swell (slower where the bed speed is low).
+    eraseDepth: 0.05,
+    regrowTime: 75,
+    // Surge rounds off trenches and rims: diffusion (m^2/s) at full bed speed.
+    smoothRate: 0.0012,
+    // Bed flow window: cells, size (m), rows refreshed per frame = cells/passes.
+    flowCells: 32,
+    flowExtent: 128,
+    flowPasses: 4,
+    flowComponents: 40,
+    staticRowsPerFrame: 3,
+    // Sand lifts when a wave's bed speed passes stirSpeed (m/s), and under
+    // breakers; the cloud settles out over settleTime s.
+    stirSpeed: 1.6,
+    stirRate: 0.35,
+    breakerStir: 1.4,
+    settleTime: 4.5,
+    cloudParticles: 12,
+    cloudReach: 22,
+  },
+
   visuals: {
     fogShallow: 0.51,
     fogDeep: 0.67,
@@ -849,6 +894,13 @@ export const TUNE_CONTROLS = [
   { path: "sand.maxCutDepth", label: "sand cut depth", min: 1, max: 7, step: 0.1 },
   { path: "sand.maxContactDepth", label: "contact cut depth", min: 0.2, max: 2.5, step: 0.05 },
   { path: "sand.glideDepth", label: "glide scoop", min: 0.01, max: 0.24, step: 0.005 },
+  { path: "sandSwell.ripples", label: "swell ripples", type: "toggle" },
+  { path: "sandSwell.heightRatio", label: "ripple height", min: 0, max: 0.25, step: 0.005 },
+  { path: "sandSwell.grainSize", label: "sand grain size", min: 0.0001, max: 0.002, step: 0.00005 },
+  { path: "sandSwell.migration", label: "ripple creep", min: 0, max: 0.01, step: 0.0002 },
+  { path: "sandSwell.regrowTime", label: "ripple regrow time", min: 10, max: 400, step: 5 },
+  { path: "sandSwell.stirSpeed", label: "sand stir speed", min: 0.4, max: 4, step: 0.05 },
+  { path: "sandSwell.smoothRate", label: "surge smoothing", min: 0, max: 0.01, step: 0.0002 },
   { path: "visuals.volumetricScatter", label: "water scatter", min: 0, max: 2, step: 0.01 },
   { path: "visuals.shaftStrength", label: "god rays", min: 0, max: 1.6, step: 0.01 },
   { path: "visuals.volumetricCaustics", label: "caustic light", min: 0, max: 1.8, step: 0.01 },

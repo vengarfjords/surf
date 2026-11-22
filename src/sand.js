@@ -12,6 +12,7 @@ import {
   seabedNormal,
   smoothstep,
 } from "./utils.js";
+import { GLSL_RIPPLES, SandSwell } from "./sand-swell.js";
 
 /**
  * Granular seabed.
@@ -34,19 +35,32 @@ export class SandSimulation {
     this.simClock = 0;
     this.time = 0;
     this.visualHeights = new Float32Array(this.n * this.n);
+    // Where contact has wiped out the swell's ripples (0 = ripples at their
+    // natural height, 1 = flat). They grow back at the swell's pace.
+    this.erase = new Float32Array(this.n * this.n);
+    this.visualErase = new Float32Array(this.n * this.n);
+    this.texData = new Float32Array(this.n * this.n * 2);
+    this.swell = null;
+    this.smoothClock = 0;
+    // Rows [rowMin, rowMax] that hold any dug, piled or wiped sand (rowMin >
+    // rowMax: none). Settling, surge smoothing and the visual chase only
+    // walk these rows: the marks are local, and walking all 384 rows
+    // several times a frame cost a few ms on a flat bed.
+    this.rowMin = this.n;
+    this.rowMax = -1;
     this.onSediment = null;
     this.onRipple = null;
     this.displacements = [];
     this.tempNormal = { x: 0, y: 1, z: 0 };
 
-    // One-channel float texture; its data is the smoothed height field. This
-    // avoids both RGBA padding and the previous/next texture copy that caused
-    // visible stepping at the simulation rate.
+    // Two-channel float texture: the smoothed height field and the ripple
+    // erase. No previous/next texture copy, which caused visible stepping at
+    // the simulation rate.
     this.texture = new THREE.DataTexture(
-      this.visualHeights,
+      this.texData,
       this.n,
       this.n,
-      THREE.RedFormat,
+      THREE.RGFormat,
       THREE.FloatType
     );
     this.texture.minFilter = THREE.LinearFilter;
@@ -64,8 +78,29 @@ export class SandSimulation {
     this.center.set(centerX, centerZ);
     this.heights.fill(0);
     this.visualHeights.fill(0);
+    this.erase.fill(0);
+    this.visualErase.fill(0);
+    this.texData.fill(0);
     this.texture.needsUpdate = true;
     this.dirty = false;
+    this.rowMin = this.n;
+    this.rowMax = -1;
+  }
+
+  _markRows(y0, y1) {
+    this.rowMin = Math.max(0, Math.min(this.rowMin, y0));
+    this.rowMax = Math.min(this.n - 1, Math.max(this.rowMax, y1));
+  }
+
+  _packTexture() {
+    const d = this.texData;
+    const v = this.visualHeights;
+    const e = this.visualErase;
+    for (let i = 0, o = 0; i < v.length; i++, o += 2) {
+      d[o] = v[i];
+      d[o + 1] = e[i];
+    }
+    this.texture.needsUpdate = true;
   }
 
   recenterIfNeeded(x, z) {
@@ -78,22 +113,34 @@ export class SandSimulation {
     const cx = Math.round(shiftX / this.cell);
     const cz = Math.round(shiftZ / this.cell);
     const n = this.n;
-    this.scratch.fill(0);
-    for (let y = 0; y < n; y++) {
-      const sy = y - cz;
-      if (sy < 0 || sy >= n) continue;
-      for (let x0 = 0; x0 < n; x0++) {
-        const sx = x0 - cx;
-        if (sx < 0 || sx >= n) continue;
-        this.scratch[y * n + x0] = this.heights[sy * n + sx];
+    const shiftField = (field) => {
+      this.scratch.fill(0);
+      for (let y = 0; y < n; y++) {
+        // The centre moved cz cells: new row y is old row y + cz.
+        const sy = y + cz;
+        if (sy < 0 || sy >= n) continue;
+        for (let x0 = 0; x0 < n; x0++) {
+          const sx = x0 + cx;
+          if (sx < 0 || sx >= n) continue;
+          this.scratch[y * n + x0] = field[sy * n + sx];
+        }
       }
-    }
-    this.heights.set(this.scratch);
+      field.set(this.scratch);
+    };
+    shiftField(this.heights);
+    shiftField(this.erase);
     this.center.x = Math.round((this.center.x + shiftX) / this.cell) * this.cell;
     this.center.y = Math.round((this.center.y + shiftZ) / this.cell) * this.cell;
     this.visualHeights.set(this.heights);
-    this.texture.needsUpdate = true;
+    this.visualErase.set(this.erase);
+    this._packTexture();
     this.dirty = false;
+    if (this.rowMin <= this.rowMax) {
+      const lo = Math.max(0, this.rowMin - cz);
+      const hi = Math.min(n - 1, this.rowMax - cz);
+      this.rowMin = lo <= hi ? lo : n;
+      this.rowMax = lo <= hi ? hi : -1;
+    }
     return true;
   }
 
@@ -103,6 +150,9 @@ export class SandSimulation {
     const dirZ = opts.dirZ ?? 0;
     const stretch = opts.stretch ?? 1.3;
     const rim = opts.rim ?? 1;
+    // How much this stamp wipes the swell ripples (direct contact: fully;
+    // a low glide's pressure wash: barely).
+    const eraseScale = opts.erase ?? 1;
     const speed = opts.speed ?? 1;
     const crater = opts.crater ?? 0;
     const n = this.n;
@@ -177,10 +227,16 @@ export class SandSimulation {
           -TUNING.sand.maxCutDepth,
           TUNING.sand.maxPileHeight
         );
-        displaced += Math.abs(this.heights[idx] - before);
+        const change = Math.abs(this.heights[idx] - before);
+        displaced += change;
+        // Disturbed sand loses its ripples.
+        if (change > 0 && eraseScale > 0) {
+          this.erase[idx] = Math.min(1, this.erase[idx] + (change * eraseScale) / TUNING.sandSwell.eraseDepth);
+        }
         if (add < 0) deepest = Math.max(deepest, -add);
       }
     }
+    if (displaced > 0) this._markRows(y0, y1);
     if (displaced > 0.0001) {
       this.dirty = true;
       if (this.onSediment && opts.notify !== false) {
@@ -247,6 +303,7 @@ export class SandSimulation {
       stretch: 1.85,
       rim: 0.48,
       speed: speed * 0.25,
+      erase: 0.08,
     });
     // A broader, shallower pressure wash travels with the body ahead of the
     // fluke trough. It is deliberately low amplitude and mass-conserving.
@@ -258,6 +315,7 @@ export class SandSimulation {
         rim: 0.12,
         speed: speed * 0.12,
         notify: false,
+        erase: 0,
       });
     }
     if (this.onRipple && closeness > 0.04) {
@@ -287,8 +345,14 @@ export class SandSimulation {
       [1, 1, 0.707], [1, -1, 0.707], [-1, 1, 0.707], [-1, -1, 0.707],
     ];
     let moved = 0;
+    if (this.rowMin > this.rowMax) return 0;
+    // Talus can spill one row past the marked band per step.
+    const yA = Math.max(1, this.rowMin - 1);
+    const yB = Math.min(n - 2, this.rowMax + 1);
+    let touchA = n;
+    let touchB = -1;
 
-    for (let y = 1; y < n - 1; y++) {
+    for (let y = yA; y <= yB; y++) {
       for (let x = 1; x < n - 1; x++) {
         const i = y * n + x;
         const center = s[i];
@@ -316,9 +380,12 @@ export class SandSimulation {
           h[i] -= flow;
           h[j] += flow;
           moved += flow;
+          if (y - 1 < touchA) touchA = y - 1;
+          if (y + 1 > touchB) touchB = y + 1;
         }
       }
     }
+    if (touchA <= touchB) this._markRows(touchA, touchB);
     if (moved > 0.00003) this.dirty = true;
     return moved;
   }
@@ -331,23 +398,137 @@ export class SandSimulation {
     if (this.simClock >= interval) {
       this.simClock = 0;
       this.relax(interval);
+      this.smoothClock += interval;
+      if (this.swell && this.smoothClock >= 0.1) {
+        this.weather(this.smoothClock);
+        this.smoothClock = 0;
+      }
     }
 
     // The visual sand chases the physical height field with an exponential
     // filter. This runs every rendered frame and removes the simulation-step
     // stutter without adding a full previous/next texture crossfade.
     const alpha = 1 - Math.exp(-TUNING.sand.visualResponse * dt);
+    // Ripples flatten over about a third of a second where sand is pushed,
+    // instead of vanishing in a frame.
+    const alphaErase = 1 - Math.exp(-3 * dt);
     let changed = false;
     const h = this.heights;
     const v = this.visualHeights;
-    for (let i = 0; i < v.length; i++) {
+    const e = this.erase;
+    const ve = this.visualErase;
+    const tex = this.texData;
+    // Outside the marked rows height and erase are zero and so is the
+    // visual copy (recentering and reset sync them).
+    const iA = this.rowMin <= this.rowMax ? this.rowMin * this.n : 0;
+    const iB = this.rowMin <= this.rowMax ? (this.rowMax + 1) * this.n : 0;
+    for (let i = iA; i < iB; i++) {
       const diff = h[i] - v[i];
-      if (Math.abs(diff) > 1e-7) {
+      if (diff > 1e-7 || diff < -1e-7) {
         v[i] += diff * alpha;
+        tex[i * 2] = v[i];
+        changed = true;
+      }
+      const de = e[i] - ve[i];
+      if (de > 1e-5 || de < -1e-5) {
+        ve[i] += de * alphaErase;
+        tex[i * 2 + 1] = ve[i];
         changed = true;
       }
     }
     if (changed) this.texture.needsUpdate = true;
+  }
+
+  /**
+   * What the swell does to the field between visits: surge rounds off
+   * trenches and rims (mass-conserving diffusion, fast where the bed speed
+   * is high), wiped ripples grow back, and breaking water wipes them.
+   */
+  weather(dt) {
+    const sw = this.swell;
+    const cfg = TUNING.sandSwell;
+    const n = this.n;
+    const h = this.heights;
+    const e = this.erase;
+    const s = this.scratch;
+    const cell = this.cell;
+    const fn = sw.flowN;
+    const fCell = sw.flowCell;
+    const fx0 = sw.flowCenter.x - sw.extentHalf();
+    const fz0 = sw.flowCenter.y - sw.extentHalf();
+    const ox = this.center.x - ((n - 1) / 2) * cell;
+    const oz = this.center.y - ((n - 1) / 2) * cell;
+    const regrow = dt / Math.max(1, cfg.regrowTime);
+    const smoothK = (cfg.smoothRate * dt) / (cell * cell);
+    const col = this._flowCol || (this._flowCol = new Int32Array(n));
+    for (let x = 0; x < n; x++) {
+      const fi = Math.floor((ox + x * cell - fx0) / fCell);
+      col[x] = fi >= 0 && fi < fn ? fi : -1;
+    }
+    if (this.rowMin > this.rowMax) return 0;
+    s.set(h);
+    let moved = 0;
+    let erased = false;
+    // Diffusion reaches one row past the marked band per step.
+    const yA = Math.max(1, this.rowMin - 1);
+    const yB = Math.min(n - 2, this.rowMax + 1);
+    let touchA = n;
+    let touchB = -1;
+    for (let y = yA; y <= yB; y++) {
+      const wz = oz + y * cell;
+      const fj = Math.floor((wz - fz0) / fCell);
+      const rowOk = fj >= 0 && fj < fn;
+      for (let x = 1; x < n - 1; x++) {
+        const i = y * n + x;
+        const hc = s[i];
+        const er = e[i];
+        const quiet =
+          Math.abs(hc) < 1e-4 &&
+          Math.abs(s[i - 1]) < 1e-4 &&
+          Math.abs(s[i + 1]) < 1e-4 &&
+          Math.abs(s[i - n]) < 1e-4 &&
+          Math.abs(s[i + n]) < 1e-4;
+        let mobility = 0;
+        const fi = col[x];
+        if (rowOk && fi >= 0) mobility = sw.mobility[fj * fn + fi];
+        if (er > 1e-4) {
+          // Ripples need moving water to grow back. (Breakers are not wiped
+          // in here: the field only covers the dense mesh, so a wipe ended
+          // in a hard edge that jumped when the mesh recentered. Breaking
+          // flattens ripples through the depth table instead.)
+          const next = er * (1 - regrow * mobility);
+          e[i] = next < 1e-4 ? 0 : next;
+          erased = true;
+        }
+        if (quiet || mobility <= 0.02) continue;
+        // Explicit diffusion; the step is far below the stability limit.
+        const k = Math.min(0.2, smoothK * mobility * mobility);
+        const lap = s[i - 1] + s[i + 1] + s[i - n] + s[i + n] - 4 * hc;
+        const d = k * lap;
+        if (d === 0) continue;
+        h[i] += d;
+        moved += Math.abs(d);
+        if (y < touchA) touchA = y;
+        if (y > touchB) touchB = y;
+      }
+    }
+    if (touchA <= touchB) this._markRows(touchA, touchB);
+    if (moved > 1e-5 || erased) this.dirty = true;
+    return moved;
+  }
+
+  sampleErase(x, z) {
+    const n = this.n;
+    const fx = (x - this.center.x) / this.cell + (n - 1) / 2;
+    const fy = (z - this.center.y) / this.cell + (n - 1) / 2;
+    if (fx < 0 || fy < 0 || fx >= n - 1 || fy >= n - 1) return 0;
+    const x0 = Math.floor(fx);
+    const y0 = Math.floor(fy);
+    const tx = fx - x0;
+    const ty = fy - y0;
+    const i = y0 * n + x0;
+    const e = this.erase;
+    return lerp(lerp(e[i], e[i + 1], tx), lerp(e[i + n], e[i + n + 1], tx), ty);
   }
 
   sampleDelta(x, z) {
@@ -360,11 +541,8 @@ export class SandSimulation {
     const tx = fx - x0;
     const ty = fy - y0;
     const i = y0 * n + x0;
-    const a = this.heights[i];
-    const b = this.heights[i + 1];
-    const c = this.heights[i + n];
-    const d = this.heights[i + n + 1];
-    return lerp(lerp(a, b, tx), lerp(c, d, tx), ty);
+    const h = this.heights;
+    return lerp(lerp(h[i], h[i + 1], tx), lerp(h[i + n], h[i + n + 1], tx), ty);
   }
 
   getSurfaceHeight(x, z) {
@@ -400,6 +578,8 @@ const SAND_VERT = /* glsl */ `
   varying vec3 vColor;
   varying vec3 vViewDir;
   varying float vDelta;
+  varying float vErase;
+  varying float vBaseY;
 
   float sampleDelta(vec2 world) {
     if (uUseDelta < 0.5) return 0.0;
@@ -407,11 +587,20 @@ const SAND_VERT = /* glsl */ `
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 0.0;
     return texture2D(uSand, uv).r;
   }
+  float sampleErase(vec2 world) {
+    if (uUseDelta < 0.5) return 0.0;
+    vec2 uv = (world - uSandCenter) / uSandExtent + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 0.0;
+    return texture2D(uSand, uv).g;
+  }
 
   void main() {
     vec3 world = (modelMatrix * vec4(position, 1.0)).xyz;
+    vBaseY = world.y;
     float d = sampleDelta(world.xz);
+    float er = sampleErase(world.xz);
     world.y += d;
+    vErase = er;
 
     vec3 n = normalize(mat3(modelMatrix) * normal);
     float e = 0.55;
@@ -448,79 +637,96 @@ const SAND_FRAG = /* glsl */ `
   varying vec3 vColor;
   varying vec3 vViewDir;
   varying float vDelta;
+  varying float vErase;
+  varying float vBaseY;
 
   ${glslNoise}
   ${glslFog}
+  ${GLSL_RIPPLES}
 
   void main() {
     // The coarse whole-shelf mesh has a hole under the dense local sand mesh.
     // Without it, the static base would poke through deep negative trenches
     // and hide the actual deformable surface.
-    if (uHasHole > 0.5 && distance(vWorld.xz, uHoleCenter) < uHoleRadius) discard;
+    // The hole is the dense mesh's square less a 3 m overlap, where the dense
+    // mesh's ripple relief has already faded to nothing; a round hole left
+    // its corners drawn twice, a few centimetres apart.
+    vec2 holeD = abs(vWorld.xz - uHoleCenter);
+    if (uHasHole > 0.5 && max(holeD.x, holeD.y) < uHoleRadius) discard;
     vec3 n = normalize(vNormal);
     float dist = length(vWorld - uCameraPos);
     float height = vWorld.y;
 
-    // Wind-aligned sand ripples, plus granular breakup.
-    vec2 rp = vWorld.xz * 1.62 + vec2(uTime * 0.012, uTime * 0.005);
-    float ripple = sin(dot(rp, vec2(0.72, 0.69)) * 3.0 + fbm2(rp * 0.6) * 4.5);
-    float micro = fbm2(vWorld.xz * 11.0) - 0.5;
-    float rippleGrad = cos(dot(rp, vec2(0.72, 0.69)) * 3.0 + fbm2(rp * 0.6) * 4.5) * 0.19;
-    vec3 detailN = normalize(n + vec3(rippleGrad * 0.3, 0.0, rippleGrad * 0.19) + vec3(micro) * 0.055);
-    // Wave ripples: the sharp-crested ridges a hand or two apart that the
-    // swell combs into loose sand, lying across it, forking and dying out.
-    // The side of each ridge toward the light is bright and the far side
-    // falls into shade, which is most of what bare sand looks like under
-    // water. They fade before they are finer than a pixel.
-    vec2 ripDir = vec2(0.82, 0.573);
-    float ripFade = (1.0 - smoothstep(4.0, 26.0, dist)) * smoothstep(-26.0, -14.0, height);
-    float ripWarp = fbm2(vWorld.xz * 0.8 + 2.0) * 2.6 + fbm2(vWorld.xz * 0.21 + 3.0) * 6.0;
-    float ripPhase = dot(vWorld.xz, ripDir) * 24.0 + ripWarp;
-    float ripSlope = cos(ripPhase);
-    float ripCrest = pow(0.5 + 0.5 * sin(ripPhase), 1.7);
-    // Patches where the ripples are washed out flat.
-    float ripPatch = smoothstep(0.25, 0.6, fbm2(vWorld.xz * 0.16 + 21.0));
-    float ripAmt = ripFade * ripPatch;
-    detailN = normalize(detailN - vec3(ripDir.x, 0.0, ripDir.y) * ripSlope * 0.42 * ripAmt);
-    float ndl = max(dot(detailN, uSunDir), 0.0);
+    // World size of one pixel here (the larger of the two screen axes, so
+    // grazing views count too). Every pattern finer than about two pixels
+    // fades to its mean instead of aliasing into lines and moire.
+    vec2 wdx = dFdx(vWorld.xz);
+    vec2 wdy = dFdy(vWorld.xz);
+    float footprint = max(length(wdx), length(wdy));
+
+    float micro = (fbmR(vWorld.xz * 11.0) - 0.5) * (1.0 - smoothstep(0.03, 0.08, footprint));
+
+    // Swell ripples (sand-swell.js): ridges lying across the swell, as tall
+    // as the bed speed at this depth allows, wiped where the dolphin has
+    // disturbed the sand and growing back after. Sharp crests catch the
+    // light, the broad troughs fall into shade.
+    float ripEqHere = ripEq(-vBaseY) * uRipShape.w;
+    float ripAmp = uRipShape.x * ripEqHere * ripPatch(vWorld.xz) * (1.0 - clamp(vErase, 0.0, 1.0));
+    vec3 rip = ripples(vWorld.xz, ripAmp, wdx, wdy);
+    vec3 detailN = normalize(n - vec3(rip.y, 0.0, rip.z) + vec3(micro) * 0.03);
+    // Fine dark grains and shell grit settle in the troughs, the crests are
+    // swept clean: a tone that follows the height of the ripple.
+    float ripTone = ripAmp > 1e-4 ? clamp(rip.x / max(ripAmp, 1e-4), -0.35, 0.7) : 0.0;
+    // How the ripple faces the light, relative to flat sand: the flank
+    // toward the sun is lit, the lee flank falls into shade. The water
+    // bends daylight steeply down, so a ripple reads from this and from the
+    // shade in its trough rather than from long shadows.
+    vec2 sunFlat = uSunDir.xz / 1.333;
+    vec3 lightDir = vec3(sunFlat.x, sqrt(max(1.0 - dot(sunFlat, sunFlat), 0.0)), sunFlat.y);
+    vec3 ripN = normalize(vec3(-rip.y, 1.0, -rip.z));
+    // Light under water is soft: much of it is scattered, so no flank
+    // falls into deep shade. The shading also eases off as the ripples get
+    // small on screen (seen from high above or far off), where a pixel
+    // averages a lit flank with a shaded one.
+    float ripPix = max(max(abs(dot(wdx, uRipDir.xy)), abs(dot(wdy, uRipDir.xy))), 0.4 * footprint) * uRipK.x;
+    float ripShadeK = mix(1.0, 0.6, smoothstep(0.2, 1.1, ripPix));
+    float ripLit = clamp(1.0 + (dot(ripN, lightDir) / max(lightDir.y, 0.3) - 1.0) * 1.2 * ripShadeK, 0.7, 1.35);
+
+    // Stirred sand: the cloud the surge lifts off the bed.
+    vec4 flow = flowAt(vWorld.xz);
+    float cloud = flow.b;
+    float ndl = max(dot(normalize(n + vec3(micro) * 0.03), uSunDir), 0.0);
     float ambient = 0.17 + 0.18 * smoothstep(-5.0, -24.0, height);
 
     // Light focused by the wave groups overhead: broad, soft and slow. (The
     // net of bright lines is laid over every surface in post.)
-    float webMask = smoothstep(0.33, 0.76, fbm2(vWorld.xz * 0.11 + uTime * 0.006));
+    float webMask = smoothstep(0.33, 0.76, fbmR(vWorld.xz * 0.11 + uTime * 0.006));
     float caustics = 0.6 * (0.5 + webMask * 0.6);
     float causticMask = smoothstep(-16.0, -1.4, height) * (0.4 + 0.6 * smoothstep(0.05, 0.9, detailN.y));
     vec3 causticTint = uSunColor * caustics * uCausticStrength * causticMask * 0.72;
 
-    float grain = hash21(floor(vWorld.xz * 24.0) + floor(uTime * 0.7));
-    float grainMask = smoothstep(0.93, 1.0, grain) * (0.15 + ndl * 0.4);
-
-    float patches = fbm2(vWorld.xz * 0.27 + 4.1);
+    float patches = fbmR(vWorld.xz * 0.27 + 4.1);
     float siltStain = smoothstep(0.55, 0.82, patches);
     vec3 sand = vColor;
     sand *= 0.29 + ndl * 0.52 + ambient * 0.18;
     sand += causticTint * vec3(0.82, 0.98, 0.76);
-    sand += uSunColor * grainMask * 0.09;
-    sand *= 0.76 + micro * 0.34 + (0.5 + 0.5 * ripple) * 0.07;
-    // Ridge crests are a little paler (coarser, cleaner grains); the
-    // troughs collect the fine dark stuff.
-    sand *= 1.0 + ripAmt * (ripCrest - 0.42) * 0.55;
-    sand *= 0.8 + patches * 0.34;
-
-    // A scatter of shell hash, dark organic flecks and small pebbles. Close to
-    // the lens this carries the seabed; farther out it fades before it aliases.
-    float nearDetail = 1.0 - smoothstep(7.0, 34.0, dist);
-    float shellPatch = smoothstep(0.35, 0.75, fbm2(vWorld.xz * 0.85 + 7.0));
-    float shellHash = hash21(floor(vWorld.xz * 32.0) + vec2(17.0, 3.0));
-    float shell = smoothstep(0.968, 1.0, shellHash) * nearDetail * shellPatch;
-    float pebbleHash = hash21(floor(vWorld.xz * 12.0) + vec2(5.0, 11.0));
-    float pebble = smoothstep(0.985, 1.0, pebbleHash) * nearDetail;
-    float detritusHash = hash21(floor(vWorld.xz * 21.0) + vec2(9.0, 2.0));
-    float detritus = smoothstep(0.989, 1.0, detritusHash) * nearDetail;
-    sand = mix(sand, vec3(0.7, 0.65, 0.51) * (0.55 + ndl * 0.5), shell * 0.25);
-    sand *= 1.0 - pebble * 0.12;
-    sand = mix(sand, vec3(0.17, 0.15, 0.09), detritus * 0.28);
-    sand = mix(sand, sand * vec3(0.56, 0.68, 0.48), siltStain * 0.24);
+    sand *= 0.93 + micro * 0.12;
+    // Under water most of the light comes from the bright window straight
+    // overhead, so a flank that tilts away from it is dimmer whichever way
+    // it faces: steep flanks either side of each crest read as dark lines
+    // even when the sun runs along the crests.
+    float ripSky = 1.0 + (pow(ripN.y, 2.0) - 1.0) * ripShadeK;
+    sand *= ripLit * ripSky * (1.0 + ripTone * 0.2 * ripShadeK);
+    // Sand is a mix of grains of different colours: a speckle at the scale
+    // of grain clusters, fading to its mean before it is smaller than a
+    // pixel.
+    float speckA = (vnoise(vWorld.xz * 260.0) - 0.5) * (1.0 - smoothstep(0.0015, 0.004, footprint));
+    float speckB = (vnoise(vWorld.xz * 70.0 + 3.0) - 0.5) * (1.0 - smoothstep(0.006, 0.016, footprint));
+    float speckC = (vnoise(vWorld.xz * 19.0 + 7.0) - 0.5) * (1.0 - smoothstep(0.02, 0.06, footprint));
+    sand *= 1.0 + speckA * 0.3 + speckB * 0.14 + speckC * 0.05;
+    // Clean, sorted sand: only a faint broad shift in tone across the bed.
+    sand *= 0.92 + patches * 0.16;
+    sand = mix(sand, sand * vec3(0.8, 0.86, 0.74), siltStain * 0.12);
 
     // Seagrass carpet. Under a meadow the floor is a mat of short blades:
     // strands in a few crossing directions, bright yellow-green where the
@@ -534,8 +740,8 @@ const SAND_FRAG = /* glsl */ `
       // long, bright where a leaf faces the light and dark in the gaps
       // between leaves. They fade to their mean before they are finer than
       // a pixel; the clumps and the patchwork of the meadow carry it on.
-      float fineFade = 1.0 - smoothstep(2.5, 11.0, dist);
-      float tuftFade = 1.0 - smoothstep(12.0, 46.0, dist);
+      float fineFade = (1.0 - smoothstep(2.5, 11.0, dist)) * (1.0 - smoothstep(0.006, 0.02, footprint));
+      float tuftFade = (1.0 - smoothstep(12.0, 46.0, dist)) * (1.0 - smoothstep(0.08, 0.2, footprint));
       vec2 qa = vec2(q.x * 0.8 + q.y * 0.6, -q.x * 0.6 + q.y * 0.8);
       vec2 qb = vec2(q.x * 0.97 - q.y * 0.24, q.x * 0.24 + q.y * 0.97);
       float sway = sin(uTime * 0.86 + q.x * 0.115 + q.y * 0.09) * 0.02;
@@ -565,6 +771,13 @@ const SAND_FRAG = /* glsl */ `
       sand = mix(sand, carpet, clamp(cover, 0.0, 1.0));
     }
 
+    // Sand hanging in the water over the bed veils it: a little paler and
+    // flatter, lit like the bed under it (applied before the depth loss, so
+    // a deep cloud is as dim as the deep sand).
+    float veil = clamp(cloud * 0.35, 0.0, 0.25);
+    float sandLum = dot(sand, vec3(0.333));
+    sand = mix(sand, vec3(sandLum) * vec3(1.12, 1.06, 0.9) * 1.12, veil);
+
     // The water quickly eats warm wavelengths with depth.
     float absorb = smoothstep(2.0, 20.0, -height);
     sand = mix(sand, sand * vec3(0.45, 0.75, 0.7), absorb * 0.42);
@@ -579,12 +792,15 @@ const SAND_FRAG = /* glsl */ `
     sand += vec3(0.035, 0.028, 0.012) * clamp(vDelta * 1.3, 0.0, 0.26);
 
     vec3 halfV = normalize(uSunDir + vViewDir);
-    float spec = pow(max(dot(detailN, halfV), 0.0), 32.0) * 0.05;
-    sand += uSunColor * spec;
+    // Wet sand is matte: a faint, broad sheen only.
+    float spec = pow(max(dot(detailN, halfV), 0.0), 12.0) * 0.012;
+    sand += uSunColor * spec * ripLit;
 
     // Water column absorption and depth fog.
     vec3 fog = applyWaterFog(sand, dist, uFogColor, uFogDensity);
-    gl_FragColor = vec4(fog, 1.0);
+    // Never hand a NaN or a huge value to the post chain (max/min drop NaN
+    // on Metal): one bad pixel turns the whole bloomed frame black.
+    gl_FragColor = vec4(min(max(fog, vec3(0.0)), vec3(16.0)), 1.0);
   }
 `;
 
@@ -705,6 +921,7 @@ class SandSurface {
         uHasHole: { value: 0 },
         uMeadow: meadowMap.uniforms.uMeadow,
         uMeadowExtent: meadowMap.uniforms.uMeadowExtent,
+        ...this.sim.swell.uniforms(),
       },
       vertexShader: SAND_VERT,
       fragmentShader: SAND_FRAG,
@@ -785,6 +1002,10 @@ export class Seabed {
     this.scene = scene;
     this.sim = new SandSimulation();
     this.sim.reset(TUNING.world.start.x, TUNING.world.start.z);
+    // What the swell does to the bed: ripples, stirred sand, smoothing.
+    this.swell = new SandSwell(this.sim);
+    this.sim.swell = this.swell;
+    this.ocean = null;
     this.time = 0;
 
     // A low-resolution whole-shelf mesh is always present; the dense, dynamic
@@ -796,7 +1017,7 @@ export class Seabed {
     this.base.mesh.updateMatrix();
     this.base.material.uniforms.uHasHole.value = 1;
     this.base.material.uniforms.uHoleRadius.value =
-      TUNING.sand.nearMeshExtent * 0.5 - 2;
+      TUNING.sand.nearMeshExtent * 0.5 - 3;
 
     const nearCenter = new THREE.Vector2(TUNING.world.start.x, TUNING.world.start.z);
     this.near = new SandSurface(
@@ -826,6 +1047,7 @@ export class Seabed {
 
   update(dt, player, camera, fogColor, fogDensity) {
     this.time += dt;
+    if (this.ocean) this.swell.update(dt, this.ocean, player.position);
     this.sim.update(dt, player.position);
     this.base.update(camera, fogColor, fogDensity, this.time);
     this.base.material.uniforms.uHoleCenter.value.set(this.near.center.x, this.near.center.y);
