@@ -62,6 +62,9 @@ export const TUNING = {
     flipperTuckSweep: 0.38,
     flipperTuckLift: -0.08,
     flipperTurn: 1,
+    // Feather (rad, leading edge down) of the inside flipper in a full bank;
+    // the outside one opens by about a third of it the other way.
+    flipperBankTwist: 0.3,
     flipperPitch: 0.45,
     flipperBrake: 0.5,
     flipperAirSpread: 0.2,
@@ -762,6 +765,7 @@ export const TUNE_CONTROLS = [
   { path: "dolphin.tailHeaveSpeed", label: "tail heave", min: 0, max: 0.4, step: 0.005 },
   { path: "dolphin.tailHeaveAccel", label: "accel heave", min: 0, max: 0.5, step: 0.005 },
   { path: "dolphin.tailWaveTravel", label: "wave travel", min: 0.15, max: 1.2, step: 0.01 },
+  { path: "dolphin.flipperBankTwist", label: "flipper bank twist", min: 0, max: 0.6, step: 0.01 },
   { path: "dolphin.tailWaveStart", label: "wave start", min: 0, max: 0.7, step: 0.01 },
   { path: "dolphin.flukePitch", label: "fluke pitch", min: 0, max: 0.4, step: 0.01 },
   { path: "dolphin.flipperMotion", label: "flipper motion", min: 0, max: 2, step: 0.05 },

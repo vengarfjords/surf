@@ -1097,6 +1097,13 @@ export class Dolphin {
       const drift2 = (Math.sin(fl.clock * 0.61 + side * 0.9) + 0.5 * Math.sin(fl.clock * 1.37 + side * 2.3)) / 1.5;
       // Riding a face, the flippers steer the carve as much as the body.
       const carve = 1 + 0.5 * surf;
+      // How far the body is laid over toward this side (0..1 of maxBank):
+      // in a held bank the inside blade (the low one) twists leading edge
+      // down into the turn and reaches a little, the outside one opens a
+      // touch, so the bank reads in the flippers (cfg.flipperBankTwist).
+      const bankIn = clamp((-side * this.roll) / movement.maxBank, 0, 1) * water * (1 - streamline);
+      const bankOut = clamp((side * this.roll) / movement.maxBank, 0, 1) * water * (1 - streamline);
+      const bankTwist = cfg.flipperBankTwist ?? 0;
 
       // x: sweep (+ tip back), y: lift (+ tip up), z: feather (+ leading
       // edge up), in radians.
@@ -1118,6 +1125,7 @@ export class Dolphin {
         slow * 0.06 +
         surf * 0.06 +
         (0.06 * inside - 0.03 * outside) * carve * cfg.flipperTurn +
+        bankTwist * 0.3 * bankIn +
         stroke * cfg.flipperStroke * 0.8 * beat +
         0.025 * idle * drift2;
       let feather =
@@ -1132,6 +1140,7 @@ export class Dolphin {
         // Holding a bank: the blade the flow meets more steeply (the inside
         // one) twists further into it.
         softLimit(flowMean - fl.flowHeld[k], 0.2) * even +
+        bankTwist * (0.35 * bankOut - bankIn) +
         slow * cfg.flipperScull * scull +
         stroke * cfg.flipperStroke * beat +
         0.05 * idle * drift;
