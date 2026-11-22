@@ -626,19 +626,17 @@ export const TUNING = {
     washStart: 3.4,
     washEnd: 5.4,
     breakWash: 0.3,
-    // Length: lambdaScale x the orbital diameter (U T / pi), clamped.
-    lambdaScale: 0.62,
-    lambdaMin: 0.45,
-    lambdaMax: 1.5,
+    // Grain size (m): medium sand. Sets the ripple length with the orbital
+    // diameter (sand-swell.js), clamped to lambdaMin..lambdaMax.
+    grainSize: 0.0004,
+    lambdaMin: 0.1,
+    lambdaMax: 0.8,
     // Peak-to-trough height as a fraction of the length (vortex ripples
     // stand at about 0.15).
-    heightRatio: 0.16,
-    // A shorter cross set, at this angle (rad) and length ratio.
-    secondSet: 0,
-    secondRatio: 1.65,
-    secondAngle: 0.55,
-    // Crest creep with the waves (m/s at full bed speed).
-    migration: 0.012,
+    heightRatio: 0.15,
+    // Crest creep with the waves (m/s at full bed speed): real ripples
+    // creep centimetres a minute.
+    migration: 0.0012,
     // Sand moved this deep (m) wipes the ripples; they grow back in about
     // regrowTime seconds of full swell (slower where the bed speed is low).
     eraseDepth: 0.05,
@@ -894,8 +892,8 @@ export const TUNE_CONTROLS = [
   { path: "sand.glideDepth", label: "glide scoop", min: 0.01, max: 0.24, step: 0.005 },
   { path: "sandSwell.ripples", label: "swell ripples", type: "toggle" },
   { path: "sandSwell.heightRatio", label: "ripple height", min: 0, max: 0.25, step: 0.005 },
-  { path: "sandSwell.lambdaMax", label: "ripple max length", min: 0.4, max: 3, step: 0.05 },
-  { path: "sandSwell.migration", label: "ripple creep", min: 0, max: 0.1, step: 0.002 },
+  { path: "sandSwell.grainSize", label: "sand grain size", min: 0.0001, max: 0.002, step: 0.00005 },
+  { path: "sandSwell.migration", label: "ripple creep", min: 0, max: 0.01, step: 0.0002 },
   { path: "sandSwell.regrowTime", label: "ripple regrow time", min: 10, max: 400, step: 5 },
   { path: "sandSwell.stirSpeed", label: "sand stir speed", min: 0.4, max: 4, step: 0.05 },
   { path: "sandSwell.smoothRate", label: "surge smoothing", min: 0, max: 0.01, step: 0.0002 },

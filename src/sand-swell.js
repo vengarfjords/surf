@@ -10,8 +10,8 @@ import { clamp, seabedHeight, smoothstep } from "./utils.js";
  * depth: u = omega a / sinh(k h) for each component. It sets three things:
  *
  * - Ripples. Above a threshold speed loose sand is combed into ridges lying
- *   across the swell, a set length apart (about 0.6 of the water's orbital
- *   diameter, capped). They grow to full height where the bed speed is
+ *   across the swell, a set length apart (from the orbital diameter and
+ *   the grain size, Wiberg & Harris 1994: ~0.2 m in a storm). They grow to full height where the bed speed is
  *   moderate and are washed flat in sheet flow and under breaking water.
  *   They creep slowly in the direction the waves travel. Where the dolphin
  *   cuts or piles the sand the ripples are wiped out (the sand
@@ -23,46 +23,22 @@ import { clamp, seabedHeight, smoothstep } from "./utils.js";
  * - Smoothing. Strong surge slowly rounds off the dolphin's trenches and
  *   rims, so marks fade over minutes in shallow water and last in the deep.
  *
- * The ripple shape is analytic (ripplePhase / rippleHeight below, mirrored
- * in GLSL by GLSL_RIPPLES), so the far seabed shows it without any grid,
- * the near mesh and the physics see the same ridges, and the shader can
- * fade it by pixel footprint instead of letting it alias into lines.
+ * The ripples are a few centimetres tall, so they are drawn by the sand
+ * shader alone (GLSL_RIPPLES, normal detail with no mesh relief) and the
+ * physics ignores them. The shader fades them by pixel footprint instead of
+ * letting them alias into lines.
  */
 
 const G = 9.81;
-// Fine ripplets on the big ridges: wavenumber and height relative to the
-// swell set, angle (rad) from it, and how much more their crests wander.
-const FINE_K = 5.2;
-const FINE_AMP = 0.14;
-const FINE_ANGLE = -0.3;
-const FINE_WARP = 2.4;
 const LUT_SIZE = 128; // depth 0..LUT_DEPTH m
 const LUT_DEPTH = 127;
 
-// Crest wander, shared with GLSL_RIPPLES. Plain sines rather than hashed
-// noise so float32 on the GPU and float64 here agree to well under a
-// millimetre anywhere on the 3 km shelf.
-export function rippleWarp(x, z) {
-  return (
-    1.25 * Math.sin(0.23 * x + 0.31 * z + 1.3) +
-    0.8 * Math.sin(-0.41 * x + 0.17 * z + 2.9) +
-    0.45 * Math.sin(0.11 * x - 0.52 * z + 0.4) +
-    0.3 * Math.sin(0.83 * x + 0.61 * z + 5.1)
-  );
-}
-
-// Patches where the ridges stand tall, and where they die out, giving the
-// forks and the ends of crests that real ripple fields have.
-export function ripplePatch(x, z) {
-  const a = Math.sin(0.071 * x - 0.093 * z + 0.7) * Math.sin(0.057 * x + 0.083 * z + 2.1);
-  const b = Math.sin(0.19 * x + 0.13 * z + 4.4) * 0.5 + Math.sin(-0.29 * x + 0.37 * z + 1.9) * 0.35;
-  return clamp(0.66 + 0.4 * a + 0.28 * b, 0, 1);
-}
-
+// Gentle crest wander over tens of metres (the swell's direction drifts
+// across the shelf). Plain sines, precise in float32 anywhere on the shelf.
 export const GLSL_RIPPLES = /* glsl */ `
-  uniform vec4 uRipK;      // k1, k2 (rad/m), migration offsets m1, m2 (m)
-  uniform vec4 uRipDir;    // crest-normal directions of the two sets
-  uniform vec4 uRipShape;  // height of set 1 (m), set 2 / set 1, lambda1 (m), on
+  uniform vec4 uRipK;      // k (rad/m), unused, migration offset (m), unused
+  uniform vec4 uRipDir;    // xy: crest normal (the swell's travel direction)
+  uniform vec4 uRipShape;  // height (m), unused, length (m), on
   uniform sampler2D uRipLut; // r: equilibrium ripple height 0..1, g: bed speed / 3 m/s
   uniform sampler2D uFlow;   // r,g: surge excursion (m), b: stirred sand 0..1, a: bed speed / 3 m/s
   uniform vec2 uFlowCenter;
@@ -71,20 +47,12 @@ export const GLSL_RIPPLES = /* glsl */ `
   float ripWarp(vec2 p) {
     return 1.25 * sin(0.23 * p.x + 0.31 * p.y + 1.3) +
       0.8 * sin(-0.41 * p.x + 0.17 * p.y + 2.9) +
-      0.45 * sin(0.11 * p.x - 0.52 * p.y + 0.4) +
-      0.3 * sin(0.83 * p.x + 0.61 * p.y + 5.1);
-  }
-  vec2 ripWarpGrad(vec2 p) {
-    vec2 g = 1.25 * cos(0.23 * p.x + 0.31 * p.y + 1.3) * vec2(0.23, 0.31);
-    g += 0.8 * cos(-0.41 * p.x + 0.17 * p.y + 2.9) * vec2(-0.41, 0.17);
-    g += 0.45 * cos(0.11 * p.x - 0.52 * p.y + 0.4) * vec2(0.11, -0.52);
-    g += 0.3 * cos(0.83 * p.x + 0.61 * p.y + 5.1) * vec2(0.83, 0.61);
-    return g;
+      0.45 * sin(0.11 * p.x - 0.52 * p.y + 0.4);
   }
   float ripPatch(vec2 p) {
     float a = sin(0.071 * p.x - 0.093 * p.y + 0.7) * sin(0.057 * p.x + 0.083 * p.y + 2.1);
     float b = sin(0.19 * p.x + 0.13 * p.y + 4.4) * 0.5 + sin(-0.29 * p.x + 0.37 * p.y + 1.9) * 0.35;
-    return clamp(0.66 + 0.4 * a + 0.28 * b, 0.0, 1.0);
+    return clamp(0.8 + 0.22 * a + 0.12 * b, 0.0, 1.0);
   }
   float ripEq(float depth) {
     return texture2D(uRipLut, vec2(clamp(depth / ${LUT_DEPTH.toFixed(1)}, 0.0, 1.0) * ${((LUT_SIZE - 1) / LUT_SIZE).toFixed(6)} + ${(0.5 / LUT_SIZE).toFixed(6)}, 0.5)).r;
@@ -95,28 +63,70 @@ export const GLSL_RIPPLES = /* glsl */ `
     vec4 f = texture2D(uFlow, clamp(uv, 0.0, 1.0));
     return f * smoothstep(0.0, 0.08, edge);
   }
-  // Three ripple sets: the swell's (long, across the swell), a shorter one
-  // at an angle, and fine ripplets riding on both. Each ridge is
-  // sharp-crested with broad troughs: ((1 + cos phi) / 2)^3, zero mean.
-  // Returns height and its gradient, each set faded once a wavelength spans
-  // too few pixels to draw.
-  vec3 ripSet(float ph, vec2 g, float a, float footprint) {
-    float f = 1.0 - smoothstep(0.55, 1.5, footprint * length(g));
-    float s = 0.5 + 0.5 * cos(ph);
-    a *= f;
-    return vec3(a * (s * s * s - 0.3125), -a * 1.5 * s * s * sin(ph) * g);
+
+  // One field of wave ripples, as in photographs of rippled sand: crests a
+  // hand or two apart lying across the swell, gently sinuous, and broken
+  // every few wavelengths by a crest that forks or ends. Everything is in
+  // wavelength units (q), so the pattern scales with the ripple length.
+  //
+  // The forks are phase dislocations: a pair of opposite twists of the
+  // phase, arg((q - a) / (q - b)), which adds a crest between a and b and
+  // so ends one crest at each. Its only jump is a whole turn (2 pi) on the
+  // segment a-b, which the cosine never sees; each pair lives in its own
+  // cell and fades out well before the cell's edge.
+  // core: shrinks toward 0 within ~0.6 wavelengths of a crest end, so the
+  // ends taper and flatten as real ones do instead of pinching to a dot.
+  float ripFork(vec2 q, float cellSize, float seed, inout float core) {
+    vec2 g = q / cellSize;
+    vec2 cell = floor(g);
+    vec2 f = g - cell - 0.5;
+    float r0 = hash21(cell + seed);
+    if (r0 < 0.2) return 0.0;
+    vec2 c = (vec2(hash21(cell + seed + 17.3), hash21(cell + seed + 41.7)) - 0.5) * 0.3;
+    float ang = hash21(cell + seed + 3.1) * 6.2832;
+    vec2 d = vec2(cos(ang), sin(ang)) * (1.3 + 1.4 * hash21(cell + seed + 9.2)) / (2.0 * cellSize);
+    vec2 a = f - c - d;
+    vec2 b = f - c + d;
+    float twist = atan(a.y * b.x - a.x * b.y, dot(a, b));
+    float win = 1.0 - smoothstep(0.34, 0.49, max(abs(f.x), abs(f.y)));
+    float r = min(length(a), length(b)) * cellSize;
+    core = min(core, mix(1.0, smoothstep(0.05, 0.65, r), win));
+    return (r0 < 0.6 ? twist : -twist) * win;
   }
-  vec3 ripples(vec2 p, float amp, float footprint) {
-    vec2 wg = ripWarpGrad(p);
-    float w = ripWarp(p);
-    vec2 d1 = uRipDir.xy;
-    vec2 d2 = uRipDir.zw;
-    vec2 d3 = vec2(d1.x * ${Math.cos(FINE_ANGLE).toFixed(6)} - d1.y * ${Math.sin(FINE_ANGLE).toFixed(6)}, d1.x * ${Math.sin(FINE_ANGLE).toFixed(6)} + d1.y * ${Math.cos(FINE_ANGLE).toFixed(6)});
-    float k3 = uRipK.x * ${FINE_K.toFixed(4)};
-    vec3 r = ripSet(uRipK.x * (dot(p, d1) - uRipK.z) + w, uRipK.x * d1 + wg, amp, footprint);
-    r += ripSet(uRipK.y * (dot(p, d2) - uRipK.w) + w * 0.6, uRipK.y * d2 + wg * 0.6, amp * uRipShape.y, footprint);
-    r += ripSet(k3 * dot(p, d3) + w * ${FINE_WARP.toFixed(3)}, k3 * d3 + wg * ${FINE_WARP.toFixed(3)}, amp * ${FINE_AMP.toFixed(4)}, footprint);
-    return r;
+  float ripPhase(vec2 p, inout float core) {
+    vec2 q = p * uRipK.x * 0.159155;
+    float w = ripWarp(p) +
+      (fbm2(q * 0.18 + 3.0) - 0.5) * 5.0 +
+      (vnoise(q * 0.6 + 11.0) - 0.5) * 1.1 +
+      ripFork(q, 5.0, 0.0, core) + ripFork(q + 2.5, 7.0, 31.0, core);
+    return uRipK.x * (dot(p, uRipDir.xy) - uRipK.z) + w;
+  }
+  float ripAmpMod(vec2 p) {
+    vec2 q = p * uRipK.x * 0.159155;
+    return 0.55 + 0.45 * smoothstep(0.3, 0.62, fbm2(q * 0.075 + 7.0));
+  }
+  // Sharp crests, broad rounded troughs: ((1 + cos phi) / 2)^3, zero mean.
+  float ripProfile(float ph) {
+    float s = 0.5 + 0.5 * cos(ph);
+    return s * s * s - 0.3125;
+  }
+  // Height and slope (forward differences over 1/25 of a wavelength). wdx
+  // and wdy are the world steps of one pixel. The field fades to flat once
+  // a wavelength, measured across the crests, spans fewer than ~5 pixels,
+  // so it never aliases into lines; beyond that the sand reads as its mean
+  // tone.
+  vec3 ripples(vec2 p, float amp, vec2 wdx, vec2 wdy) {
+    float across = max(abs(dot(wdx, uRipDir.xy)), abs(dot(wdy, uRipDir.xy)));
+    float pixel = max(across, 0.4 * max(length(wdx), length(wdy)));
+    amp *= 1.0 - smoothstep(1.2, 2.1, pixel * uRipK.x);
+    if (amp < 1e-5) return vec3(0.0);
+    amp *= ripAmpMod(p);
+    float e = 0.25 / uRipK.x;
+    float c0 = 1.0, cx = 1.0, cz = 1.0;
+    float h0 = amp * ripProfile(ripPhase(p, c0)) * c0;
+    float hx = amp * ripProfile(ripPhase(p + vec2(e, 0.0), cx)) * cx;
+    float hz = amp * ripProfile(ripPhase(p + vec2(0.0, e), cz)) * cz;
+    return vec3(h0, (hx - h0) / e, (hz - h0) / e);
   }
 `;
 
@@ -207,8 +217,8 @@ export class SandSwell {
     const key = [
       hs.toFixed(3), water.count, water.peakK.toFixed(5), water.peakDirX.toFixed(4),
       cfg.onset, cfg.full, cfg.washStart, cfg.washEnd, cfg.lambdaMin, cfg.lambdaMax,
-      cfg.lambdaScale, cfg.heightRatio, cfg.breakWash, cfg.regrowTime, wcfg.breakRatio,
-      wcfg.shoalReference, wcfg.shoalStrength, cfg.secondSet, cfg.secondRatio, cfg.secondAngle,
+      cfg.grainSize, cfg.heightRatio, cfg.breakWash, cfg.regrowTime, wcfg.breakRatio,
+      wcfg.shoalReference, wcfg.shoalStrength,
     ].join("|");
     if (key === this.lutKey) return;
     this.lutKey = key;
@@ -271,20 +281,31 @@ export class SandSwell {
         ubRef = this.lutUb[d];
       }
     }
+    // Wiberg & Harris (1994): under small orbits ripples are "orbital",
+    // 0.62 of the orbital diameter d0; under big ones (d0 / D > 5587 for
+    // grain size D) they stop growing at an "anorbital" 535 D; in between
+    // the length runs log-linearly from one to the other. A storm over
+    // medium sand gives ~0.2 m ripples, a gentle swell in the shallows
+    // ~0.3-0.4 m.
     const orbital = (ubRef * period) / Math.PI;
-    this.lambda = clamp(cfg.lambdaScale * orbital, cfg.lambdaMin, cfg.lambdaMax);
-    const k1 = (2 * Math.PI) / this.lambda;
-    const k2 = k1 * cfg.secondRatio;
+    const D = cfg.grainSize;
+    const lOrb = 0.62 * orbital;
+    const lAno = 535 * D;
+    const r = orbital / D;
+    let lambda;
+    if (r <= 1754) lambda = lOrb;
+    else if (r >= 5587) lambda = lAno;
+    else {
+      const t = Math.log(r / 1754) / Math.log(5587 / 1754);
+      lambda = Math.exp(Math.log(0.62 * 1754 * D) * (1 - t) + Math.log(lAno) * t);
+    }
+    this.lambda = clamp(lambda, cfg.lambdaMin, cfg.lambdaMax);
     // Crests lie across the swell: their normal is its travel direction.
-    const dx = water.peakDirX;
-    const dz = water.peakDirZ;
-    const ca = Math.cos(cfg.secondAngle);
-    const sa = Math.sin(cfg.secondAngle);
-    this.ripK.x = k1;
-    this.ripK.y = k2;
-    this.ripDir.set(dx, dz, dx * ca - dz * sa, dx * sa + dz * ca);
+    this.ripK.x = (2 * Math.PI) / this.lambda;
+    this.ripK.y = 0;
+    this.ripDir.set(water.peakDirX, water.peakDirZ, 0, 0);
     this.ripShape.x = cfg.heightRatio * this.lambda;
-    this.ripShape.y = cfg.secondSet;
+    this.ripShape.y = 0;
     this.ripShape.z = this.lambda;
     this.period = period;
   }
@@ -298,27 +319,6 @@ export class SandSwell {
     out.ub = this.lutUb[i] + (this.lutUb[i + 1] - this.lutUb[i]) * t;
     out.breakMask = this.lutBreak[i] + (this.lutBreak[i + 1] - this.lutBreak[i]) * t;
     return out;
-  }
-
-  // --- ripple shape (mirrors GLSL_RIPPLES) --------------------------------
-
-  /** Ripple height (m) at x, z on a bed whose still-water depth is depth. */
-  rippleHeight(x, z, depth) {
-    if (!TUNING.sandSwell.ripples) return 0;
-    const amp = this.ripShape.x * this.climateAt(depth).eq * ripplePatch(x, z);
-    if (amp <= 1e-5) return 0;
-    const w = rippleWarp(x, z);
-    const d = this.ripDir;
-    const ph1 = this.ripK.x * (x * d.x + z * d.y - this.ripK.z) + w;
-    const ph2 = this.ripK.y * (x * d.z + z * d.w - this.ripK.w) + w * 0.6;
-    const c = Math.cos(FINE_ANGLE);
-    const sn = Math.sin(FINE_ANGLE);
-    const ph3 = this.ripK.x * FINE_K * (x * (d.x * c - d.y * sn) + z * (d.x * sn + d.y * c)) + w * FINE_WARP;
-    const p = (ph) => {
-      const s = 0.5 + 0.5 * Math.cos(ph);
-      return s * s * s - 0.3125;
-    };
-    return amp * (p(ph1) + this.ripShape.y * p(ph2) + FINE_AMP * p(ph3));
   }
 
   // --- bed flow -----------------------------------------------------------
@@ -424,7 +424,6 @@ export class SandSwell {
     const local = this.climateAt(Math.max(0.6, -seabedHeight(playerPos.x, playerPos.z)));
     const creep = cfg.migration * clamp(local.ub / Math.max(0.1, cfg.full), 0, 1.5) * (cfg.ripples ? 1 : 0);
     this.ripK.z += creep * dt;
-    this.ripK.w += creep * 0.7 * dt;
     this.ripShape.w = cfg.ripples ? 1 : 0;
 
     // Bed velocity, a few rows a frame: each cell is fresh about 15x a

@@ -487,14 +487,6 @@ export class SandSimulation {
     return lerp(lerp(e[i], e[i + 1], tx), lerp(e[i + n], e[i + n + 1], tx), ty);
   }
 
-  /** The swell's ripples at x, z, less what contact has wiped out. */
-  rippleAt(x, z, baseHeight = seabedHeight(x, z)) {
-    if (!this.swell) return 0;
-    const r = this.swell.rippleHeight(x, z, -baseHeight);
-    if (r === 0) return 0;
-    return r * (1 - this.sampleErase(x, z));
-  }
-
   sampleDelta(x, z) {
     const n = this.n;
     const fx = (x - this.center.x) / this.cell + (n - 1) / 2;
@@ -505,25 +497,19 @@ export class SandSimulation {
     const tx = fx - x0;
     const ty = fy - y0;
     const i = y0 * n + x0;
-    const a = this.heights[i];
-    const b = this.heights[i + 1];
-    const c = this.heights[i + n];
-    const d = this.heights[i + n + 1];
-    return lerp(lerp(a, b, tx), lerp(c, d, tx), ty);
+    const h = this.heights;
+    return lerp(lerp(h[i], h[i + 1], tx), lerp(h[i + n], h[i + n + 1], tx), ty);
   }
 
   getSurfaceHeight(x, z) {
-    const base = seabedHeight(x, z);
-    return base + this.sampleDelta(x, z) + this.rippleAt(x, z, base);
+    return seabedHeight(x, z) + this.sampleDelta(x, z);
   }
 
   getSurfaceNormal(x, z) {
     const e = this.cell * 0.5;
     const base = seabedNormal(x, z, this.tempNormal);
-    const hb = seabedHeight(x, z);
-    const d = (px, pz) => this.sampleDelta(px, pz) + this.rippleAt(px, pz, hb);
-    const dx = d(x + e, z) - d(x - e, z);
-    const dz = d(x, z + e) - d(x, z - e);
+    const dx = this.sampleDelta(x + e, z) - this.sampleDelta(x - e, z);
+    const dz = this.sampleDelta(x, z + e) - this.sampleDelta(x, z - e);
     const nx = base.x - dx * 1.7;
     const ny = 1;
     const nz = base.z - dz * 1.7;
@@ -550,7 +536,6 @@ const SAND_VERT = /* glsl */ `
   varying float vDelta;
   varying float vErase;
   varying float vBaseY;
-  ${GLSL_RIPPLES}
 
   float sampleDelta(vec2 world) {
     if (uUseDelta < 0.5) return 0.0;
@@ -572,19 +557,6 @@ const SAND_VERT = /* glsl */ `
     float er = sampleErase(world.xz);
     world.y += d;
     vErase = er;
-    // The dense mesh carries the swell ripples' main ridge (the fragment
-    // shader draws the full sharp-crested shape). Faded out toward the
-    // mesh's edge, where the coarse shelf mesh takes over, and when the
-    // ridges are too short for a 31 cm grid to draw.
-    if (uUseDelta > 0.5 && uRipShape.w > 0.5) {
-      // Faded by distance from the camera (which the dense mesh follows),
-      // well inside the mesh, so nothing moves when the mesh recenters.
-      float edge = 1.0 - smoothstep(14.0, 24.0, distance(world.xz, uCameraPos.xz));
-      float amp = uRipShape.x * ripEq(-vBaseY) * ripPatch(world.xz) * (1.0 - er) * edge *
-        smoothstep(0.85, 1.25, uRipShape.z);
-      float ph1 = uRipK.x * (dot(world.xz, uRipDir.xy) - uRipK.z) + ripWarp(world.xz);
-      world.y += amp * 0.469 * cos(ph1);
-    }
 
     vec3 n = normalize(mat3(modelMatrix) * normal);
     float e = 0.55;
@@ -655,29 +627,25 @@ const SAND_FRAG = /* glsl */ `
     // disturbed the sand and growing back after. Sharp crests catch the
     // light, the broad troughs fall into shade.
     float ripEqHere = ripEq(-vBaseY) * uRipShape.w;
-    // Crests rise and sink along their length (shader only: a few cm).
-    float crestBreak = 0.45 + 1.1 * fbm2(vWorld.xz * 0.42 + 13.0);
-    float ripAmp = uRipShape.x * ripEqHere * ripPatch(vWorld.xz) * crestBreak * (1.0 - clamp(vErase, 0.0, 1.0));
-    vec3 rip = ripples(vWorld.xz, ripAmp, footprint);
-    // Loose sand is never smooth: lumps a hand across and grain-scale
-    // roughness, each faded by footprint, break up the ridge shading so it
-    // does not read as moulded plastic.
-    float lumpFade = 1.0 - smoothstep(0.05, 0.16, footprint);
-    vec2 lumps = vec2(fbm2(vWorld.xz * 3.3 + 2.0), fbm2(vWorld.xz * 3.3 + 9.0)) - 0.5;
-    vec2 grit = vec2(fbm2(vWorld.xz * 14.0 + 4.0), fbm2(vWorld.xz * 14.0 + 1.0)) - 0.5;
-    vec2 rough = lumps * 0.12 * lumpFade + grit * 0.1 * (1.0 - smoothstep(0.015, 0.05, footprint));
-    vec3 detailN = normalize(n - vec3(rip.y, 0.0, rip.z) * 0.95 + vec3(rough.x, 0.0, rough.y) + vec3(micro) * 0.055);
-    float ripCrest = ripAmp > 1e-4 ? clamp(rip.x / max(ripAmp, 1e-4) + 0.3125, 0.0, 1.0) : 0.3125;
-    float ripAmt = clamp(ripAmp / max(uRipShape.x, 1e-3), 0.0, 1.0);
+    float ripAmp = uRipShape.x * ripEqHere * ripPatch(vWorld.xz) * (1.0 - clamp(vErase, 0.0, 1.0));
+    vec3 rip = ripples(vWorld.xz, ripAmp, wdx, wdy);
+    vec3 detailN = normalize(n - vec3(rip.y, 0.0, rip.z) + vec3(micro) * 0.03);
+    // Fine dark grains and shell grit settle in the troughs, the crests are
+    // swept clean: a tone that follows the height of the ripple.
+    float ripTone = ripAmp > 1e-4 ? clamp(rip.x / max(ripAmp, 1e-4), -0.35, 0.7) : 0.0;
+    // How the ripple faces the light, relative to flat sand: the flank
+    // toward the sun is lit, the lee flank falls into shade. The water
+    // bends daylight steeply down, so a ripple reads from this and from the
+    // shade in its trough rather than from long shadows.
+    vec2 sunFlat = uSunDir.xz / 1.333;
+    vec3 lightDir = vec3(sunFlat.x, sqrt(max(1.0 - dot(sunFlat, sunFlat), 0.0)), sunFlat.y);
+    vec3 ripN = normalize(vec3(-rip.y, 1.0, -rip.z));
+    float ripLit = clamp(dot(ripN, lightDir) / max(lightDir.y, 0.3), 0.35, 1.5);
 
-    // Stirred sand: the cloud the surge lifts off the bed, and the sheet of
-    // grains sliding back and forth with each wave.
+    // Stirred sand: the cloud the surge lifts off the bed.
     vec4 flow = flowAt(vWorld.xz);
     float cloud = flow.b;
-    float streakFade = 1.0 - smoothstep(0.04, 0.12, footprint);
-    vec2 sheetP = vWorld.xz - flow.rg * 0.9;
-    float sheet = (vnoise(sheetP * vec2(3.1, 3.7)) - 0.5) * streakFade * clamp(flow.a * 1.4, 0.0, 1.0);
-    float ndl = max(dot(detailN, uSunDir), 0.0);
+    float ndl = max(dot(normalize(n + vec3(micro) * 0.03), uSunDir), 0.0);
     float ambient = 0.17 + 0.18 * smoothstep(-5.0, -24.0, height);
 
     // Light focused by the wave groups overhead: broad, soft and slow. (The
@@ -687,38 +655,23 @@ const SAND_FRAG = /* glsl */ `
     float causticMask = smoothstep(-16.0, -1.4, height) * (0.4 + 0.6 * smoothstep(0.05, 0.9, detailN.y));
     vec3 causticTint = uSunColor * caustics * uCausticStrength * causticMask * 0.72;
 
-    float grain = hash21(floor(vWorld.xz * 24.0) + floor(uTime * 0.7));
-    float grainMask = smoothstep(0.93, 1.0, grain) * (0.15 + ndl * 0.4) *
-      (1.0 - smoothstep(0.012, 0.03, footprint));
-
     float patches = fbm2(vWorld.xz * 0.27 + 4.1);
     float siltStain = smoothstep(0.55, 0.82, patches);
     vec3 sand = vColor;
     sand *= 0.29 + ndl * 0.52 + ambient * 0.18;
     sand += causticTint * vec3(0.82, 0.98, 0.76);
-    sand += uSunColor * grainMask * 0.09;
-    sand *= 0.795 + micro * 0.34;
-    // Ridge crests are a little paler (coarser, cleaner grains); the
-    // troughs collect the fine dark stuff.
-    sand *= 1.0 + ripAmt * (ripCrest - 0.3125) * (0.35 + 0.5 * fbm2(vWorld.xz * 1.7)) * (1.0 - smoothstep(0.08, 0.3, footprint * uRipK.x));
-    sand *= 1.0 + sheet * 0.08;
-    sand *= 0.8 + patches * 0.34;
-
-    // A scatter of shell hash, dark organic flecks and small pebbles. Close to
-    // the lens this carries the seabed; farther out it fades before it aliases.
-    float nearDetail = 1.0 - smoothstep(7.0, 34.0, dist);
-    float shellPatch = smoothstep(0.35, 0.75, fbm2(vWorld.xz * 0.85 + 7.0));
-    float shellHash = hash21(floor(vWorld.xz * 32.0) + vec2(17.0, 3.0));
-    float shell = smoothstep(0.968, 1.0, shellHash) * nearDetail * shellPatch *
-      (1.0 - smoothstep(0.01, 0.025, footprint));
-    float pebbleHash = hash21(floor(vWorld.xz * 12.0) + vec2(5.0, 11.0));
-    float pebble = smoothstep(0.985, 1.0, pebbleHash) * nearDetail * (1.0 - smoothstep(0.03, 0.07, footprint));
-    float detritusHash = hash21(floor(vWorld.xz * 21.0) + vec2(9.0, 2.0));
-    float detritus = smoothstep(0.989, 1.0, detritusHash) * nearDetail * (1.0 - smoothstep(0.018, 0.04, footprint));
-    sand = mix(sand, vec3(0.7, 0.65, 0.51) * (0.55 + ndl * 0.5), shell * 0.25);
-    sand *= 1.0 - pebble * 0.12;
-    sand = mix(sand, vec3(0.17, 0.15, 0.09), detritus * 0.28);
-    sand = mix(sand, sand * vec3(0.56, 0.68, 0.48), siltStain * 0.24);
+    sand *= 0.93 + micro * 0.12;
+    sand *= ripLit * (1.0 + ripTone * 0.3);
+    // Sand is a mix of grains of different colours: a speckle at the scale
+    // of grain clusters, fading to its mean before it is smaller than a
+    // pixel.
+    float speckA = (vnoise(vWorld.xz * 260.0) - 0.5) * (1.0 - smoothstep(0.0015, 0.004, footprint));
+    float speckB = (vnoise(vWorld.xz * 70.0 + 3.0) - 0.5) * (1.0 - smoothstep(0.006, 0.016, footprint));
+    float speckC = (vnoise(vWorld.xz * 19.0 + 7.0) - 0.5) * (1.0 - smoothstep(0.02, 0.06, footprint));
+    sand *= 1.0 + speckA * 0.3 + speckB * 0.14 + speckC * 0.05;
+    // Clean, sorted sand: only a faint broad shift in tone across the bed.
+    sand *= 0.92 + patches * 0.16;
+    sand = mix(sand, sand * vec3(0.8, 0.86, 0.74), siltStain * 0.12);
 
     // Seagrass carpet. Under a meadow the floor is a mat of short blades:
     // strands in a few crossing directions, bright yellow-green where the
@@ -786,7 +739,7 @@ const SAND_FRAG = /* glsl */ `
     vec3 halfV = normalize(uSunDir + vViewDir);
     // Wet sand is matte: a faint, broad sheen only.
     float spec = pow(max(dot(detailN, halfV), 0.0), 12.0) * 0.012;
-    sand += uSunColor * spec;
+    sand += uSunColor * spec * ripLit;
 
     // Water column absorption and depth fog.
     vec3 fog = applyWaterFog(sand, dist, uFogColor, uFogDensity);
