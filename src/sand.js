@@ -42,6 +42,12 @@ export class SandSimulation {
     this.texData = new Float32Array(this.n * this.n * 2);
     this.swell = null;
     this.smoothClock = 0;
+    // Rows [rowMin, rowMax] that hold any dug, piled or wiped sand (rowMin >
+    // rowMax: none). Settling, surge smoothing and the visual chase only
+    // walk these rows: the marks are local, and walking all 384 rows
+    // several times a frame cost a few ms on a flat bed.
+    this.rowMin = this.n;
+    this.rowMax = -1;
     this.onSediment = null;
     this.onRipple = null;
     this.displacements = [];
@@ -77,6 +83,13 @@ export class SandSimulation {
     this.texData.fill(0);
     this.texture.needsUpdate = true;
     this.dirty = false;
+    this.rowMin = this.n;
+    this.rowMax = -1;
+  }
+
+  _markRows(y0, y1) {
+    this.rowMin = Math.max(0, Math.min(this.rowMin, y0));
+    this.rowMax = Math.min(this.n - 1, Math.max(this.rowMax, y1));
   }
 
   _packTexture() {
@@ -103,10 +116,11 @@ export class SandSimulation {
     const shiftField = (field) => {
       this.scratch.fill(0);
       for (let y = 0; y < n; y++) {
-        const sy = y - cz;
+        // The centre moved cz cells: new row y is old row y + cz.
+        const sy = y + cz;
         if (sy < 0 || sy >= n) continue;
         for (let x0 = 0; x0 < n; x0++) {
-          const sx = x0 - cx;
+          const sx = x0 + cx;
           if (sx < 0 || sx >= n) continue;
           this.scratch[y * n + x0] = field[sy * n + sx];
         }
@@ -121,6 +135,12 @@ export class SandSimulation {
     this.visualErase.set(this.erase);
     this._packTexture();
     this.dirty = false;
+    if (this.rowMin <= this.rowMax) {
+      const lo = Math.max(0, this.rowMin - cz);
+      const hi = Math.min(n - 1, this.rowMax - cz);
+      this.rowMin = lo <= hi ? lo : n;
+      this.rowMax = lo <= hi ? hi : -1;
+    }
     return true;
   }
 
@@ -216,6 +236,7 @@ export class SandSimulation {
         if (add < 0) deepest = Math.max(deepest, -add);
       }
     }
+    if (displaced > 0) this._markRows(y0, y1);
     if (displaced > 0.0001) {
       this.dirty = true;
       if (this.onSediment && opts.notify !== false) {
@@ -324,8 +345,14 @@ export class SandSimulation {
       [1, 1, 0.707], [1, -1, 0.707], [-1, 1, 0.707], [-1, -1, 0.707],
     ];
     let moved = 0;
+    if (this.rowMin > this.rowMax) return 0;
+    // Talus can spill one row past the marked band per step.
+    const yA = Math.max(1, this.rowMin - 1);
+    const yB = Math.min(n - 2, this.rowMax + 1);
+    let touchA = n;
+    let touchB = -1;
 
-    for (let y = 1; y < n - 1; y++) {
+    for (let y = yA; y <= yB; y++) {
       for (let x = 1; x < n - 1; x++) {
         const i = y * n + x;
         const center = s[i];
@@ -353,9 +380,12 @@ export class SandSimulation {
           h[i] -= flow;
           h[j] += flow;
           moved += flow;
+          if (y - 1 < touchA) touchA = y - 1;
+          if (y + 1 > touchB) touchB = y + 1;
         }
       }
     }
+    if (touchA <= touchB) this._markRows(touchA, touchB);
     if (moved > 0.00003) this.dirty = true;
     return moved;
   }
@@ -388,7 +418,11 @@ export class SandSimulation {
     const e = this.erase;
     const ve = this.visualErase;
     const tex = this.texData;
-    for (let i = 0; i < v.length; i++) {
+    // Outside the marked rows height and erase are zero and so is the
+    // visual copy (recentering and reset sync them).
+    const iA = this.rowMin <= this.rowMax ? this.rowMin * this.n : 0;
+    const iB = this.rowMin <= this.rowMax ? (this.rowMax + 1) * this.n : 0;
+    for (let i = iA; i < iB; i++) {
       const diff = h[i] - v[i];
       if (diff > 1e-7 || diff < -1e-7) {
         v[i] += diff * alpha;
@@ -431,10 +465,16 @@ export class SandSimulation {
       const fi = Math.floor((ox + x * cell - fx0) / fCell);
       col[x] = fi >= 0 && fi < fn ? fi : -1;
     }
+    if (this.rowMin > this.rowMax) return 0;
     s.set(h);
     let moved = 0;
     let erased = false;
-    for (let y = 1; y < n - 1; y++) {
+    // Diffusion reaches one row past the marked band per step.
+    const yA = Math.max(1, this.rowMin - 1);
+    const yB = Math.min(n - 2, this.rowMax + 1);
+    let touchA = n;
+    let touchB = -1;
+    for (let y = yA; y <= yB; y++) {
       const wz = oz + y * cell;
       const fj = Math.floor((wz - fz0) / fCell);
       const rowOk = fj >= 0 && fj < fn;
@@ -465,10 +505,14 @@ export class SandSimulation {
         const k = Math.min(0.2, smoothK * mobility * mobility);
         const lap = s[i - 1] + s[i + 1] + s[i - n] + s[i + n] - 4 * hc;
         const d = k * lap;
+        if (d === 0) continue;
         h[i] += d;
         moved += Math.abs(d);
+        if (y < touchA) touchA = y;
+        if (y > touchB) touchB = y;
       }
     }
+    if (touchA <= touchB) this._markRows(touchA, touchB);
     if (moved > 1e-5 || erased) this.dirty = true;
     return moved;
   }
