@@ -646,7 +646,7 @@ const SAND_FRAG = /* glsl */ `
     // averages a lit flank with a shaded one.
     float ripPix = max(max(abs(dot(wdx, uRipDir.xy)), abs(dot(wdy, uRipDir.xy))), 0.4 * footprint) * uRipK.x;
     float ripShadeK = mix(1.0, 0.45, smoothstep(0.2, 1.1, ripPix));
-    float ripLit = clamp(1.0 + (dot(ripN, lightDir) / max(lightDir.y, 0.3) - 1.0) * 1.7 * ripShadeK, 0.55, 1.5);
+    float ripLit = clamp(1.0 + (dot(ripN, lightDir) / max(lightDir.y, 0.3) - 1.0) * 1.2 * ripShadeK, 0.7, 1.35);
 
     // Stirred sand: the cloud the surge lifts off the bed.
     vec4 flow = flowAt(vWorld.xz);
@@ -671,8 +671,8 @@ const SAND_FRAG = /* glsl */ `
     // overhead, so a flank that tilts away from it is dimmer whichever way
     // it faces: steep flanks either side of each crest read as dark lines
     // even when the sun runs along the crests.
-    float ripSky = 1.0 + (pow(ripN.y, 3.0) - 1.0) * ripShadeK;
-    sand *= ripLit * ripSky * (1.0 + ripTone * 0.3 * ripShadeK);
+    float ripSky = 1.0 + (pow(ripN.y, 2.0) - 1.0) * ripShadeK;
+    sand *= ripLit * ripSky * (1.0 + ripTone * 0.2 * ripShadeK);
     // Sand is a mix of grains of different colours: a speckle at the scale
     // of grain clusters, fading to its mean before it is smaller than a
     // pixel.

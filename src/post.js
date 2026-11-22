@@ -532,7 +532,7 @@ const VolumetricShader = {
           // or a dark skin returns less of it than pale, sunward sand.
           // (Scaled to the sand's usual level, so open sand keeps its
           // brightness.)
-          float surfaceShade = clamp(dot(surfaceColor, vec3(0.3333)) / 0.055, 0.5, 1.5);
+          float surfaceShade = clamp(dot(surfaceColor, vec3(0.3333)) / 0.055, 0.65, 1.4);
           // Far off the surface is already fogged toward the water colour,
           // and no ripple is resolved: light it evenly.
           surfaceShade = mix(surfaceShade, 1.0, smoothstep(8.0, 24.0, rayLength));
