@@ -320,7 +320,7 @@ export function canvasTexture(canvas, repeat = 1) {
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(repeat, repeat);
   t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 2;
+  t.anisotropy = 16;
   return t;
 }
 

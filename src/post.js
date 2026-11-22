@@ -153,18 +153,14 @@ const FilmShader = {
       float wet = uWetness;
       vec2 uv = vUv;
 
-      // A slight lens curvature, and under water the faint wobble of
-      // looking through a moving medium.
+      // The trace of barrel distortion a real rectilinear lens has, zoomed
+      // in just enough that the corners never sample outside the frame. (No
+      // screen-wide sine wobble: water bends light through the real surface
+      // and refraction in the scene, never as a ripple over the whole frame.)
       vec2 centered = uv * 2.0 - 1.0;
       float r2 = dot(centered, centered);
-      // Barrel curvature, zoomed in just enough that the corners never
-      // sample outside the frame (which smears the edge pixels into bands).
-      float curve = 0.003 + under * 0.008;
-      vec2 lens = 0.5 + (uv + centered * curve * r2 - 0.5) / (1.0 + curve * 2.0 + 0.006);
-      if (under > 0.01) {
-        lens.x += sin(uv.y * 31.0 + uTime * 1.1) * 0.0005 * under;
-        lens.y += cos(uv.x * 27.0 + uTime * 0.9) * 0.0004 * under;
-      }
+      float curve = 0.003;
+      vec2 lens = 0.5 + (uv + centered * curve * r2 - 0.5) / (1.0 + curve * 2.0);
 
       // Water on the lens after the camera comes up.
       float dropMask = 0.0;
@@ -181,52 +177,16 @@ const FilmShader = {
 
       vec2 uvA = clamp(lens, vec2(0.001), vec2(0.999));
       // Lateral chromatic aberration, only toward the frame edges.
-      float aberration = uAberration * r2 * (0.6 + under * 0.6) * (1.0 + uSpeed * 0.3);
+      float aberration = uAberration * r2;
       // The smoothed image, plus the colour fringe the lens adds toward
       // the frame edges (as a difference, so the fringe keeps the smoothing).
       vec3 color = sampleSmooth(uvA);
       color += sampleChroma(uvA, aberration) - texture2D(tDiffuse, uvA).rgb;
 
-      // Gentle speed blur toward the edges at a sprint.
-      if (uSpeed > 0.25) {
-        vec2 blurDir = (uvA - 0.5) * 0.004 * (uSpeed - 0.25);
-        vec3 blur = texture2D(tDiffuse, uvA + blurDir).rgb * 0.5 + texture2D(tDiffuse, uvA - blurDir).rgb * 0.5;
-        color = mix(color, blur, clamp(r2, 0.0, 1.0) * 0.6);
-      }
-
-      float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
-      if (under > 0.01) {
-        // Photographic underwater grade: warm wavelengths gone, blue-teal
-        // shadows, green-cyan midtones, and a little softness.
-        vec3 shadowTint = vec3(0.78, 0.96, 1.1);
-        vec3 midTint = vec3(0.94, 1.02, 1.0);
-        vec3 graded = color * mix(shadowTint, midTint, smoothstep(0.05, 0.45, lum));
-        graded = mix(vec3(lum), graded, 1.08);
-        graded = (graded - 0.4) * 1.04 + 0.4;
-        color = mix(color, graded, under);
-        // Soft scatter around the bright parts (water is never crisp).
-        vec2 haloOff = vec2(0.003, 0.002);
-        vec3 halo = texture2D(tDiffuse, clamp(uvA + haloOff, 0.001, 0.999)).rgb;
-        halo += texture2D(tDiffuse, clamp(uvA - haloOff, 0.001, 0.999)).rgb;
-        halo *= 0.5;
-        color = mix(color, halo, 0.12 * under);
-        vec2 sunDelta = (uv - uSunScreen) * vec2(1.0, 0.8);
-        float scatter = exp(-length(sunDelta) * 3.2);
-        color += uSunPower * under * vec3(0.12, 0.26, 0.3) * scatter * 0.35;
-      }
-      if (under < 0.99) {
-        // Photographic air: lifted, hazy blacks, cool shadows and warm
-        // highlights, a touch of desaturation like a long-lens sea shot.
-        vec3 aboveC = color;
-        vec3 cool = aboveC * vec3(0.93, 1.0, 1.06);
-        vec3 warm = aboveC * vec3(1.02, 1.0, 0.97);
-        aboveC = mix(cool, warm, smoothstep(0.25, 0.8, lum));
-        aboveC = mix(vec3(lum), aboveC, 0.9);
-        // Rain haze and lens flare fill the shadows: nothing in a storm
-        // photograph is black.
-        aboveC = aboveC * 0.93 + vec3(0.034, 0.038, 0.042);
-        color = mix(aboveC, color, under);
-      }
+      // No colour grade. Underwater colour comes from the physical
+      // absorption and scattering in the volumetric pass, and the air from
+      // its haze and mist; a split-tone, lifted blacks or a fake halo on top
+      // is what makes a frame read as graded game footage.
 
       // Lens drops are out of focus: what they show is soft, and their
       // edges are a little darker where the light bends away.
@@ -241,14 +201,17 @@ const FilmShader = {
         color *= 1.0 - edge * 0.03;
       }
 
-      // Fine film grain, mostly in the shadows.
+      // Optional sensor noise (off by default), mostly in the shadows.
       float grainSeed = hash12(gl_FragCoord.xy * 0.71 + floor(uTime * 30.0) * 17.13);
       float lum2 = dot(color, vec3(0.2126, 0.7152, 0.0722));
       color += (grainSeed - 0.5) * uGrain * (1.0 - lum2 * 0.6);
 
-      // Soft natural vignette.
-      float vig = smoothstep(1.35, 0.25, length(centered * vec2(0.92, 0.75)));
-      color *= mix(1.0, vig, uVignette);
+      // Natural corner falloff of a lens (cos^4 of the field angle), not a
+      // painted dark ring.
+      vec2 field = centered * vec2(uResolution.x / max(uResolution.y, 1.0), 1.0) * 0.6;
+      float cosA = inversesqrt(1.0 + dot(field, field));
+      float vig = cosA * cosA * cosA * cosA;
+      color *= mix(1.0, vig, uVignette * 4.0);
 
       // Dither the 8-bit output so the big soft gradients do not band.
       color += (hash12(gl_FragCoord.xy + fract(uTime) * 91.0) - 0.5) / 255.0;
@@ -683,27 +646,28 @@ export class Post {
   setSize(w, h) {
     const dpr = Math.min(window.devicePixelRatio || 1, TUNING.visuals.maxPixelRatio);
     if (this.enabled) {
-      this.renderer.setPixelRatio(dpr * TUNING.visuals.renderScale);
+      // The canvas is always at the display's density, so the final image
+      // is never stretched by the browser.
+      this.renderer.setPixelRatio(dpr);
     } else {
       // Clean-judging mode: native pixels, no composer downsample.
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     }
     this.renderer.setSize(w, h, false);
-    // The composer is the real render budget. Keep its internal buffers at a
-    // fixed fraction of CSS pixels regardless of devicePixelRatio, and cap the
-    // total pixel count so a large display cannot quietly double the cost.
+    // The composer is the real render budget: the display's density times
+    // renderScale, with a pixel cap so a very large display cannot run away.
     const scaleByBudget = Math.sqrt(
       TUNING.visuals.maxPostPixels / Math.max(1, w * h)
     );
-    const composerScale = Math.min(TUNING.visuals.renderScale, scaleByBudget);
+    const composerScale = Math.min(dpr * TUNING.visuals.renderScale, scaleByBudget);
     this.composer.setPixelRatio(composerScale);
     this.composer.setSize(w, h);
     const target = this.composer.renderTarget1;
     this.film.material.uniforms.uResolution.value.set(target.width, target.height);
     this.film.material.uniforms.uPixelRatio.value = composerScale;
-    // Bloom is a soft effect; half resolution is indistinguishable in motion
-    // and removes several full-screen Gaussian passes from the frame.
-    this.bloom.setSize(target.width * 0.25, target.height * 0.25);
+    // Bloom starts at half resolution: a quarter-res start made the glow
+    // around the sun and spray visibly blocky.
+    this.bloom.setSize(target.width * 0.5, target.height * 0.5);
 
     this.rawComposer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.rawComposer.setSize(w, h);

@@ -669,15 +669,18 @@ export const TUNING = {
     // Rain and spray haze over a storm sea: about a fifth of the light
     // gets through from a kilometre away.
     aboveDensity: 0.0014,
-    renderScale: 0.6,
+    // Fraction of the display's own pixel density the scene renders at.
+    // At 1 every screen pixel is a rendered pixel: a sub-resolution scene
+    // stretched up is the softest, most video-game tell there is.
+    renderScale: 1.0,
     // Optional governor: reduce composer resolution after sustained slow
     // frames, never below this scale. It only steps down, so it cannot hunt.
     dynamicQuality: true,
-    dynamicQualityMinScale: 0.45,
+    dynamicQualityMinScale: 0.6,
     // Absolute post/scene render budget. Keeping the composer near half a
     // megapixel makes frame cost predictable on larger displays as well.
-    maxPostPixels: 600000,
-    maxPixelRatio: 1.15,
+    maxPostPixels: 2400000,
+    maxPixelRatio: 2,
     // Fogged/off-screen corals and seagrass chunks are never submitted. The
     // distances sit beyond the point where underwater fog makes the geometry
     // unreadable.
@@ -688,13 +691,14 @@ export const TUNING = {
     bloomRadius: 0.7,
     bloomThreshold: 1.1,
     exposure: 1.34,
-    grain: 0.028,
-    aberration: 0.0012,
-    vignette: 0.24,
+    // Lens character is kept to what a good modern lens actually shows: no
+    // film grain, a trace of lateral colour at the corners and natural
+    // (cos^4) corner falloff.
+    grain: 0,
+    aberration: 0.0003,
+    vignette: 0.1,
     // Edge anti-aliasing in the film pass (no staircase silhouettes).
     edgeSmoothing: true,
-    cameraTint: 0.15,
-    motionBlur: 0.22,
     causticStrength: 1.25,
     // Depth-aware post lighting. Scatter adds the deep-water veil, shafts
     // are the screen-space god rays, caustics tie surfaces into one light

@@ -171,7 +171,7 @@ export class OceanRipples {
         depthBuffer: false,
         stencilBuffer: false,
         generateMipmaps: true,
-        anisotropy: 4,
+        anisotropy: 16,
       });
       target.texture.colorSpace = THREE.NoColorSpace;
       return { ...spec, h0: this._initialSpectrum(spec, rnd), target };

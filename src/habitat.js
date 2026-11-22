@@ -277,9 +277,9 @@ export class Reefs {
           }
           mat.emissive = new THREE.Color(0x061714);
           mat.emissiveIntensity = 0.22;
-          if (mat.map) mat.map.anisotropy = 4;
-          if (mat.normalMap) mat.normalMap.anisotropy = 4;
-          if (mat.aoMap) mat.aoMap.anisotropy = 4;
+          if (mat.map) mat.map.anisotropy = 16;
+          if (mat.normalMap) mat.normalMap.anisotropy = 16;
+          if (mat.aoMap) mat.aoMap.anisotropy = 16;
           injectCaustics(mat, 0.05, 0xffedc7);
           mat.customProgramCacheKey = () => `reference-coral-${def.id}`;
 
@@ -471,7 +471,7 @@ function makeSeagrassTexture() {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.anisotropy = 4;
+  tex.anisotropy = 16;
   return tex;
 }
 
@@ -947,7 +947,7 @@ function makeJellyArmTexture() {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.anisotropy = 4;
+  tex.anisotropy = 16;
   return tex;
 }
 
