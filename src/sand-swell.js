@@ -52,7 +52,7 @@ export const GLSL_RIPPLES = /* glsl */ `
   float ripPatch(vec2 p) {
     float a = sin(0.071 * p.x - 0.093 * p.y + 0.7) * sin(0.057 * p.x + 0.083 * p.y + 2.1);
     float b = sin(0.19 * p.x + 0.13 * p.y + 4.4) * 0.5 + sin(-0.29 * p.x + 0.37 * p.y + 1.9) * 0.35;
-    return clamp(0.8 + 0.22 * a + 0.12 * b, 0.0, 1.0);
+    return clamp(0.9 + 0.12 * a + 0.06 * b, 0.0, 1.0);
   }
   float ripEq(float depth) {
     return texture2D(uRipLut, vec2(clamp(depth / ${LUT_DEPTH.toFixed(1)}, 0.0, 1.0) * ${((LUT_SIZE - 1) / LUT_SIZE).toFixed(6)} + ${(0.5 / LUT_SIZE).toFixed(6)}, 0.5)).r;
@@ -81,7 +81,7 @@ export const GLSL_RIPPLES = /* glsl */ `
     vec2 cell = floor(g);
     vec2 f = g - cell - 0.5;
     float r0 = hash21(cell + seed);
-    if (r0 < 0.2) return 0.0;
+    if (r0 < 0.12) return 0.0;
     vec2 c = (vec2(hash21(cell + seed + 17.3), hash21(cell + seed + 41.7)) - 0.5) * 0.3;
     float ang = hash21(cell + seed + 3.1) * 6.2832;
     vec2 d = vec2(cos(ang), sin(ang)) * (1.3 + 1.4 * hash21(cell + seed + 9.2)) / (2.0 * cellSize);
@@ -91,24 +91,32 @@ export const GLSL_RIPPLES = /* glsl */ `
     float win = 1.0 - smoothstep(0.34, 0.49, max(abs(f.x), abs(f.y)));
     float r = min(length(a), length(b)) * cellSize;
     core = min(core, mix(1.0, smoothstep(0.05, 0.65, r), win));
-    return (r0 < 0.6 ? twist : -twist) * win;
+    return (r0 < 0.56 ? twist : -twist) * win;
   }
   float ripPhase(vec2 p, inout float core) {
     vec2 q = p * uRipK.x * 0.159155;
     float w = ripWarp(p) +
       (fbm2(q * 0.18 + 3.0) - 0.5) * 5.0 +
-      (vnoise(q * 0.6 + 11.0) - 0.5) * 1.1 +
+      (fbm2(q * 0.55 + 11.0) - 0.5) * 1.0 +
       ripFork(q, 5.0, 0.0, core) + ripFork(q + 2.5, 7.0, 31.0, core);
     return uRipK.x * (dot(p, uRipDir.xy) - uRipK.z) + w;
   }
   float ripAmpMod(vec2 p) {
     vec2 q = p * uRipK.x * 0.159155;
-    return 0.55 + 0.45 * smoothstep(0.3, 0.62, fbm2(q * 0.075 + 7.0));
+    return 0.7 + 0.3 * smoothstep(0.3, 0.62, fbm2(q * 0.075 + 7.0));
   }
-  // Sharp crests, broad rounded troughs: ((1 + cos phi) / 2)^3, zero mean.
-  float ripProfile(float ph) {
-    float s = 0.5 + 0.5 * cos(ph);
-    return s * s * s - 0.3125;
+  // Peaked crests and broad rounded troughs, as wave ripples stand: two
+  // flanks meeting at an edge on the crest (where the light breaks from
+  // the lit flank to the shaded one) and flattening into the trough.
+  // (1 - u)^1.7 with u the distance from the crest in half wavelengths,
+  // zero mean.
+  // soft rounds the crest edge over about two pixels (in half
+  // wavelengths), so far off the edge does not break into beads.
+  float ripProfile(float ph, float soft) {
+    float u = abs(fract(ph * 0.159155 + 0.5) - 0.5) * 2.0;
+    u = sqrt(u * u + soft * soft) - soft;
+    float v = 1.0 - u;
+    return pow(v, 1.7) - 0.37037;
   }
   // Height and slope (forward differences over 1/25 of a wavelength). wdx
   // and wdy are the world steps of one pixel. The field fades to flat once
@@ -121,11 +129,12 @@ export const GLSL_RIPPLES = /* glsl */ `
     amp *= 1.0 - smoothstep(1.2, 2.1, pixel * uRipK.x);
     if (amp < 1e-5) return vec3(0.0);
     amp *= ripAmpMod(p);
+    float soft = clamp(pixel * uRipK.x * 0.318310 * 1.6, 0.03, 0.7);
     float e = 0.25 / uRipK.x;
     float c0 = 1.0, cx = 1.0, cz = 1.0;
-    float h0 = amp * ripProfile(ripPhase(p, c0)) * c0;
-    float hx = amp * ripProfile(ripPhase(p + vec2(e, 0.0), cx)) * cx;
-    float hz = amp * ripProfile(ripPhase(p + vec2(0.0, e), cz)) * cz;
+    float h0 = amp * ripProfile(ripPhase(p, c0), soft) * c0;
+    float hx = amp * ripProfile(ripPhase(p + vec2(e, 0.0), cx), soft) * cx;
+    float hz = amp * ripProfile(ripPhase(p + vec2(0.0, e), cz), soft) * cz;
     return vec3(h0, (hx - h0) / e, (hz - h0) / e);
   }
 `;

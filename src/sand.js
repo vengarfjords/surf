@@ -640,7 +640,7 @@ const SAND_FRAG = /* glsl */ `
     vec2 sunFlat = uSunDir.xz / 1.333;
     vec3 lightDir = vec3(sunFlat.x, sqrt(max(1.0 - dot(sunFlat, sunFlat), 0.0)), sunFlat.y);
     vec3 ripN = normalize(vec3(-rip.y, 1.0, -rip.z));
-    float ripLit = clamp(dot(ripN, lightDir) / max(lightDir.y, 0.3), 0.35, 1.5);
+    float ripLit = clamp(1.0 + (dot(ripN, lightDir) / max(lightDir.y, 0.3) - 1.0) * 2.6, 0.15, 2.0);
 
     // Stirred sand: the cloud the surge lifts off the bed.
     vec4 flow = flowAt(vWorld.xz);
@@ -661,7 +661,12 @@ const SAND_FRAG = /* glsl */ `
     sand *= 0.29 + ndl * 0.52 + ambient * 0.18;
     sand += causticTint * vec3(0.82, 0.98, 0.76);
     sand *= 0.93 + micro * 0.12;
-    sand *= ripLit * (1.0 + ripTone * 0.3);
+    // Under water most of the light comes from the bright window straight
+    // overhead, so a flank that tilts away from it is dimmer whichever way
+    // it faces: steep flanks either side of each crest read as dark lines
+    // even when the sun runs along the crests.
+    float ripSky = pow(ripN.y, 6.0);
+    sand *= ripLit * ripSky * (1.0 + ripTone * 0.35);
     // Sand is a mix of grains of different colours: a speckle at the scale
     // of grain clusters, fading to its mean before it is smaller than a
     // pixel.

@@ -438,6 +438,7 @@ const VolumetricShader = {
     void main() {
       vec2 uv = vUv;
       vec3 color = texture2D(tDiffuse, uv).rgb;
+      vec3 surfaceColor = color;
       float rawDepth = texture2D(tDepth, uv).r;
       float sceneDepth = linearizeDepth(rawDepth);
 
@@ -526,7 +527,16 @@ const VolumetricShader = {
               netSharp
             );
           }
-          color += uSunColor * net * causticMask * 0.195;
+          // Light landing on a surface comes back in proportion to how
+          // light that surface is and how it faces: a ripple's shaded flank
+          // or a dark skin returns less of it than pale, sunward sand.
+          // (Scaled to the sand's usual level, so open sand keeps its
+          // brightness.)
+          float surfaceShade = clamp(dot(surfaceColor, vec3(0.3333)) / 0.055, 0.25, 1.6);
+          // Far off the surface is already fogged toward the water colour,
+          // and no ripple is resolved: light it evenly.
+          surfaceShade = mix(surfaceShade, 1.0, smoothstep(8.0, 24.0, rayLength));
+          color += uSunColor * net * causticMask * 0.195 * surfaceShade;
         }
       }
 
