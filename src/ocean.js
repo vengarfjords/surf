@@ -543,7 +543,7 @@ export class Ocean {
         varying vec2 vSlope;
         varying float vBreak;
         varying float vBreakZone;
-        varying float vFacePhase;
+        varying vec2 vFacePhaseCS;
         varying vec2 vCapSlope;
         varying float vShoal;
         varying float vDepth;
@@ -780,6 +780,9 @@ export class Ocean {
         }
 
         void main() {
+          // Rebuilt per pixel from its interpolated unit vector, so it wraps
+          // cleanly through the trough (see vFacePhaseCS in shaders.js).
+          float vFacePhase = atan(vFacePhaseCS.y, vFacePhaseCS.x);
           vec3 n = normalize(vNormalW);
           vec3 view = normalize(uCameraPos - vWorld);
           float footW = length(fwidth(vWorld.xz));
