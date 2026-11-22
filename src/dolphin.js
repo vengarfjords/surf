@@ -495,6 +495,8 @@ export class Dolphin {
       qRoll: new THREE.Quaternion(),
       qParentInverse: new THREE.Quaternion(),
       qPitchLocal: new THREE.Quaternion(),
+      qSwing: new THREE.Quaternion(),
+      prevAxis: new THREE.Vector3(),
       forwardTarget: new THREE.Vector3(),
       backTarget: new THREE.Vector3(),
       upTarget: new THREE.Vector3(),
@@ -853,24 +855,17 @@ export class Dolphin {
     if (!bones.length || !this.skinnedMesh) return;
 
     sp.quats[0].copy(sp.targetQ);
+    sp.prevAxis.copy(sp.forwardTarget);
     for (let i = 1; i < SPINE_Z.length; i++) {
       // Point the bone's +Z toward the head along the trailing chain.
       sp.tmp.subVectors(sp.joints[i - 1], sp.joints[i]);
-      if (sp.tmp.lengthSq() < 1e-8) sp.tmp.copy(sp.forwardTarget);
+      if (sp.tmp.lengthSq() < 1e-8) sp.tmp.copy(sp.prevAxis);
       else sp.tmp.normalize();
-
-      sp.tmpUp.copy(sp.upTarget);
-      sp.tmpUp.addScaledVector(sp.tmp, -sp.tmpUp.dot(sp.tmp));
-      if (sp.tmpUp.lengthSq() < 1e-5) {
-        sp.tmpUp.set(0, 0, 1).addScaledVector(sp.tmp, -sp.tmp.z);
-        if (sp.tmpUp.lengthSq() < 1e-5) {
-          sp.tmpUp.set(1, 0, 0).addScaledVector(sp.tmp, -sp.tmp.x);
-        }
-      }
-      sp.tmpUp.normalize();
-      sp.tmpRight.crossVectors(sp.tmpUp, sp.tmp).normalize();
-      sp.tmpMatrix.makeBasis(sp.tmpRight, sp.tmpUp, sp.tmp);
-      sp.quats[i].setFromRotationMatrix(sp.tmpMatrix);
+      // Carry the frame of the bone ahead round the bend by the smallest
+      // turn, so the body's roll passes down the tail without twisting.
+      sp.qSwing.setFromUnitVectors(sp.prevAxis, sp.tmp);
+      sp.quats[i].copy(sp.qSwing).multiply(sp.quats[i - 1]).normalize();
+      sp.prevAxis.copy(sp.tmp);
     }
 
     // The last bone is the fluke pair. Pitch it around its spanwise axis so
@@ -949,12 +944,20 @@ export class Dolphin {
     // Layer the swim wave on top as a real dorsoventral displacement wave.
     // Keeping it out of the steering dampers preserves the full stroke
     // amplitude and the torso→fluke phase all the way to the tip.
+    // Each joint heaves along its own segment's back-to-belly axis: the
+    // head's up carried down the steering chain the same way as the bones.
+    sp.prevAxis.copy(sp.forwardTarget);
+    sp.tmpUp.copy(sp.upTarget);
     for (let i = 1; i < SPINE_Z.length; i++) {
+      sp.tmp.copy(sp.segDirs[i - 1]).negate();
+      sp.qSwing.setFromUnitVectors(sp.prevAxis, sp.tmp);
+      sp.tmpUp.applyQuaternion(sp.qSwing);
+      sp.prevAxis.copy(sp.tmp);
       const along = i / segmentCount;
       const envelope = smoothstep(cfg.tailWaveStart, 1.0, along);
       const phase = this.tailPhase - i * cfg.tailWaveTravel;
       const heave = Math.sin(phase) * this.tailHeave * envelope;
-      sp.joints[i].addScaledVector(sp.upTarget, heave);
+      sp.joints[i].addScaledVector(sp.tmpUp, heave);
     }
 
     // Reconnect the displaced joints with fixed-length links. The fluke can
