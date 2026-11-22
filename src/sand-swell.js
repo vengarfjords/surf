@@ -259,11 +259,18 @@ export class SandSwell {
     this.lutKey = key;
     this.rowStale.fill(1);
 
-    // Components that move the bed, strongest first (the short wind sea
-    // barely reaches the bottom). Their phase is evaluated at the bed.
+    // Components that move the bed, strongest at the bed first. Ranked by
+    // their orbital speed at a typical shelf depth, not at the surface: the
+    // short wind sea is fast at the surface but barely reaches the bottom,
+    // and ranking by surface speed gave it a quarter of the slots, cutting
+    // the peak surges that stir the sand. Their phase is evaluated at the
+    // bed.
     const comps = [];
+    const refDepth = cfg.rankDepth ?? 10;
     for (let i = 0; i < water.count; i++) {
-      comps.push({ i, w: water.amp[i] * water.omega[i], swell: i < water.swellCount });
+      const kb = dispersionK(water.omega[i], refDepth);
+      const w = (water.amp[i] * water.omega[i]) / Math.sinh(Math.max(1e-3, kb * refDepth));
+      comps.push({ i, w, swell: i < water.swellCount });
     }
     comps.sort((a, b) => b.w - a.w);
     this.components = comps.slice(0, cfg.flowComponents).map((c) => c.i);
