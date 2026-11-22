@@ -437,7 +437,10 @@ const VolumetricShader = {
 
     void main() {
       vec2 uv = vUv;
-      vec3 color = texture2D(tDiffuse, uv).rgb;
+      // Drop any NaN or overflow from the scene before it is blurred: in
+      // Safari a single bad pixel spreads through the bloom and blacks out
+      // the whole frame. (max/min return the other operand for NaN on Metal.)
+      vec3 color = min(max(texture2D(tDiffuse, uv).rgb, vec3(0.0)), vec3(64.0));
       vec3 surfaceColor = color;
       float rawDepth = texture2D(tDepth, uv).r;
       float sceneDepth = linearizeDepth(rawDepth);
@@ -576,7 +579,7 @@ const VolumetricShader = {
         color += SKY_HORIZON_SUN * sunHalo * 0.04 * uHaze * above;
       }
 
-      gl_FragColor = vec4(max(color, vec3(0.0)), 1.0);
+      gl_FragColor = vec4(min(max(color, vec3(0.0)), vec3(64.0)), 1.0);
     }
   `,
 };

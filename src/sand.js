@@ -798,7 +798,9 @@ const SAND_FRAG = /* glsl */ `
 
     // Water column absorption and depth fog.
     vec3 fog = applyWaterFog(sand, dist, uFogColor, uFogDensity);
-    gl_FragColor = vec4(fog, 1.0);
+    // Never hand a NaN or a huge value to the post chain (max/min drop NaN
+    // on Metal): one bad pixel turns the whole bloomed frame black.
+    gl_FragColor = vec4(min(max(fog, vec3(0.0)), vec3(16.0)), 1.0);
   }
 `;
 

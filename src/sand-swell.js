@@ -113,7 +113,12 @@ export const GLSL_RIPPLES = /* glsl */ `
     vec2 d = vec2(cos(ang), sin(ang)) * (1.3 + 1.4 * hash21(cell + seed + 9.2)) / (2.0 * cellSize);
     vec2 a = f - c - d;
     vec2 b = f - c + d;
-    float twist = atan(a.y * b.x - a.x * b.y, dot(a, b));
+    // atan(0, 0) is undefined: Safari's Metal backend can return NaN for a
+    // pixel that lands exactly on a fork end, and the bloom then smears that
+    // one NaN over the whole screen as a black frame.
+    float tY = a.y * b.x - a.x * b.y;
+    float tX = dot(a, b);
+    float twist = abs(tY) + abs(tX) > 1e-12 ? atan(tY, tX) : 0.0;
     float win = 1.0 - smoothstep(0.34, 0.49, max(abs(f.x), abs(f.y)));
     float r = min(length(a), length(b)) * cellSize;
     core = min(core, mix(1.0, smoothstep(0.05, 0.65, r), win));
@@ -142,7 +147,7 @@ export const GLSL_RIPPLES = /* glsl */ `
     float u = abs(fract(ph * 0.159155 + 0.5) - 0.5) * 2.0;
     u = sqrt(u * u + soft * soft) - soft;
     float v = 1.0 - u;
-    return pow(v, 1.7) - 0.37037;
+    return pow(max(v, 1e-5), 1.7) - 0.37037;
   }
   // Height and slope (forward differences over 1/25 of a wavelength). wdx
   // and wdy are the world steps of one pixel. The field fades to flat once
