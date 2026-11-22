@@ -71,7 +71,11 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
     varying vec2 vSlope;
     varying float vBreak;
     varying float vBreakZone;
-    varying float vFacePhase;
+    // Face phase as a unit vector (cos, sin). The phase wraps from +pi to
+    // -pi in every trough; interpolating the raw angle across that wrap
+    // sweeps a triangle through 0 (the crest) and draws a zigzag of fresh
+    // foam along the mesh edges in front of each wave.
+    varying vec2 vFacePhaseCS;
     varying vec2 vCapSlope;
     varying float vShoal;
     varying float vDepth;
@@ -376,7 +380,7 @@ export function waterVertexShader(maxWaves = MAX_WAVES) {
 
       vBreak = waveBreak;
       vBreakZone = breakMask;
-      vFacePhase = facePhase;
+      vFacePhaseCS = vec2(cos(facePhase), sin(facePhase));
       vShoal = shoal;
       vDepth = depth;
       vPeakCrest = 0.5 + 0.5 * sin(peakArg);
