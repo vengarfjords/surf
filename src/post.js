@@ -435,12 +435,20 @@ const VolumetricShader = {
       return illum * (0.55 + 0.45 * spokes) * sunFalloff;
     }
 
+    // NaN / infinity test on the raw bits. Safari compiles shaders to Metal
+    // with fast math, which may treat NaN as impossible and optimise away
+    // isnan() or a max()/min() clamp; an exponent-bits test cannot be.
+    bool badF(float x) { return (floatBitsToUint(x) & 0x7f800000u) == 0x7f800000u; }
+    vec3 safeColor(vec3 c) {
+      return min(max(vec3(badF(c.r) ? 0.0 : c.r, badF(c.g) ? 0.0 : c.g, badF(c.b) ? 0.0 : c.b), vec3(0.0)), vec3(64.0));
+    }
+
     void main() {
       vec2 uv = vUv;
       // Drop any NaN or overflow from the scene before it is blurred: in
       // Safari a single bad pixel spreads through the bloom and blacks out
-      // the whole frame. (max/min return the other operand for NaN on Metal.)
-      vec3 color = min(max(texture2D(tDiffuse, uv).rgb, vec3(0.0)), vec3(64.0));
+      // the whole frame.
+      vec3 color = safeColor(texture2D(tDiffuse, uv).rgb);
       vec3 surfaceColor = color;
       float rawDepth = texture2D(tDepth, uv).r;
       float sceneDepth = linearizeDepth(rawDepth);
@@ -579,7 +587,7 @@ const VolumetricShader = {
         color += SKY_HORIZON_SUN * sunHalo * 0.04 * uHaze * above;
       }
 
-      gl_FragColor = vec4(min(max(color, vec3(0.0)), vec3(64.0)), 1.0);
+      gl_FragColor = vec4(safeColor(color), 1.0);
     }
   `,
 };
