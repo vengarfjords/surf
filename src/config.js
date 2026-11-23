@@ -676,8 +676,11 @@ export const TUNING = {
     // density when the GPU has room; the pixel budget below still caps it.
     renderScale: 1.0,
     // Governor: lowers the render scale after sustained slow frames, never
-    // below this. It only steps down, so it cannot hunt.
-    dynamicQuality: true,
+    // below this. It only steps down, so it cannot hunt, and so one slow
+    // stretch (a busy machine, Low Power Mode's 30 Hz) left the picture
+    // soft for the rest of the session. Off: the frame is kept at full
+    // fidelity and made fast enough instead; the tuning panel can turn it on.
+    dynamicQuality: false,
     dynamicQualityMinScale: 0.5,
     // Pixel budget for the rendered frame (a full-screen 16" MacBook Pro
     // window is 1.9 MP at scale 1).

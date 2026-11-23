@@ -256,11 +256,18 @@ async function boot() {
     console.warn("warm-up frame failed", error);
   }
   try {
-    await Promise.race([
-      renderer.compileAsync(scene, camera),
-      new Promise((resolve) => setTimeout(resolve, 3200)),
-    ]);
-  } catch (e) {}
+    // Compile every material, including those hidden at the start (the sky
+    // above water, spray, spindrift, surface particles), for the target the
+    // scene really draws into. Compiled for the canvas instead, the
+    // programs differ (output colour space) and each of these compiled the
+    // first time it appeared in play, a visible hitch.
+    renderer.setRenderTarget(post.sceneTarget);
+    const compiling = renderer.compileAsync(scene, camera);
+    renderer.setRenderTarget(null);
+    await Promise.race([compiling, new Promise((resolve) => setTimeout(resolve, 3200))]);
+  } catch (e) {
+    renderer.setRenderTarget(null);
+  }
   await frame();
   hud.setLoading(true);
   hud.setSound(true);
