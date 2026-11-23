@@ -435,6 +435,14 @@ const VolumetricShader = {
       return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
     }
 
+    // The scene's world position at a screen position, and its depth.
+    vec4 sceneAt(vec2 p) {
+      float d = linearizeDepth(texture2D(tDepth, p).r);
+      vec2 n = p * 2.0 - 1.0;
+      vec3 dir = normalize(uCamForward + uCamRight * n.x * uTanHalfFov * uAspect + uCamUp * n.y * uTanHalfFov);
+      return vec4(uCameraPos + dir * (d / max(dot(dir, uCamForward), 0.12)), d);
+    }
+
     // Interleaved gradient noise: a fixed, fine per-pixel offset for the
     // shaft march, so its steps never show as bands and never flicker.
     float ign(vec2 p) {
@@ -555,7 +563,20 @@ const VolumetricShader = {
         // Reconstruct a surface normal from depth derivatives and lay moving
         // caustic filaments over anything facing up. This is what ties the
         // dolphin, coral and sand into the same light field.
-        vec3 normalRaw = cross(dFdx(worldPos), dFdy(worldPos));
+        // On each screen axis, step to the neighbour on the same surface
+        // (the smaller jump in depth). Screen derivatives take a 2x2 block
+        // of pixels, so along the dolphin's outline they mixed its depth
+        // with the sand's behind it: the normal came out wrong, the light on
+        // the sand there was missed and the outline got a ring of dark,
+        // blocky pixels.
+        vec2 texel = 1.0 / uResolution;
+        vec4 sL = sceneAt(uv - vec2(texel.x, 0.0));
+        vec4 sR = sceneAt(uv + vec2(texel.x, 0.0));
+        vec4 sD = sceneAt(uv - vec2(0.0, texel.y));
+        vec4 sU = sceneAt(uv + vec2(0.0, texel.y));
+        vec3 stepX = abs(sR.w - sceneDepth) < abs(sceneDepth - sL.w) ? sR.xyz - worldPos : worldPos - sL.xyz;
+        vec3 stepY = abs(sU.w - sceneDepth) < abs(sceneDepth - sD.w) ? sU.xyz - worldPos : worldPos - sD.xyz;
+        vec3 normalRaw = cross(stepX, stepY);
         float normalLength = length(normalRaw);
         vec3 surfaceNormal = normalLength > 1e-6
           ? normalRaw / normalLength
