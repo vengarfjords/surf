@@ -694,7 +694,10 @@ export const TUNING = {
     // distances sit beyond the point where underwater fog makes the geometry
     // unreadable.
     reefCullDistance: 120,
-    grassChunkSize: 80,
+    // Small chunks, so the view frustum and the distance limit can skip
+    // most of a meadow when the camera is inside it (80 m chunks drew the
+    // whole start meadow, behind the camera too).
+    grassChunkSize: 20,
     grassCullDistance: 100,
     bloomStrength: 0.22,
     bloomRadius: 0.7,
@@ -801,6 +804,11 @@ export const PALETTE = {
 };
 
 export const SUN_DIRECTION = { x: -0.46, y: 0.7, z: 0.55 };
+
+// Under water, the water column has fully replaced the scene at this
+// distance along a ray (post.js): anything wholly farther away cannot change
+// a pixel, so the habitat stops drawing it there (habitat.js).
+export const WATER_OPAQUE_DISTANCE = 80;
 
 /**
  * Live tuning controls. `path` points into TUNING; `min`/`max` are the useful

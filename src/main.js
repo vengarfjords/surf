@@ -134,7 +134,6 @@ async function boot() {
   let lastImpactSound = 0;
   let wasSurge = false;
   let ventClock = 0;
-  let cullClock = 0;
   let surfSprayAccumulator = 0;
   let surfRoar = 0;
   const surfRoarSample = {};
@@ -455,7 +454,9 @@ async function boot() {
   // Per-frame timings for the benchmark (?bench, src/bench.js).
   let frameHook = null;
 
-  function animate(now = performance.now()) {
+  // One frame: update and draw. The benchmark's GPU mode calls it directly,
+  // since a hidden page gets no animation frames.
+  function frameStep(now = performance.now()) {
     const cpuStart = performance.now();
     // The tuning panel (or the governor) changed the render scale.
     if (TUNING.visuals.renderScale !== post.appliedScale) resizePending = true;
@@ -499,15 +500,14 @@ async function boot() {
       camState.wetness = 0;
     }
 
-    // Reef and seagrass chunks are submitted only when they are still inside
-    // the readable fog envelope. A slow cadence is enough at swim speeds and
-    // keeps the culling loop off the hot path.
-    cullClock -= dt;
-    if (cullClock <= 0) {
-      cullClock = 0.2;
-      reefs.updateCulling(camera);
-      seagrass.updateCulling(camera);
-    }
+    // Reef and seagrass chunks are submitted only when they can still be
+    // seen: inside the readable fog envelope and, with the camera fully
+    // under water, nearer than where the water column replaces the scene.
+    // Every frame, so the exact limit holds while the camera moves (a few
+    // hundred distance checks).
+    const fullyUnderwater = camState.underwater >= 0.998;
+    reefs.updateCulling(camera, fullyUnderwater);
+    seagrass.updateCulling(camera, fullyUnderwater);
 
     const camDepth = Math.max(
       0,
@@ -762,7 +762,9 @@ async function boot() {
         triangles: renderer.info.render.triangles,
       });
     }
-
+  }
+  function animate(now) {
+    frameStep(now);
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
@@ -898,6 +900,8 @@ async function boot() {
       drawFrame: () => {
         if (lastCamState) drawFrame(lastCamState, 1 / 60);
       },
+      // Advance the game one frame by hand (the GPU mode, for hidden pages).
+      step: (ms = 1000 / 60) => frameStep(lastFrameTime + ms),
       resize,
       refraction,
       spindrift,

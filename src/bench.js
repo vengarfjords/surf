@@ -64,6 +64,16 @@ function objectsOf(owner, depth = 2, out = new Set(), seen = new Set()) {
 export async function runBench(O, api) {
   const params = new URLSearchParams(location.search);
   const quick = params.get("bench") === "quick";
+  // bench=gpu: no live play, only the held-frame GPU timings. The game is
+  // stepped by hand, so it also runs in a hidden page (which gets no
+  // animation frames).
+  const gpuOnly = params.get("bench") === "gpu";
+  const frame = gpuOnly
+    ? () => {
+        api.step();
+        return new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    : nextFrame;
   const liveSeconds = Number(params.get("live")) || (quick ? 2 : 6);
   const settleSeconds = quick ? 0.8 : 2;
   // batch=<ms> and reps=<n> shorten the GPU timing batches (for a software
@@ -98,7 +108,7 @@ export async function runBench(O, api) {
   while (!O.info.started) {
     O.start();
     O.hud.el.startPrompt?.classList.add("is-hidden");
-    await nextFrame();
+    await frame();
   }
   O.hud.el.title?.classList.add("is-away");
   const saved = {
@@ -108,8 +118,8 @@ export async function runBench(O, api) {
   };
   tuning.visuals.dynamicQuality = false;
   tuning.visuals.renderScale = 1;
-  await nextFrame();
-  await nextFrame();
+  await frame();
+  await frame();
 
   const syncU8 = new Uint8Array(4);
   const syncF32 = new Float32Array(4);
@@ -189,11 +199,11 @@ export async function runBench(O, api) {
   });
 
   // The display's refresh interval, from the frames of an idle second.
-  const refresh = await (async () => {
+  const refresh = gpuOnly ? 1000 / 60 : await (async () => {
     const t = [];
     let last = 0;
     for (let i = 0; i < (quick ? 12 : 40); i++) {
-      await nextFrame();
+      await frame();
       const n = now();
       if (last) t.push(n - last);
       last = n;
@@ -202,14 +212,16 @@ export async function runBench(O, api) {
     return percentile(t, 0.25);
   })();
   const refreshMs = refresh > 12 && refresh < 14 ? 1000 / 75 : refresh < 10 ? 1000 / 120 : refresh > 25 ? 1000 / 30 : 1000 / 60;
-  say(`display refresh ≈ ${(1000 / refreshMs).toFixed(0)} Hz (idle frame ${refresh.toFixed(1)} ms)`);
+  if (!gpuOnly) say(`display refresh ≈ ${(1000 / refreshMs).toFixed(0)} Hz (idle frame ${refresh.toFixed(1)} ms)`);
+  else say("GPU timings only (game stepped by hand)");
 
   const record = async (seconds, onFrame = null) => {
     const rows = [];
     frameSink = rows;
     perFrame = onFrame;
     const t0 = now();
-    while (now() - t0 < seconds * 1000) await nextFrame();
+    if (gpuOnly) for (let i = 0; i < Math.round(seconds * 60); i++) await frame();
+    else while (now() - t0 < seconds * 1000) await frame();
     frameSink = null;
     perFrame = null;
     return rows;
@@ -332,19 +344,44 @@ export async function runBench(O, api) {
     renderer.setRenderTarget(null);
     result.passes = passes;
 
-    // The scene pass with one part hidden at a time.
+    // The scene pass with one part hidden at a time. Each is also drawn
+    // through a one-pixel scissor, which leaves what a part costs before
+    // any pixel is shaded (vertex shading and binning), and counted.
     api.drawFrame();
+    const target = post.sceneTarget;
     const sceneOnly = () => post.scenePass.render(renderer);
-    const base = stopwatch(sceneOnly, post.sceneTarget);
-    result.sceneBase = base;
+    const sceneVertices = () => {
+      target.scissor.set(0, 0, 1, 1);
+      target.scissorTest = true;
+      sceneOnly();
+      target.scissorTest = false;
+      target.scissor.set(0, 0, target.width, target.height);
+    };
+    const triangles = () => {
+      renderer.info.reset();
+      sceneOnly();
+      return renderer.info.render.triangles;
+    };
+    const base = stopwatch(sceneOnly, target);
+    const baseVertices = stopwatch(sceneVertices, target);
+    const baseTriangles = triangles();
+    result.sceneBase = { ...base, vertexMs: baseVertices.ms, triangles: baseTriangles };
     result.groups = [];
     for (const g of groups) {
       const was = g.objs.map((o) => o.visible);
       g.objs.forEach((o) => (o.visible = false));
-      const t = stopwatch(sceneOnly, post.sceneTarget);
+      const t = stopwatch(sceneOnly, target);
+      const tv = stopwatch(sceneVertices, target);
+      const tris = triangles();
       g.objs.forEach((o, i) => (o.visible = was[i]));
       if (was.some(Boolean)) {
-        result.groups.push({ name: g.name, ms: +(base.ms - t.ms).toFixed(3), cpu: +(base.cpu - t.cpu).toFixed(3) });
+        result.groups.push({
+          name: g.name,
+          ms: +(base.ms - t.ms).toFixed(3),
+          cpu: +(base.cpu - t.cpu).toFixed(3),
+          vertexMs: +(baseVertices.ms - tv.ms).toFixed(3),
+          triangles: baseTriangles - tris,
+        });
       }
     }
 
@@ -530,38 +567,41 @@ export async function runBench(O, api) {
         newPrograms: settleRows.length ? settleRows[settleRows.length - 1].programs - settleRows[0].programs : 0,
         hitches: settle.hitches,
       };
-      status(`[${si + 1}/${scenes.length}] ${sc.label}: playing ${liveSeconds} s`);
-      res.live = analyse(await record(liveSeconds, onFrame));
+      if (!gpuOnly) {
+        status(`[${si + 1}/${scenes.length}] ${sc.label}: playing ${liveSeconds} s`);
+        res.live = analyse(await record(liveSeconds, onFrame));
+      }
       status(`[${si + 1}/${scenes.length}] ${sc.label}: timing the GPU`);
       O.freeze(true);
-      await nextFrame();
-      await nextFrame();
+      await frame();
+      await frame();
       const underwater = camera.position.y < surfaceAt(camera.position.x, camera.position.z);
       res.underwater = underwater;
       res.gpu = measureGpu(underwater);
       if (features && sc.features) {
-        await nextFrame();
+        await frame();
         status(`[${si + 1}/${scenes.length}] ${sc.label}: timing features`);
         res.features = measureFeatures();
       }
       const L = res.live;
+      const playLine = L
+        ? `${String(L.fps).padStart(5)} fps · missed ${L.missed}/${L.frames} · worst ${L.interval.max.toFixed(0)} ms · ` +
+          `JS ${L.cpu.mean.toFixed(1)} (max ${L.cpu.max.toFixed(0)}) · `
+        : "";
       const top = [...res.gpu.passes, ...res.gpu.groups.map((g) => ({ ...g, name: "scene: " + g.name }))]
         .filter((p) => !p.name.startsWith("scene ("))
         .sort((a, b) => b.ms - a.ms)
         .slice(0, 3)
         .map((p) => `${p.name} ${p.ms.toFixed(1)}`)
         .join(", ");
-      say(
-        `${sc.id.padEnd(9)} ${String(L.fps).padStart(5)} fps · missed ${L.missed}/${L.frames} · worst ${L.interval.max.toFixed(0)} ms · ` +
-          `JS ${L.cpu.mean.toFixed(1)} (max ${L.cpu.max.toFixed(0)}) · frame ${res.gpu.frame.ms.toFixed(1)} ms · top: ${top}`
-      );
+      say(`${sc.id.padEnd(9)} ${playLine}frame ${res.gpu.frame.ms.toFixed(1)} ms · top: ${top}`);
     } catch (error) {
       res.error = String(error && error.stack ? error.stack : error);
       say(`${sc.id}: failed (${error})`);
     }
     results.push(res);
     keys.clear();
-    await nextFrame();
+    await frame();
   }
 
   // ---- restore and save -----------------------------------------------------------

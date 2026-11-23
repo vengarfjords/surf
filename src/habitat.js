@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { TUNING, PALETTE } from "./config.js";
+import { TUNING, PALETTE, WATER_OPAQUE_DISTANCE } from "./config.js";
 import {
   clamp,
   fbm,
@@ -180,9 +180,16 @@ function instanced(geometry, material, transforms, colors, chunkSize = 0) {
  * Hide whole fogged/out-of-range instanced chunks. Frustum culling does the
  * rest; this rejects the geometry that is technically in front of the camera
  * but beyond the point where water fog can resolve it.
+ *
+ * `reach` is an exact limit on top of that: a chunk whose bounding sphere is
+ * wholly farther than it from the camera (in 3D) draws nothing that can show,
+ * so it is skipped. With the camera fully under water that is
+ * WATER_OPAQUE_DISTANCE (past it along a ray the water column replaces the
+ * scene outright); seagrass has a shorter one of its own, GRASS_SHRINK_END.
  */
-function cullInstancedChunks(group, camera, distance) {
+function cullInstancedChunks(group, camera, distance, reach = Infinity) {
   const cx = camera.position.x;
+  const cy = camera.position.y;
   const cz = camera.position.z;
   group.traverse((object) => {
     if (!object.isInstancedMesh || !object.boundingSphere) return;
@@ -190,7 +197,12 @@ function cullInstancedChunks(group, camera, distance) {
     const dx = sphere.center.x - cx;
     const dz = sphere.center.z - cz;
     const nearest = Math.sqrt(dx * dx + dz * dz) - sphere.radius;
-    object.visible = nearest < distance;
+    let visible = nearest < distance;
+    if (visible && reach < Infinity) {
+      const dy = sphere.center.y - cy;
+      visible = Math.sqrt(dx * dx + dy * dy + dz * dz) - sphere.radius < reach;
+    }
+    object.visible = visible;
   });
 }
 
@@ -202,8 +214,11 @@ export class Reefs {
     this.scene.add(this.group);
   }
 
-  updateCulling(camera) {
-    cullInstancedChunks(this.group, camera, TUNING.visuals.reefCullDistance);
+  updateCulling(camera, fullyUnderwater = false) {
+    // (The metre past the limit is only a safety margin: the sphere holds
+    // the whole coral, so all of it is farther than that.)
+    const reach = fullyUnderwater ? WATER_OPAQUE_DISTANCE + 1 : Infinity;
+    cullInstancedChunks(this.group, camera, TUNING.visuals.reefCullDistance, reach);
   }
 
   async loadReferenceCorals() {
@@ -283,7 +298,10 @@ export class Reefs {
           mat.customProgramCacheKey = () => `reference-coral-${def.id}`;
 
           const maxDim = Math.max(size.x, size.y, size.z);
-          const mesh = new THREE.InstancedMesh(geo, mat, def.placements.length);
+          // One mesh per placement (each a 100k-triangle scan), so the
+          // renderer can skip each coral that is out of view or past the
+          // water's visibility on its own, not all of a kind together.
+          const meshes = def.placements.map(() => new THREE.InstancedMesh(geo, mat, 1));
           const shadowMesh = new THREE.InstancedMesh(
             shadowGeo,
             shadowMat,
@@ -309,9 +327,9 @@ export class Reefs {
             position.set(p.x, ground + size.y * s * 0.5 - 0.14, p.z);
             scale.set(s, s, s);
             matrix.compose(position, quaternion, scale);
-            mesh.setMatrixAt(i, matrix);
+            meshes[i].setMatrixAt(0, matrix);
             color.setHex(0xffffff).offsetHSL((rnd() - 0.5) * 0.02, 0.02, (rnd() - 0.5) * 0.05);
-            mesh.setColorAt(i, color);
+            meshes[i].setColorAt(0, color);
 
             position.set(p.x, ground + 0.035, p.z);
             quaternion.setFromEuler(new THREE.Euler(0, p.yaw, 0));
@@ -323,18 +341,20 @@ export class Reefs {
             matrix.compose(position, quaternion, scale);
             shadowMesh.setMatrixAt(i, matrix);
           }
-          mesh.instanceMatrix.needsUpdate = true;
-          if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-          mesh.computeBoundingSphere();
-          mesh.frustumCulled = true;
-          mesh.castShadow = false;
-          mesh.receiveShadow = false;
           shadowMesh.instanceMatrix.needsUpdate = true;
           shadowMesh.computeBoundingSphere();
           shadowMesh.frustumCulled = true;
           this.group.add(shadowMesh);
-          this.group.add(mesh);
-          this.referenceCorals.push(mesh);
+          for (const mesh of meshes) {
+            mesh.instanceMatrix.needsUpdate = true;
+            if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+            mesh.computeBoundingSphere();
+            mesh.frustumCulled = true;
+            mesh.castShadow = false;
+            mesh.receiveShadow = false;
+            this.group.add(mesh);
+            this.referenceCorals.push(mesh);
+          }
         } catch (err) {
           console.warn("Reference coral failed to load", def.id, err);
         }
@@ -474,6 +494,11 @@ function makeSeagrassTexture() {
   return tex;
 }
 
+// Seagrass tufts shrink away between these distances from the camera
+// (metres, from the tuft's root): past the far one a tuft is a point.
+const GRASS_SHRINK_START = 14;
+const GRASS_SHRINK_END = 28;
+
 function makeSeagrassMaterial() {
   const grassTexture = makeSeagrassTexture();
   const mat = new THREE.MeshStandardMaterial({
@@ -518,9 +543,11 @@ function makeSeagrassMaterial() {
           transformed.z += cos(uOceanTime * 0.71 + phase * 1.2) * bend * 0.09;
           // Blades thinner than a pixel only alias into specks: past a
           // few tens of metres they shrink away and the meadow colour on
-          // the sand carries the field.
+          // the sand carries the field. Past the far distance a tuft is a
+          // point and draws nothing, so whole chunks beyond it are not
+          // drawn at all (Seagrass.updateCulling).
           float grassDist = distance(rootWorld, cameraPosition);
-          transformed *= 1.0 - smoothstep(14.0, 28.0, grassDist);
+          transformed *= 1.0 - smoothstep(${GRASS_SHRINK_START.toFixed(1)}, ${GRASS_SHRINK_END.toFixed(1)}, grassDist);
         `
       );
     shader.fragmentShader =
@@ -639,8 +666,14 @@ export class Seagrass {
     this.count = transforms.length;
   }
 
-  updateCulling(camera) {
-    cullInstancedChunks(this.group, camera, TUNING.visuals.grassCullDistance);
+  updateCulling(camera, fullyUnderwater = false) {
+    // Every tuft past GRASS_SHRINK_END has shrunk to a point (see the
+    // material), above water or below, so a chunk wholly beyond it draws
+    // nothing. The metre past it covers a tuft's root lying up to ~0.3 m
+    // outside the chunk's bounding sphere. (Under water the opaque distance
+    // is farther, so this limit is the one that counts.)
+    const reach = Math.min(GRASS_SHRINK_END + 1, fullyUnderwater ? WATER_OPAQUE_DISTANCE + 1 : Infinity);
+    cullInstancedChunks(this.group, camera, TUNING.visuals.grassCullDistance, reach);
   }
 }
 

@@ -5,7 +5,7 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { Pass } from "three/addons/postprocessing/Pass.js";
-import { PALETTE, SUN_DIRECTION, TUNING } from "./config.js";
+import { PALETTE, SUN_DIRECTION, TUNING, WATER_OPAQUE_DISTANCE } from "./config.js";
 import { glslCaustics, glslNoise } from "./utils.js";
 import { glslSky } from "./atmosphere.js";
 
@@ -484,20 +484,32 @@ const VolumetricShader = {
       float g = 0.6;
       float cosT = dot(uSunRefr, -rd);
       float phase = 0.12 + pow((1.0 - g) * (1.0 - g) / (1.0 + g * g - 2.0 * g * cosT), 1.5);
+      // Along the ray, three things change in straight lines: the depth
+      // below the surface, the surface point the light came in through, and
+      // the exponent of what the light loses on the way (fading with depth,
+      // exp(-0.04 * below), and absorbed along its path down and then along
+      // the view ray, exp(-0.055 * (up + t))). So each step adds a fixed
+      // amount to the first two and multiplies the loss by a fixed factor,
+      // which gives the same values as working each one out again, without
+      // two exp() a step.
+      float invSunDown = 1.0 / sunDown;
+      float below = uWaterLevel - (ro.y + rd.y * t);
+      float belowStep = -rd.y * stepLen;
+      vec2 s = ro.xz + rd.xz * t - uSunRefr.xz * (below * invSunDown);
+      vec2 sStep = (rd.xz + uSunRefr.xz * (rd.y * invSunDown)) * stepLen;
+      float lossRate = 0.04 + 0.055 * invSunDown;
+      float loss = exp(-lossRate * below - 0.055 * t);
+      float lossStep = exp((lossRate * rd.y - 0.055) * stepLen);
       float acc = 0.0;
       for (int i = 0; i < 32; i++) {
         if (i >= uShaftSteps) break;
-        vec3 p = ro + rd * t;
-        float below = uWaterLevel - p.y;
         if (below > 0.05) {
-          float up = below / sunDown;
-          vec2 s = p.xz - uSunRefr.xz * up;
-          float light = shaftLight(s, below);
-          // In from the surface over the first metre, fading with depth.
-          light *= smoothstep(0.05, 1.4, below) * exp(-below * 0.04);
-          acc += light * exp(-0.055 * (up + t));
+          // In from the surface over the first metre.
+          acc += shaftLight(s, below) * smoothstep(0.05, 1.4, below) * loss;
         }
-        t += stepLen;
+        below += belowStep;
+        s += sStep;
+        loss *= lossStep;
       }
       return acc * stepLen * phase;
     }
@@ -542,7 +554,7 @@ const VolumetricShader = {
         float mediumAmount = 1.0 - exp(-pow(rayLength * mediumDensity, 1.6));
         // Past the visibility limit everything is the water itself, so the
         // far seabed melts into the water instead of meeting it in a line.
-        mediumAmount = max(mediumAmount, smoothstep(35.0, 80.0, rayLength));
+        mediumAmount = max(mediumAmount, smoothstep(35.0, ${WATER_OPAQUE_DISTANCE.toFixed(1)}, rayLength));
         vec3 medium = waterMedium(rayDir, camDepthNow);
         medium += uSunColor * 0.05 * pow(max(dot(rayDir, uSunDir), 0.0), 4.0) * exp(-camDepthNow * 0.04);
         color = mix(color, medium, clamp(mediumAmount, 0.0, 1.0) * uUnderwater);
