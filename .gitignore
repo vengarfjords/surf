@@ -4,3 +4,4 @@ dist/
 .env
 .chrome-profile/
 *.log
+bench-results/

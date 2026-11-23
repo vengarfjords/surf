@@ -409,7 +409,47 @@ async function boot() {
       emitted++;
     }
   }
+  // Draws one frame from the state the update left: the dolphin alone into
+  // the refraction target (when the water should show it), then the scene
+  // and the post chain. The benchmark calls this repeatedly on a held frame.
+  let lastCamState = null;
+  function drawFrame(camState, dt) {
+    // The lens gets wet when it breaks the surface, or when it is close
+    // enough to the dolphin to be caught by its spray; a breach seen from a
+    // few body lengths away leaves the lens dry, as it would a real camera.
+    const lensSpray = 1 - THREE.MathUtils.smoothstep(camera.position.distanceTo(dolphin.position), 2.5, 6);
+    // Seen from the air, the water shows the dolphin under its surface
+    // until it is too deep to make out.
+    const dolphinDepth = dolphin.tailUniforms.waterLevel.value - dolphin.position.y;
+    const refractionOn = camState.underwater < 0.5 && dolphinDepth > -1.5 && dolphinDepth < 14;
+    if (refractionOn) {
+      const t = post.composer.renderTarget1;
+      refraction.setSize(t.width * 0.5, t.height * 0.5);
+      // Under the water the skin reflects the water around it, not the sky.
+      for (const m of dolphinMaterials) {
+        m.envMap = envMaps.below;
+        m.envMapIntensity = 0.12;
+      }
+      refraction.render(scene, camera);
+      for (const m of dolphinMaterials) {
+        m.envMap = envMaps.above;
+        m.envMapIntensity = 0.8;
+      }
+    }
+    ocean.setRefraction(refraction, refractionOn, camera);
+    post.render(dt, {
+      underwater: camState.underwater,
+      wetness: Math.max(camState.wetness, dolphin.wetness * 0.6 * lensSpray),
+      speedNorm: camState.speedNorm,
+      waterLevel: camState.waterHeight,
+    });
+  }
+
+  // Per-frame timings for the benchmark (?bench, src/bench.js).
+  let frameHook = null;
+
   function animate(now = performance.now()) {
+    const cpuStart = performance.now();
     // The tuning panel (or the governor) changed the render scale.
     if (TUNING.visuals.renderScale !== post.appliedScale) resizePending = true;
     if (resizePending) {
@@ -612,35 +652,10 @@ async function boot() {
       pendingGpuQuery = gl.createQuery();
       gl.beginQuery(timerExt.TIME_ELAPSED_EXT, pendingGpuQuery);
     }
-    // The lens gets wet when it breaks the surface, or when it is close
-    // enough to the dolphin to be caught by its spray; a breach seen from a
-    // few body lengths away leaves the lens dry, as it would a real camera.
-    const lensSpray = 1 - THREE.MathUtils.smoothstep(camera.position.distanceTo(dolphin.position), 2.5, 6);
-    // Seen from the air, the water shows the dolphin under its surface
-    // until it is too deep to make out.
-    const dolphinDepth = dolphin.tailUniforms.waterLevel.value - dolphin.position.y;
-    const refractionOn = camState.underwater < 0.5 && dolphinDepth > -1.5 && dolphinDepth < 14;
-    if (refractionOn) {
-      const t = post.composer.renderTarget1;
-      refraction.setSize(t.width * 0.5, t.height * 0.5);
-      // Under the water the skin reflects the water around it, not the sky.
-      for (const m of dolphinMaterials) {
-        m.envMap = envMaps.below;
-        m.envMapIntensity = 0.12;
-      }
-      refraction.render(scene, camera);
-      for (const m of dolphinMaterials) {
-        m.envMap = envMaps.above;
-        m.envMapIntensity = 0.8;
-      }
-    }
-    ocean.setRefraction(refraction, refractionOn, camera);
-    post.render(dt, {
-      underwater: camState.underwater,
-      wetness: Math.max(camState.wetness, dolphin.wetness * 0.6 * lensSpray),
-      speedNorm: camState.speedNorm,
-      waterLevel: camState.waterHeight,
-    });
+    const renderStart = performance.now();
+    lastCamState = camState;
+    drawFrame(camState, dt);
+    const renderMs = performance.now() - renderStart;
     if (startGpuQuery) {
       gl.endQuery(timerExt.TIME_ELAPSED_EXT);
     } else if (pendingGpuQuery) {
@@ -721,6 +736,24 @@ async function boot() {
       }
     } else {
       slowQualityTime = 0;
+    }
+
+    if (frameHook) {
+      frameHook({
+        t: now,
+        dt: rawDt * 1000,
+        cpu: performance.now() - cpuStart,
+        dolphin: dolphinMs,
+        seabed: seabedMs,
+        ocean: oceanMs,
+        effects: effectsMs,
+        render: renderMs,
+        programs: renderer.info.programs.length,
+        textures: renderer.info.memory.textures,
+        geometries: renderer.info.memory.geometries,
+        calls: renderer.info.render.calls,
+        triangles: renderer.info.render.triangles,
+      });
     }
 
     requestAnimationFrame(animate);
@@ -848,6 +881,24 @@ async function boot() {
       };
     },
   };
+
+  // ?bench: play a fixed set of scenes and measure every frame.
+  if (captureParams.has("bench")) {
+    const benchApi = {
+      setFrameHook: (fn) => {
+        frameHook = fn;
+      },
+      drawFrame: () => {
+        if (lastCamState) drawFrame(lastCamState, 1 / 60);
+      },
+      resize,
+      refraction,
+      spindrift,
+    };
+    import("./bench.js")
+      .then((m) => m.runBench(window.OCEAN, benchApi))
+      .catch((error) => console.error("benchmark failed", error));
+  }
 }
 
 function createLights(scene) {
