@@ -162,7 +162,6 @@ export function seabedHeight(x, z) {
 const SAND_LIGHT = new THREE.Color(PALETTE.sandLight);
 const SAND_SHADE = new THREE.Color(PALETTE.sandShade);
 const SAND_WET = new THREE.Color(PALETTE.sandWet);
-const SAND_GREEN = new THREE.Color(0x435f4c);
 
 export function sandColor(x, z, y, out = new THREE.Color()) {
   const broad = fbm(x * 0.0034 + 7.3, z * 0.0034 - 2.1, 4);
@@ -170,9 +169,6 @@ export function sandColor(x, z, y, out = new THREE.Color()) {
   const depth = -y;
   out.copy(SAND_LIGHT).lerp(SAND_SHADE, clamp(broad * 0.75 + patch * 0.3, 0, 1));
   out.lerp(SAND_WET, smoothstep(6, 21, depth) * 0.38);
-  if (patch < 0.38) {
-    out.lerp(SAND_GREEN, (0.38 - patch) * 0.9);
-  }
   return out;
 }
 

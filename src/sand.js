@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
-import { meadowMap } from "./atmosphere.js";
 import {
   clamp,
   glslFog,
@@ -630,8 +629,6 @@ const SAND_FRAG = /* glsl */ `
   uniform vec2 uHoleCenter;
   uniform float uHoleRadius;
   uniform float uHasHole;
-  uniform sampler2D uMeadow;
-  uniform float uMeadowExtent;
   varying vec3 vWorld;
   varying vec3 vNormal;
   varying vec3 vColor;
@@ -706,7 +703,6 @@ const SAND_FRAG = /* glsl */ `
     vec3 causticTint = uSunColor * caustics * uCausticStrength * causticMask * 0.72;
 
     float patches = fbmR(vWorld.xz * 0.27 + 4.1);
-    float siltStain = smoothstep(0.55, 0.82, patches);
     vec3 sand = vColor;
     sand *= 0.29 + ndl * 0.52 + ambient * 0.18;
     sand += causticTint * vec3(0.82, 0.98, 0.76);
@@ -726,50 +722,6 @@ const SAND_FRAG = /* glsl */ `
     sand *= 1.0 + speckA * 0.3 + speckB * 0.14 + speckC * 0.05;
     // Clean, sorted sand: only a faint broad shift in tone across the bed.
     sand *= 0.92 + patches * 0.16;
-    sand = mix(sand, sand * vec3(0.8, 0.86, 0.74), siltStain * 0.12);
-
-    // Seagrass carpet. Under a meadow the floor is a mat of short blades:
-    // strands in a few crossing directions, bright yellow-green where the
-    // tips catch the light, dark between them, with sand showing through
-    // thin patches. The instanced blades stand up out of it near the lens.
-    float meadow = texture2D(uMeadow, vWorld.xz / uMeadowExtent + 0.5).r;
-    if (meadow > 0.01) {
-      vec2 q = vWorld.xz;
-      // Leaves lying over in the surge, combed two ways that take turns
-      // across the meadow: streaks a couple of centimetres wide and a hand
-      // long, bright where a leaf faces the light and dark in the gaps
-      // between leaves. They fade to their mean before they are finer than
-      // a pixel; the clumps and the patchwork of the meadow carry it on.
-      float fineFade = (1.0 - smoothstep(2.5, 11.0, dist)) * (1.0 - smoothstep(0.006, 0.02, footprint));
-      float tuftFade = (1.0 - smoothstep(12.0, 46.0, dist)) * (1.0 - smoothstep(0.08, 0.2, footprint));
-      vec2 qa = vec2(q.x * 0.8 + q.y * 0.6, -q.x * 0.6 + q.y * 0.8);
-      vec2 qb = vec2(q.x * 0.97 - q.y * 0.24, q.x * 0.24 + q.y * 0.97);
-      float sway = sin(uTime * 0.86 + q.x * 0.115 + q.y * 0.09) * 0.02;
-      float wA = smoothstep(0.38, 0.62, fbm2(q * 0.4 + 1.0));
-      float sA = vnoise(qa * vec2(8.0, 47.0) + vec2(sway * 8.0, 0.0)) * 0.6 + vnoise(qa * vec2(15.0, 90.0) + 4.0) * 0.4;
-      float sB = vnoise(qb * vec2(8.0, 47.0) + vec2(sway * 8.0, 8.0)) * 0.6 + vnoise(qb * vec2(15.0, 90.0) - 2.0) * 0.4;
-      float leaf = mix(sB, sA, wA);
-      float clump = fbm2(q * 2.6 + 3.0);
-      float tufts = fbm2(q * 0.9 + 2.0);
-      float strands = mix(0.5, leaf, fineFade) * 0.62 + mix(0.5, clump, tuftFade) * 0.4 + (tufts - 0.5) * 0.3;
-      float lit = 0.34 + ndl * 0.66;
-      vec3 grassDark = vec3(0.01, 0.026, 0.012);
-      vec3 grassMid = vec3(0.036, 0.1, 0.034);
-      vec3 grassLit = vec3(0.12, 0.25, 0.07);
-      vec3 carpet = mix(grassDark, grassMid, smoothstep(0.26, 0.52, strands));
-      carpet = mix(carpet, grassLit, smoothstep(0.52, 0.86, strands));
-      // Old leaves and epiphytes: a scatter of straw and brown.
-      float old = smoothstep(0.62, 0.9, fbm2(q * 5.5 + 13.0));
-      carpet = mix(carpet, vec3(0.16, 0.14, 0.06) * (0.4 + strands), old * 0.2);
-      carpet *= lit * (0.8 + 0.4 * tufts);
-      carpet += causticTint * vec3(0.5, 0.95, 0.48) * 0.36 * (0.4 + strands);
-      // A meadow is nearly closed cover, with a few blow-outs of bare sand
-      // and a ragged edge.
-      float thinPatch = smoothstep(0.66, 0.8, fbm2(q * 0.18 + 9.0)) * 0.75;
-      float edge = smoothstep(0.03, 0.3, meadow + (clump - 0.5) * 0.12);
-      float cover = edge * (1.0 - thinPatch) * (0.86 + 0.14 * clump);
-      sand = mix(sand, carpet, clamp(cover, 0.0, 1.0));
-    }
 
     // Sand hanging in the water over the bed veils it: a little paler and
     // flatter, lit like the bed under it (applied before the depth loss, so
@@ -919,8 +871,6 @@ class SandSurface {
         uHoleCenter: { value: new THREE.Vector2() },
         uHoleRadius: { value: 0 },
         uHasHole: { value: 0 },
-        uMeadow: meadowMap.uniforms.uMeadow,
-        uMeadowExtent: meadowMap.uniforms.uMeadowExtent,
         ...this.sim.swell.uniforms(),
       },
       vertexShader: SAND_VERT,

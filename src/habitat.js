@@ -12,7 +12,6 @@ import {
   seabedHeight,
   smoothstep,
 } from "./utils.js";
-import { buildMeadowTexture } from "./atmosphere.js";
 
 export const sharedShader = {
   time: { value: 0 },
@@ -599,17 +598,6 @@ export class Seagrass {
       if (depth < 2.8 || depth > 13.5) continue;
       meadows.push({ x, z, r: 10 + rnd() * 24, n: 80 + rnd() * 220 });
     }
-    // The carpet under every meadow (seabed shader) uses the same depth
-    // window and patch noise as the blades below.
-    for (const meadow of meadows) {
-      meadow.density = meadow.n / (Math.PI * meadow.r * meadow.r) / 1.5;
-    }
-    buildMeadowTexture(meadows, (x, z) => {
-      const depth = -seabedHeight(x, z);
-      const window = smoothstep(1.6, 2.6, depth) * (1 - smoothstep(14.5, 16, depth));
-      const patch = fbm(x * 0.042 + 4.3, z * 0.042 - 8.7, 2);
-      return window * (0.25 + 0.75 * smoothstep(0.26, 0.42, patch));
-    });
     // Denser blades in the meadows the player starts among.
     for (let i = 0; i < nearMeadows.length; i++) meadows[i] = { ...meadows[i], n: Math.round(meadows[i].n * 3.0) };
 
