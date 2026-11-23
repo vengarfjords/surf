@@ -672,7 +672,8 @@ export const TUNING = {
     // Rendered pixels per CSS pixel. 1 is a 1080p-class frame in a typical
     // window, drawn to a Retina screen by a sharp (bicubic) upscale; the
     // old 0.6, capped at 0.6 megapixels, was stretched about 3x and read as
-    // soft, low-resolution video.
+    // soft, low-resolution video. Up to 2 renders at a Retina screen's own
+    // density when the GPU has room; the pixel budget below still caps it.
     renderScale: 1.0,
     // Governor: lowers the render scale after sustained slow frames, never
     // below this. It only steps down, so it cannot hunt.
@@ -936,7 +937,7 @@ export const TUNE_CONTROLS = [
   { path: "visuals.foamWhite", label: "foam whiteness", min: 0.8, max: 3, step: 0.01 },
   { path: "visuals.sunGlitter", label: "sun glitter", min: 0, max: 3, step: 0.01 },
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },
-  { path: "visuals.renderScale", label: "render scale", min: 0.4, max: 1, step: 0.01 },
+  { path: "visuals.renderScale", label: "render scale", min: 0.4, max: 2, step: 0.01 },
   { path: "visuals.msaa", label: "multisample edges", type: "toggle" },
   { path: "visuals.legacyFilm", label: "legacy film look", type: "toggle" },
   { path: "visuals.lensDrops", label: "lens drops", type: "toggle" },

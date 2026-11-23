@@ -830,7 +830,10 @@ export class Post {
     // multiply the cost; the quality governor in main.js lowers
     // renderScale further if frames run slow.
     const scaleByBudget = Math.sqrt(TUNING.visuals.maxPostPixels / Math.max(1, w * h));
-    return Math.min(TUNING.visuals.renderScale, scaleByBudget);
+    // Never more rendered pixels than the canvas has: above that, extra
+    // pixels only cost time (the multisampling already smooths edges).
+    const dpr = Math.min(window.devicePixelRatio || 1, TUNING.visuals.maxPixelRatio);
+    return Math.min(TUNING.visuals.renderScale, scaleByBudget, dpr);
   }
 
   setSize(w, h) {

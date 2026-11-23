@@ -703,12 +703,15 @@ async function boot() {
       const gpuBound = !(perf.gpuMs > 0) || perf.gpuMs > 11;
       if (slowQualityTime > 1.1 && gpuBound) {
         // Pixel cost goes with the square of the scale; aim for ~15 ms.
+        // Step from the scale actually rendered: a setting above the pixel
+        // budget or the display's density is already capped.
         const ratio = Math.sqrt(15 / Math.max(15, frameMsAvg));
+        const current = post.composerScale();
         const next = Math.max(
           TUNING.visuals.dynamicQualityMinScale,
-          Math.min(TUNING.visuals.renderScale - 0.05, TUNING.visuals.renderScale * ratio)
+          Math.min(current - 0.05, current * ratio)
         );
-        if (next < TUNING.visuals.renderScale - 1e-4) {
+        if (next < current - 1e-4) {
           TUNING.visuals.renderScale = Math.round(next * 100) / 100;
           // Applied before the next render, not now: see resizePending.
           resizePending = true;
