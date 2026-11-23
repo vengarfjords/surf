@@ -39,6 +39,10 @@ export class SandSimulation {
     this.erase = new Float32Array(this.n * this.n);
     this.visualErase = new Float32Array(this.n * this.n);
     this.texData = new Float32Array(this.n * this.n * 2);
+    // Rows changed since the texture was last sent to the GPU (texLo >
+    // texHi: none); see flushTexture.
+    this.texLo = this.n;
+    this.texHi = -1;
     this.swell = null;
     this.smoothClock = 0;
     // Rows [rowMin, rowMax] that hold any dug, piled or wiped sand (rowMin >
@@ -112,19 +116,22 @@ export class SandSimulation {
     const cx = Math.round(shiftX / this.cell);
     const cz = Math.round(shiftZ / this.cell);
     const n = this.n;
+    // The centre moved (cx, cz) cells: new cell (x, y) is old cell
+    // (x + cx, y + cz). Each kept row moves as one block copy.
+    const xa = Math.max(0, -cx);
+    const xb = Math.min(n, n - cx);
+    const ya = Math.max(0, -cz);
+    const yb = Math.min(n, n - cz);
     const shiftField = (field) => {
-      this.scratch.fill(0);
-      for (let y = 0; y < n; y++) {
-        // The centre moved cz cells: new row y is old row y + cz.
-        const sy = y + cz;
-        if (sy < 0 || sy >= n) continue;
-        for (let x0 = 0; x0 < n; x0++) {
-          const sx = x0 + cx;
-          if (sx < 0 || sx >= n) continue;
-          this.scratch[y * n + x0] = field[sy * n + sx];
+      const s = this.scratch;
+      s.fill(0);
+      if (xb > xa) {
+        for (let y = ya; y < yb; y++) {
+          const from = (y + cz) * n + cx;
+          s.set(field.subarray(from + xa, from + xb), y * n + xa);
         }
       }
-      field.set(this.scratch);
+      field.set(s);
     };
     shiftField(this.heights);
     shiftField(this.erase);
@@ -411,7 +418,7 @@ export class SandSimulation {
     // Ripples flatten over about a third of a second where sand is pushed,
     // instead of vanishing in a frame.
     const alphaErase = 1 - Math.exp(-3 * dt);
-    let changed = false;
+    const n = this.n;
     const h = this.heights;
     const v = this.visualHeights;
     const e = this.erase;
@@ -419,23 +426,65 @@ export class SandSimulation {
     const tex = this.texData;
     // Outside the marked rows height and erase are zero and so is the
     // visual copy (recentering and reset sync them).
-    const iA = this.rowMin <= this.rowMax ? this.rowMin * this.n : 0;
-    const iB = this.rowMin <= this.rowMax ? (this.rowMax + 1) * this.n : 0;
-    for (let i = iA; i < iB; i++) {
-      const diff = h[i] - v[i];
-      if (diff > 1e-7 || diff < -1e-7) {
-        v[i] += diff * alpha;
-        tex[i * 2] = v[i];
-        changed = true;
+    let lo = n;
+    let hi = -1;
+    for (let y = this.rowMin; y <= this.rowMax; y++) {
+      let changed = false;
+      for (let i = y * n, end = i + n; i < end; i++) {
+        const diff = h[i] - v[i];
+        if (diff > 1e-7 || diff < -1e-7) {
+          v[i] += diff * alpha;
+          tex[i * 2] = v[i];
+          changed = true;
+        }
+        const de = e[i] - ve[i];
+        if (de > 1e-5 || de < -1e-5) {
+          ve[i] += de * alphaErase;
+          tex[i * 2 + 1] = ve[i];
+          changed = true;
+        }
       }
-      const de = e[i] - ve[i];
-      if (de > 1e-5 || de < -1e-5) {
-        ve[i] += de * alphaErase;
-        tex[i * 2 + 1] = ve[i];
-        changed = true;
+      if (changed) {
+        if (y < lo) lo = y;
+        hi = y;
       }
     }
-    if (changed) this.texture.needsUpdate = true;
+    if (hi >= lo) {
+      this.texLo = Math.min(this.texLo, lo);
+      this.texHi = Math.max(this.texHi, hi);
+    }
+  }
+
+  /**
+   * Sends the rows of the texture that changed since the last upload to the
+   * GPU, as one block, instead of the whole 1.2 MB texture every frame. The
+   * sand meshes call it just before they draw.
+   */
+  flushTexture(renderer) {
+    if (this.texHi < this.texLo) return;
+    const lo = this.texLo;
+    const hi = this.texHi;
+    this.texLo = this.n;
+    this.texHi = -1;
+    const texture = this.texture;
+    const props = renderer.properties.get(texture);
+    // Not on the GPU yet, or a whole upload is due anyway (it reads the
+    // same array, so it carries these rows too).
+    if (!props.__webglTexture || props.__version !== texture.version) {
+      texture.needsUpdate = true;
+      return;
+    }
+    const gl = renderer.getContext();
+    const state = renderer.state;
+    state.bindTexture(gl.TEXTURE_2D, props.__webglTexture);
+    state.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    state.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    state.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    state.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    state.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+    state.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    const n = this.n;
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, lo, n, hi - lo + 1, gl.RG, gl.FLOAT, this.texData, lo * n * 2);
   }
 
   /**
@@ -775,6 +824,13 @@ class SandSurface {
     this.workerBusy = false;
     this.workerRequestId = 0;
     this.pendingCenter = null;
+    this.targetCenter = this.center.clone();
+    // The new window goes into a second, hidden copy of the mesh, a slice of
+    // its 5 MB of vertex data per frame, and takes over once all of it is on
+    // the GPU: sending it in one frame cost that frame several milliseconds.
+    this.spare = null;
+    this.uploadSteps = null;
+    this.swapCenter = null;
     if (useDelta) this._initWorker();
   }
 
@@ -788,6 +844,8 @@ class SandSurface {
         console.warn("sand recenter worker failed; using synchronous rebuild", error);
         this.worker = null;
         this.workerBusy = false;
+        this.uploadSteps = null;
+        this.swapCenter = null;
       };
       const positions = this.mesh.geometry.attributes.position.array.slice();
       const index = this.mesh.geometry.index.array.slice();
@@ -801,15 +859,50 @@ class SandSurface {
         },
         [positions.buffer, index.buffer]
       );
+      this.spare = this._makeSpare();
     } catch (error) {
       console.warn("sand recenter worker unavailable; using synchronous rebuild", error);
       this.worker = null;
     }
   }
 
+  // A second mesh over the same index and uv buffers, with its own position,
+  // colour and normal buffers. Its material is invisible, but the renderer
+  // still sends its changed buffers to the GPU every frame it is in the scene.
+  _makeSpare() {
+    const geo = this.mesh.geometry;
+    const spareGeo = new THREE.BufferGeometry();
+    spareGeo.setIndex(geo.index);
+    for (const name of Object.keys(geo.attributes)) {
+      const attr = geo.attributes[name];
+      if (name === "position" || name === "color" || name === "normal") {
+        const copy = new THREE.BufferAttribute(attr.array.slice(), attr.itemSize);
+        copy.setUsage(THREE.DynamicDrawUsage);
+        spareGeo.setAttribute(name, copy);
+      } else {
+        spareGeo.setAttribute(name, attr);
+      }
+    }
+    this.hiddenMaterial = new THREE.MeshBasicMaterial({ visible: false });
+    const spare = new THREE.Mesh(spareGeo, this.hiddenMaterial);
+    spare.onBeforeRender = this.mesh.onBeforeRender;
+    spare.matrixAutoUpdate = false;
+    spare.frustumCulled = false;
+    spare.receiveShadow = false;
+    spare.renderOrder = this.mesh.renderOrder;
+    this.scene.add(spare);
+    return spare;
+  }
+
   requestRecenter(x, z) {
     if (!this.worker) {
       this.recenter(x, z);
+      return;
+    }
+    // Asked every frame until the new window is shown: ignore repeats of
+    // the window already on its way.
+    if (x === this.targetCenter.x && z === this.targetCenter.y) {
+      this.pendingCenter = null;
       return;
     }
     this.pendingCenter = { x, z };
@@ -822,6 +915,7 @@ class SandSurface {
     this.pendingCenter = null;
     this.workerBusy = true;
     this.workerRequestId++;
+    this.targetCenter.set(target.x, target.z);
     this.worker.postMessage({
       type: "recenter",
       id: this.workerRequestId,
@@ -832,24 +926,51 @@ class SandSurface {
 
   _onWorkerMessage(message) {
     if (!message || message.type !== "recenter") return;
-    if (message.id !== this.workerRequestId) return;
-    this.workerBusy = false;
-    const positions = this.mesh.geometry.attributes.position;
-    const colors = this.mesh.geometry.attributes.color;
-    const normals = this.mesh.geometry.attributes.normal;
-    const positionArray = positions.array;
-    for (let i = 0; i < message.heights.length; i++) {
-      positionArray[i * 3 + 1] = message.heights[i];
+    if (message.id !== this.workerRequestId || !this.spare) return;
+    const geo = this.spare.geometry;
+    const attrs = [geo.attributes.position, geo.attributes.normal, geo.attributes.color];
+    // The spare's old buffers go back to the worker for the next window.
+    const old = {
+      type: "recycle",
+      positions: attrs[0].array,
+      normals: attrs[1].array,
+      colors: attrs[2].array,
+    };
+    attrs[0].array = message.positions;
+    attrs[1].array = message.normals;
+    attrs[2].array = message.colors;
+    this.worker.postMessage(old, [old.positions.buffer, old.normals.buffer, old.colors.buffer]);
+    // Two slices per buffer, one slice per frame.
+    this.uploadSteps = [];
+    for (const attr of attrs) {
+      const half = Math.ceil(attr.count / 2) * attr.itemSize;
+      this.uploadSteps.push([attr, 0, half], [attr, half, attr.array.length - half]);
     }
-    positions.needsUpdate = true;
-    colors.array.set(message.colors);
-    colors.needsUpdate = true;
-    normals.array.set(message.normals);
-    normals.needsUpdate = true;
+    this.swapCenter = { x: message.centerX, z: message.centerZ };
+  }
 
-    this.center.set(message.centerX, message.centerZ);
+  // One step of a pending window change per frame, before the frame renders.
+  _advanceUpload() {
+    if (!this.uploadSteps) return;
+    const step = this.uploadSteps.shift();
+    if (step) {
+      const [attr, start, count] = step;
+      attr.addUpdateRange(start, count);
+      attr.needsUpdate = true;
+      return;
+    }
+    // Every slice went out with an earlier frame: show the new window.
+    const shown = this.mesh;
+    this.mesh = this.spare;
+    this.spare = shown;
+    this.mesh.material = this.material;
+    this.spare.material = this.hiddenMaterial;
+    this.center.set(this.swapCenter.x, this.swapCenter.z);
     this.mesh.position.set(this.center.x, this.useDelta ? 0.025 : 0, this.center.y);
     this.mesh.updateMatrix();
+    this.uploadSteps = null;
+    this.swapCenter = null;
+    this.workerBusy = false;
     if (this.pendingCenter) this._dispatchRecenter();
   }
 
@@ -906,6 +1027,8 @@ class SandSurface {
       }
     }
     const mesh = new THREE.Mesh(geo, this.material);
+    // The first sand mesh drawn in a frame sends the texture's changed rows.
+    mesh.onBeforeRender = (renderer) => this.sim.flushTexture(renderer);
     mesh.position.set(this.center.x, 0, this.center.y);
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
@@ -935,6 +1058,7 @@ class SandSurface {
   }
 
   update(camera, fogColor, fogDensity, time) {
+    this._advanceUpload();
     const u = this.material.uniforms;
     u.uTime.value = time;
     u.uCameraPos.value.copy(camera.position);
