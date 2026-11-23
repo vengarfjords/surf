@@ -1164,8 +1164,14 @@ export class Ocean {
             vec3 calmN = normalize(mix(microN, n, churn));
             vec3 microN = calmN;
             float cosI = clamp(dot(I, microN), 0.0, 1.0);
-            float window = smoothstep(0.654 - 0.12 * churn, 0.69 + 0.12 * churn, cosI);
-            float rim = exp(-pow((cosI - 0.6614) / 0.014, 2.0)) * (1.0 - churn);
+            // The window's edge and its bright rim are filtered over what one
+            // pixel covers: the ripples swing cosI across the critical angle
+            // many times within a few pixels far off, and a hard threshold
+            // there drew the edge as a crawling staircase of pixels.
+            float cosW = min(fwidth(cosI), 0.25);
+            float window = smoothstep(0.654 - 0.12 * churn - cosW, 0.69 + 0.12 * churn + cosW, cosI);
+            float rimW = max(0.014, cosW * 1.2);
+            float rim = exp(-pow((cosI - 0.6614) / rimW, 2.0)) * (0.014 / rimW) * (1.0 - churn);
             vec3 refr = refract(I, -microN, 1.0 / 1.333);
             vec3 winDir = length(refr) > 0.5 ? normalize(refr) : normalize(I);
 

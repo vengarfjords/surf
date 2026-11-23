@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
+import { TUNING, PALETTE } from "./config.js";
 import {
   clamp,
   fbm,
@@ -1142,105 +1142,5 @@ export class Jellyfish {
       const floor = seabedHeight(j.position.x, j.position.z);
       if (j.position.y < floor + 0.8) j.position.y = floor + 0.8;
     }
-  }
-}
-
-export class SunShafts {
-  constructor(scene) {
-    this.scene = scene;
-    this.group = new THREE.Group();
-    this.group.frustumCulled = false;
-    this.scene.add(this.group);
-    this.material = new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: sharedShader.time,
-        uColor: { value: new THREE.Color(0xffe6bd) },
-        uOpacity: { value: 0.15 },
-        uFogDensity: { value: TUNING.visuals.underwaterDensity },
-      },
-      vertexShader: /* glsl */ `
-        varying vec2 vUv;
-        varying vec3 vWorld;
-        varying vec3 vNormal;
-        varying float vDepth;
-        void main() {
-          vUv = uv;
-          vec4 world = modelMatrix * vec4(position, 1.0);
-          vWorld = world.xyz;
-          vNormal = normalize(mat3(modelMatrix) * normal);
-          vec4 mv = viewMatrix * world;
-          vDepth = -mv.z;
-          gl_Position = projectionMatrix * mv;
-        }
-      `,
-      fragmentShader: /* glsl */ `
-        precision highp float;
-        uniform float uTime;
-        uniform vec3 uColor;
-        uniform float uOpacity;
-        uniform float uFogDensity;
-        varying vec2 vUv;
-        varying vec3 vWorld;
-        varying vec3 vNormal;
-        varying float vDepth;
-        ${glslNoise}
-        void main() {
-          float endFade = smoothstep(0.0, 0.18, vUv.y) * smoothstep(1.0, 0.6, vUv.y);
-          float edge = 0.45 + 0.55 * pow(1.0 - abs(vNormal.y), 0.6);
-          float bands = vnoise(vec2(vUv.x * 11.0 + vWorld.z * 0.03, vUv.y * 2.2 + uTime * 0.07));
-          bands = smoothstep(0.36, 0.8, bands);
-          float shimmer = 0.55 + 0.45 * sin(vWorld.x * 0.35 + vWorld.z * 0.27 + uTime * 0.5);
-          float nearFade = smoothstep(2.5, 13.0, vDepth);
-          float farFade = smoothstep(85.0, 25.0, vDepth);
-          // A beam is a volume of lit water, thickest through its middle:
-          // it fades to nothing at its outline. The cone's skin used to stop
-          // dead at its silhouette, and read as a pale pane of glass with
-          // straight edges hanging in the water.
-          float through = abs(dot(normalize(vNormal), normalize(cameraPosition - vWorld)));
-          float soft = smoothstep(0.02, 0.6, through);
-          float alpha = uOpacity * endFade * edge * soft * (0.25 + bands * 0.9) * shimmer * nearFade * farFade;
-          float fog = exp(-uFogDensity * uFogDensity * vDepth * vDepth);
-          gl_FragColor = vec4(uColor, alpha * fog);
-        }
-      `,
-      transparent: true,
-      depthWrite: false,
-      depthTest: true,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
-      fog: false,
-    });
-    this.beams = [];
-    const sunDir = new THREE.Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
-    this.axis = sunDir.clone().multiplyScalar(-1);
-    this.quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), this.axis);
-    for (let i = 0; i < 15; i++) {
-      const geo = new THREE.CylinderGeometry(1.4 + Math.random() * 3.5, 6 + Math.random() * 11, 30 + Math.random() * 26, 12, 7, true);
-      const mesh = new THREE.Mesh(geo, this.material);
-      mesh.frustumCulled = false;
-      mesh.renderOrder = 2;
-      mesh.userData.anchor = new THREE.Vector3(
-        (Math.random() - 0.5) * 190,
-        -12 - Math.random() * 11,
-        (Math.random() - 0.5) * 190
-      );
-      this.group.add(mesh);
-      this.beams.push(mesh);
-    }
-  }
-
-  update(camera, time, underwater) {
-    this.group.visible = underwater > 0.4;
-    if (!this.group.visible) return;
-    for (let i = 0; i < this.beams.length; i++) {
-      const beam = this.beams[i];
-      const anchor = beam.userData.anchor;
-      const x = camera.position.x + anchor.x + Math.sin(time * 0.014 + i) * 10;
-      const z = camera.position.z + anchor.z + Math.cos(time * 0.011 + i * 1.9) * 10;
-      beam.position.set(x, anchor.y, z);
-      beam.quaternion.copy(this.quat);
-      beam.rotateY(Math.sin(time * 0.01 + i) * 0.12);
-    }
-    this.material.uniforms.uOpacity.value = 0.05;
   }
 }

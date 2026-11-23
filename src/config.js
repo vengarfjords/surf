@@ -669,15 +669,23 @@ export const TUNING = {
     // Rain and spray haze over a storm sea: about a fifth of the light
     // gets through from a kilometre away.
     aboveDensity: 0.0014,
-    renderScale: 0.6,
-    // Optional governor: reduce composer resolution after sustained slow
-    // frames, never below this scale. It only steps down, so it cannot hunt.
+    // Rendered pixels per CSS pixel. 1 is a 1080p-class frame in a typical
+    // window, drawn to a Retina screen by a sharp (bicubic) upscale; the
+    // old 0.6, capped at 0.6 megapixels, was stretched about 3x and read as
+    // soft, low-resolution video.
+    renderScale: 1.0,
+    // Governor: lowers the render scale after sustained slow frames, never
+    // below this. It only steps down, so it cannot hunt.
     dynamicQuality: true,
-    dynamicQualityMinScale: 0.45,
-    // Absolute post/scene render budget. Keeping the composer near half a
-    // megapixel makes frame cost predictable on larger displays as well.
-    maxPostPixels: 600000,
-    maxPixelRatio: 1.15,
+    dynamicQualityMinScale: 0.5,
+    // Pixel budget for the rendered frame (a full-screen 16" MacBook Pro
+    // window is 1.9 MP at scale 1).
+    maxPostPixels: 2600000,
+    // The canvas (the final upscale) runs at the display's resolution.
+    maxPixelRatio: 2,
+    // Multisampled scene (4 samples): smooth silhouettes without an edge
+    // filter smearing the image.
+    msaa: true,
     // Fogged/off-screen corals and seagrass chunks are never submitted. The
     // distances sit beyond the point where underwater fog makes the geometry
     // unreadable.
@@ -688,10 +696,19 @@ export const TUNING = {
     bloomRadius: 0.7,
     bloomThreshold: 1.1,
     exposure: 1.34,
-    grain: 0.028,
-    aberration: 0.0012,
-    vignette: 0.24,
-    // Edge anti-aliasing in the film pass (no staircase silhouettes).
+    // Camera imitations, off: film grain and lateral colour fringing. The
+    // legacy film look (grain, fringing, speed and halo blurs, barrel warp,
+    // underwater wobble, lifted-black grade) can be switched back on in the
+    // tuning panel to compare.
+    grain: 0,
+    aberration: 0,
+    legacyFilm: false,
+    // Natural lens vignetting, about a quarter stop in the corners.
+    vignette: 0.16,
+    // Water drops on the lens after it comes out of the water.
+    lensDrops: true,
+    // Edge anti-aliasing (FXAA) on the finished frame, for the edges the
+    // depth-based water colour steps again after the multisample resolve.
     edgeSmoothing: true,
     cameraTint: 0.15,
     motionBlur: 0.22,
@@ -701,7 +718,8 @@ export const TUNING = {
     // field, and haze/mist warm the air above the surface.
     volumetricScatter: 0.85,
     shaftStrength: 1.25,
-    shaftSteps: 10,
+    // Samples along each underwater view ray for the world-space shafts.
+    shaftSteps: 18,
     volumetricCaustics: 0.72,
     // How sharp the moving net of light is just under the surface (0 = even
     // light, 1 = hard sun). It blurs away with depth and is gone by 20 m.
@@ -918,6 +936,11 @@ export const TUNE_CONTROLS = [
   { path: "visuals.foamWhite", label: "foam whiteness", min: 0.8, max: 3, step: 0.01 },
   { path: "visuals.sunGlitter", label: "sun glitter", min: 0, max: 3, step: 0.01 },
   { path: "audio.surf", label: "surf roar", min: 0, max: 1.5, step: 0.01 },
+  { path: "visuals.renderScale", label: "render scale", min: 0.4, max: 1, step: 0.01 },
+  { path: "visuals.msaa", label: "multisample edges", type: "toggle" },
+  { path: "visuals.legacyFilm", label: "legacy film look", type: "toggle" },
+  { path: "visuals.lensDrops", label: "lens drops", type: "toggle" },
+  { path: "visuals.vignette", label: "vignette", min: 0, max: 0.5, step: 0.01 },
   { path: "visuals.edgeSmoothing", label: "edge smoothing", type: "toggle" },
   { path: "visuals.dynamicQuality", label: "dynamic quality", type: "toggle" },
   { path: "visuals.dynamicQualityMinScale", label: "min render scale", min: 0.4, max: 0.8, step: 0.01 },

@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import { Ocean } from "./ocean.js";
 import { Seabed } from "./sand.js";
-import { Reefs, Seagrass, SunShafts, sharedShader } from "./habitat.js";
+import { Reefs, Seagrass, sharedShader } from "./habitat.js";
 import { Dolphin } from "./dolphin.js";
 import { CameraRig } from "./camera.js";
 import { ParticleFX, MarineSnow, NearMotes } from "./particles.js";
@@ -82,7 +82,6 @@ async function boot() {
   };
   const snow = new MarineSnow(scene, 3400);
   const motes = new NearMotes(scene, 240);
-  const shafts = new SunShafts(scene);
   const spindrift = new Spindrift(scene, ocean);
   const audio = new OceanAudio();
   audio.prepare();
@@ -411,6 +410,8 @@ async function boot() {
     }
   }
   function animate(now = performance.now()) {
+    // The tuning panel (or the governor) changed the render scale.
+    if (TUNING.visuals.renderScale !== post.appliedScale) resizePending = true;
     if (resizePending) {
       resizePending = false;
       resize();
@@ -550,7 +551,6 @@ async function boot() {
     speckLight.setRGB(1 - 0.9 * depthLoss, 1 - 0.78 * depthLoss, 1 - 0.6 * depthLoss);
     snow.update(dt, camera, fogColor, fogDensity, camState.underwater, speckLight);
     motes.update(dt, camera, fogColor, fogDensity, camState.underwater, speckLight);
-    shafts.update(camera, total, camState.underwater);
     spindrift.update(dt, camera, camState.underwater);
     effects.updateWindSpray(dt, camera, camState.underwater);
     const effectsMs = performance.now() - effectsStart;
@@ -691,20 +691,25 @@ async function boot() {
       perfFrames = 0;
     }
 
-    // Conservative quality governor. It only steps the composer scale down
-    // after sustained >18.5 ms frames, with a cooldown, so it cannot oscillate
-    // or fight the player's tuning panel.
+    // Quality governor. After sustained slow frames it lowers the render
+    // scale in proportion to how slow they were, so one step usually lands
+    // it, with a cooldown so it cannot oscillate or fight the tuning panel.
+    // When the GPU timer shows the GPU is not what is slow (physics or the
+    // browser is), it leaves the resolution alone.
     qualityCooldown -= dt;
     if (TUNING.visuals.dynamicQuality && qualityCooldown <= 0) {
       if (rawDt > 0.0185) slowQualityTime += dt;
       else slowQualityTime = Math.max(0, slowQualityTime - dt * 0.5);
-      if (slowQualityTime > 1.1) {
+      const gpuBound = !(perf.gpuMs > 0) || perf.gpuMs > 11;
+      if (slowQualityTime > 1.1 && gpuBound) {
+        // Pixel cost goes with the square of the scale; aim for ~15 ms.
+        const ratio = Math.sqrt(15 / Math.max(15, frameMsAvg));
         const next = Math.max(
           TUNING.visuals.dynamicQualityMinScale,
-          TUNING.visuals.renderScale - 0.05
+          Math.min(TUNING.visuals.renderScale - 0.05, TUNING.visuals.renderScale * ratio)
         );
         if (next < TUNING.visuals.renderScale - 1e-4) {
-          TUNING.visuals.renderScale = next;
+          TUNING.visuals.renderScale = Math.round(next * 100) / 100;
           // Applied before the next render, not now: see resizePending.
           resizePending = true;
           slowQualityTime = 0;
@@ -782,7 +787,6 @@ async function boot() {
     effects,
     motes,
     snow,
-    shafts,
     audio,
     hud,
     input,
