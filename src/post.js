@@ -143,7 +143,7 @@ const FilmShader = {
       float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
       float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
       // Nothing to do where the neighbourhood is flat.
-      if (lMax - lMin < max(0.02, lMax * 0.09)) return vec4(0.0);
+      if (lMax - lMin < max(0.012, lMax * 0.06)) return vec4(0.0);
       vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));
       float dirReduce = max((lNW + lNE + lSW + lSE) * 0.03125, 0.0078125);
       float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
