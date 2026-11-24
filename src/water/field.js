@@ -6,19 +6,63 @@ import { bakePhaseDelay } from "./bathymetry.js";
 const G = 9.81;
 const RHO = 1025;
 
-/**
- * CPU-authoritative surface. The exact same component data is uploaded to the
- * vertex shader, so the height read here is the height the renderer draws
- * (modulo mesh interpolation). Everything is SI: metres, seconds, kg.
- *
- * The surface is a sum of Gerstner waves:
- *   eta(p,t) = sum A_i sin(k_i . p - omega_i t + phase_i)
- *   D(p,t)   = sum Q A_i d_i cos(...)
- *   P        = p + D, y = eta
- * Because the rendered grid is displaced horizontally, a world-space query
- * has to invert D with a few fixed-point iterations. The shader receives the
- * same Q, so both sides agree.
- */
+// Sine and cosine to within one unit in the last place of Math.sin /
+// Math.cos (fdlibm's kernels after a three-part reduction by pi/2), in about
+// half the time. The hull samples the 128-component surface a few hundred
+// times a frame, so these loops are where the dolphin's physics spends most
+// of its time. sinCosInto writes both into arrays at index i, so nothing is
+// allocated and the call stays inlinable.
+const PIO2_1 = 1.57079632673412561417e0;
+const PIO2_1T = 6.07710050650619224932e-11;
+const INV_PIO2 = 6.36619772367581382433e-1;
+function kernelSin(r, z) {
+  return (
+    r +
+    r *
+      z *
+      (-1.66666666666666324348e-1 +
+        z *
+          (8.33333333332248946124e-3 +
+            z *
+              (-1.98412698298579493134e-4 +
+                z * (2.75573137070700676789e-6 + z * (-2.50507602534068634195e-8 + z * 1.58969099521155010221e-10)))))
+  );
+}
+function kernelCos(z) {
+  return (
+    1 -
+    0.5 * z +
+    z *
+      z *
+      (4.16666666666666019037e-2 +
+        z *
+          (-1.38888888888741095749e-3 +
+            z *
+              (2.48015872894767294178e-5 +
+                z * (-2.75573143513906633035e-7 + z * (2.0875723212981748279e-9 + z * -1.13596475577881948265e-11)))))
+  );
+}
+function fastCos(x) {
+  const n = Math.round(x * INV_PIO2);
+  const r = x - n * PIO2_1 - n * PIO2_1T;
+  const z = r * r;
+  const q = n & 3;
+  if (q === 0) return kernelCos(z);
+  if (q === 1) return -kernelSin(r, z);
+  if (q === 2) return -kernelCos(z);
+  return kernelSin(r, z);
+}
+function sinCosInto(x, sinOut, cosOut, i) {
+  const n = Math.round(x * INV_PIO2);
+  const r = x - n * PIO2_1 - n * PIO2_1T;
+  const z = r * r;
+  const s = kernelSin(r, z);
+  const c = kernelCos(z);
+  const q = n & 3;
+  sinOut[i] = q === 0 ? s : q === 1 ? c : q === 2 ? -s : -c;
+  cosOut[i] = q === 0 ? c : q === 1 ? -s : q === 2 ? -c : s;
+}
+
 /**
  * Face phase of a skewed wave (WaveField.sampleSurface): the linear phase
  * fp = t - pi/2 is remapped piecewise so the leaning crest
@@ -363,7 +407,7 @@ export class WaveField {
       for (let i = 0; i < this.count; i++) {
         const swell = i < swellCount;
         const c =
-          Math.cos(kx[i] * px + kz[i] * pz + (swell ? k[i] * delay : 0) + phase[i]) *
+          fastCos(kx[i] * px + kz[i] * pz + (swell ? k[i] * delay : 0) + phase[i]) *
           amp[i] *
           (swell ? shoal : windShoal) *
           q;
@@ -424,15 +468,22 @@ export class WaveField {
     // reef top), so it neither shoals nor slows: it rides the giant swell at
     // its own height instead of being focused into steep whitecapped chop.
     const windShoal = Math.min(1, shoal);
+    if (!this._sinA || this._sinA.length < this.count) {
+      this._sinA = new Float64Array(this.count);
+      this._cosA = new Float64Array(this.count);
+    }
+    const sinA = this._sinA;
+    const cosA = this._cosA;
     for (let i = 0; i < this.count; i++) {
       const swell = i < swellCount;
       // Local wavevector: the component's own, stretched along the travel
       // direction by the shoaling delay gradient.
       const kxL = swell ? kx[i] + kk[i] * gX : kx[i];
       const kzL = swell ? kz[i] + kk[i] * gZ : kz[i];
-      const arg = kx[i] * px + kz[i] * pz + (swell ? kk[i] * delay : 0) + phase[i];
-      const s = Math.sin(arg);
-      const c = Math.cos(arg);
+      // Kept for _sample(), which needs the same phase at the same point.
+      sinCosInto(kx[i] * px + kz[i] * pz + (swell ? kk[i] * delay : 0) + phase[i], sinA, cosA, i);
+      const s = sinA[i];
+      const c = cosA[i];
       const a = amp[i] * (swell ? shoal : windShoal);
       h += a * s;
       dhdx += a * kxL * c;
@@ -674,13 +725,14 @@ export class WaveField {
     let pressure = 0;
     const windShoal = Math.min(1, shoal);
     const swellCount = this.swellCount;
+    const sinA = this._sinA;
+    const cosA = this._cosA;
     for (let i = 0; i < this.count; i++) {
       const swell = i < swellCount;
       const kL = swell ? k[i] * ratio : k[i];
-      const arg =
-        kx[i] * surf.parameterX + kz[i] * surf.parameterZ + (swell ? k[i] * surf.delay : 0) + phase[i];
-      const s = Math.sin(arg);
-      const c = Math.cos(arg);
+      // The same phase sampleSurface() just evaluated at this point.
+      const s = sinA[i];
+      const c = cosA[i];
       const w = omega[i];
       const a = amp[i] * (swell ? shoal : windShoal);
       const kh = Math.max(1e-4, kL * depth);
