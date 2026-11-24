@@ -106,24 +106,35 @@ export const glslSky = /* glsl */ `
     // Storm overcast as a photograph shows it: the deck is one pale grey
     // sheet, and the cloud in it is only a soft mottling that the rain haze
     // wipes out toward the horizon. SKY_TEXTURE sets its contrast.
-    vec2 cp = d.xz / (h + 0.09);
-    float base = fbm2(cp * 0.55 + vec2(t * 0.012, t * 0.005));
-    float fine = fbm2(cp * 1.7 + vec2(base * 1.8 - t * 0.02, base));
-    float deck = smoothstep(0.2, 0.62, base * 0.65 + fine * 0.45);
-    float thin = smoothstep(0.62, 0.9, fine);
-    vec3 cloud = mix(SKY_CLOUD, mix(SKY_MID, SKY_HORIZON_SUN, 0.35) * 1.02, thin * skyWarmth(d, sunDir) * 0.6);
+    // The cloud noise is only worked out where it shows: in the deck above
+    // the horizon band, or for the sun's glow (which the deck dims). The
+    // terms skipped would be mixed in with a weight of zero.
     float fadeHorizon = smoothstep(0.03, 0.34, h);
-    col = mix(col, cloud, deck * 0.82 * fadeHorizon * detail * SKY_TEXTURE);
-    // Ragged low scud racing under the deck.
-    float scud = fbm2(cp * 1.1 + vec2(t * 0.045, t * 0.02) + 17.0);
-    col = mix(col, SKY_CLOUD * 0.86, smoothstep(0.55, 0.8, scud) * fadeHorizon * 0.5 * detail * SKY_TEXTURE);
+    bool cloudShows = fadeHorizon * detail * SKY_TEXTURE > 0.0;
+    float sd = max(dot(d, sunDir), 0.0);
+    float deck = 0.0;
+    if (cloudShows || sd > 0.0) {
+      vec2 cp = d.xz / (h + 0.09);
+      float base = fbm2(cp * 0.55 + vec2(t * 0.012, t * 0.005));
+      float fine = fbm2(cp * 1.7 + vec2(base * 1.8 - t * 0.02, base));
+      deck = smoothstep(0.2, 0.62, base * 0.65 + fine * 0.45);
+      if (cloudShows) {
+        float thin = smoothstep(0.62, 0.9, fine);
+        vec3 cloud = mix(SKY_CLOUD, mix(SKY_MID, SKY_HORIZON_SUN, 0.35) * 1.02, thin * skyWarmth(d, sunDir) * 0.6);
+        col = mix(col, cloud, deck * 0.82 * fadeHorizon * detail * SKY_TEXTURE);
+        // Ragged low scud racing under the deck.
+        float scud = fbm2(cp * 1.1 + vec2(t * 0.045, t * 0.02) + 17.0);
+        col = mix(col, SKY_CLOUD * 0.86, smoothstep(0.55, 0.8, scud) * fadeHorizon * 0.5 * detail * SKY_TEXTURE);
+      }
+    }
     // Long streaks of stratus low over the horizon.
-    float strat = vnoise(vec2(atan(d.z, d.x) * 9.0, h * 60.0 + t * 0.002));
-    col = mix(col, mix(SKY_CLOUD, horizon, 0.6), smoothstep(0.55, 0.9, strat) * (1.0 - smoothstep(0.02, 0.14, h)) * 0.3 * detail * SKY_TEXTURE);
+    if (h < 0.14 && detail > 0.0) {
+      float strat = vnoise(vec2(atan(d.z, d.x) * 9.0, h * 60.0 + t * 0.002));
+      col = mix(col, mix(SKY_CLOUD, horizon, 0.6), smoothstep(0.55, 0.9, strat) * (1.0 - smoothstep(0.02, 0.14, h)) * 0.3 * detail * SKY_TEXTURE);
+    }
 
     // The sun stands behind thin cloud: a bright, hazy patch several
     // degrees across inside a wide glow, with no hard disc.
-    float sd = max(dot(d, sunDir), 0.0);
     vec3 sunTint = mix(SKY_HORIZON_SUN, vec3(1.0, 0.97, 0.92), 0.6);
     float sunGlow = pow(sd, 4.0) * 0.16 + pow(sd, 24.0) * 0.3 + pow(sd, 180.0) * 0.55;
     col += sunTint * sunGlow * (1.0 - deck * 0.5 * SKY_TEXTURE);

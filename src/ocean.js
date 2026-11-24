@@ -676,9 +676,13 @@ export class Ocean {
               float mB = 0.86 + 0.11 * fillB;
               float mM = 0.86 + 0.11 * fillM;
               float mF = 0.86 + 0.11 * 0.85;
-              float big = mix(mB, bubbleLayer(bq * 48.0 + 7.0, fillB), 1.0 - smoothstep(0.003, 0.0055, foot));
-              float mid = mix(mM, bubbleLayer(bq * 130.0 - 3.0, fillM), 1.0 - smoothstep(0.0011, 0.002, foot));
-              float fine = mix(mF, bubbleLayer(bq * 330.0 + 11.0, 0.85), 1.0 - smoothstep(0.00045, 0.0008, foot));
+              // (A size that has faded to its mean is not worked out.)
+              float wB = 1.0 - smoothstep(0.003, 0.0055, foot);
+              float wM = 1.0 - smoothstep(0.0011, 0.002, foot);
+              float wF = 1.0 - smoothstep(0.00045, 0.0008, foot);
+              float big = wB > 0.0 ? mix(mB, bubbleLayer(bq * 48.0 + 7.0, fillB), wB) : mB;
+              float mid = wM > 0.0 ? mix(mM, bubbleLayer(bq * 130.0 - 3.0, fillM), wM) : mM;
+              float fine = wF > 0.0 ? mix(mF, bubbleLayer(bq * 330.0 + 11.0, 0.85), wF) : mF;
               float bub = (big / mB) * (mid / mM) * (fine / mF);
               pattern *= mix(1.0, bub, 1.0 - smoothstep(4.0, 10.0, dist));
             }
