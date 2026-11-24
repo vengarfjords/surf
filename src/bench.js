@@ -47,6 +47,9 @@ function summarize(values) {
 function objectsOf(owner, depth = 2, out = new Set(), seen = new Set()) {
   if (!owner || typeof owner !== "object" || seen.has(owner)) return out;
   seen.add(owner);
+  // An owner's reference to the scene itself is not one of its parts (hiding
+  // it hid everything, and the seabed's share read as the whole frame).
+  if (owner.isScene) return out;
   if (owner.isObject3D) {
     out.add(owner);
     return out;
