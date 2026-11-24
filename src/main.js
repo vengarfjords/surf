@@ -509,10 +509,14 @@ async function boot() {
     reefs.updateCulling(camera, fullyUnderwater);
     seagrass.updateCulling(camera, fullyUnderwater);
 
-    const camDepth = Math.max(
-      0,
-      ocean.getWaterHeight(camera.position.x, camera.position.z) - camera.position.y
-    );
+    const camWaterY = ocean.getWaterHeight(camera.position.x, camera.position.z);
+    const camDepth = Math.max(0, camWaterY - camera.position.y);
+    // Opaque things are drawn nearest first, so the depth test turns away
+    // the pixels behind them before they are shaded. From above, the water
+    // surface hides everything under it, so it goes first; from below, the
+    // seabed, reef and dolphin stand in front of it, so it goes last. The
+    // picture is the same either way.
+    ocean.mesh.renderOrder = camera.position.y > camWaterY ? -1 : 1;
     const waterFade = smoothstep(0, 31, camDepth);
     fogColor.copy(fogShallow).lerp(fogDeep, waterFade);
     fogColor.lerp(fogAbove, 1 - camState.underwater);

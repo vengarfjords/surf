@@ -697,8 +697,13 @@ const SAND_FRAG = /* glsl */ `
     // The hole is the dense mesh's square less a 3 m overlap, where the dense
     // mesh's ripple relief has already faded to nothing; a round hole left
     // its corners drawn twice, a few centimetres apart.
+    // Only the coarse mesh is compiled with the hole: a shader that can
+    // discard cannot have its hidden pixels skipped before shading (Apple's
+    // GPUs shade every such pixel, even one the water covers later).
+#ifdef SAND_HOLE
     vec2 holeD = abs(vWorld.xz - uHoleCenter);
     if (uHasHole > 0.5 && max(holeD.x, holeD.y) < uHoleRadius) discard;
+#endif
     vec3 n = normalize(vNormal);
     float dist = length(vWorld - uCameraPos);
     float height = vWorld.y;
@@ -1089,6 +1094,7 @@ export class Seabed {
     this.base = new SandSurface(scene, this.sim, false, TUNING.world.size, 260, new THREE.Vector2(0, 0));
     this.base.mesh.position.set(0, 0, 0);
     this.base.mesh.updateMatrix();
+    this.base.material.defines = { ...(this.base.material.defines || {}), SAND_HOLE: 1 };
     this.base.material.uniforms.uHasHole.value = 1;
     this.base.material.uniforms.uHoleRadius.value =
       TUNING.sand.nearMeshExtent * 0.5 - 3;
