@@ -401,18 +401,52 @@ export class WaveField {
     const q = this.chop * chopScale;
     const windShoal = Math.min(1, shoal);
     const swellCount = this.swellCount;
+    const count = this.count;
+    const dirX = this.dirX;
+    const dirZ = this.dirZ;
     for (let iter = 0; iter < 2; iter++) {
       let dx = 0;
       let dz = 0;
-      for (let i = 0; i < this.count; i++) {
+      // fastCos written out in place, bit for bit the same: Safari's engine
+      // does not inline the call here, and this loop runs 512 times for
+      // every point the hull samples.
+      for (let i = 0; i < count; i++) {
         const swell = i < swellCount;
-        const c =
-          fastCos(kx[i] * px + kz[i] * pz + (swell ? k[i] * delay : 0) + phase[i]) *
-          amp[i] *
-          (swell ? shoal : windShoal) *
-          q;
-        dx += c * this.dirX[i];
-        dz += c * this.dirZ[i];
+        const arg = kx[i] * px + kz[i] * pz + (swell ? k[i] * delay : 0) + phase[i];
+        const n = Math.round(arg * INV_PIO2);
+        const r = arg - n * PIO2_1 - n * PIO2_1T;
+        const zz = r * r;
+        const qd = n & 3;
+        let v;
+        if ((qd & 1) === 0) {
+          v =
+            1 -
+            0.5 * zz +
+            zz *
+              zz *
+              (4.16666666666666019037e-2 +
+                zz *
+                  (-1.38888888888741095749e-3 +
+                    zz *
+                      (2.48015872894767294178e-5 +
+                        zz * (-2.75573143513906633035e-7 + zz * (2.0875723212981748279e-9 + zz * -1.13596475577881948265e-11)))));
+          if (qd === 2) v = -v;
+        } else {
+          v =
+            r +
+            r *
+              zz *
+              (-1.66666666666666324348e-1 +
+                zz *
+                  (8.33333333332248946124e-3 +
+                    zz *
+                      (-1.98412698298579493134e-4 +
+                        zz * (2.75573137070700676789e-6 + zz * (-2.50507602534068634195e-8 + zz * 1.58969099521155010221e-10)))));
+          if (qd === 1) v = -v;
+        }
+        const c = v * amp[i] * (swell ? shoal : windShoal) * q;
+        dx += c * dirX[i];
+        dz += c * dirZ[i];
       }
       px = x - dx;
       pz = z - dz;

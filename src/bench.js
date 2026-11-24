@@ -17,7 +17,8 @@ import * as THREE from "three";
  *
  * The results are shown on screen and, in the dev server, saved to
  * bench-results/ (see vite.config.js). URL options: bench=quick for short
- * runs, scenes=a,b to pick scenes, live=<seconds>, label=<name>,
+ * runs, bench=cpu for the dolphin's physics scenes with the JavaScript time
+ * of every method (profile=1 adds that to any run), scenes=a,b to pick scenes, live=<seconds>, label=<name>,
  * features=0 to skip the feature toggles, batch=<ms> and reps=<n> for the
  * GPU timing batches.
  */
@@ -64,6 +65,59 @@ function objectsOf(owner, depth = 2, out = new Set(), seen = new Set()) {
   return out;
 }
 
+/**
+ * Inclusive JavaScript time per method, for the CPU profile (bench=cpu or
+ * profile=1). Wraps the prototype methods of each named object on the
+ * object itself, so `undo()` restores them. Safari rounds performance.now()
+ * to a millisecond, but the rounding error averages out over many calls.
+ */
+function instrument(roots) {
+  const stats = new Map();
+  const undo = [];
+  const stopAt = new Set([Object.prototype, THREE.Object3D.prototype, THREE.EventDispatcher.prototype]);
+  for (const [name, obj] of roots) {
+    if (!obj || typeof obj !== "object") continue;
+    const methods = new Set();
+    for (let proto = Object.getPrototypeOf(obj); proto && !stopAt.has(proto); proto = Object.getPrototypeOf(proto)) {
+      for (const key of Object.getOwnPropertyNames(proto)) {
+        const d = Object.getOwnPropertyDescriptor(proto, key);
+        if (key !== "constructor" && d && typeof d.value === "function") methods.add(key);
+      }
+    }
+    for (const key of methods) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) continue;
+      const fn = obj[key];
+      const st = { calls: 0, ms: 0 };
+      stats.set(`${name}.${key}`, st);
+      obj[key] = function (...args) {
+        const t = performance.now();
+        try {
+          return fn.apply(this, args);
+        } finally {
+          st.ms += performance.now() - t;
+          st.calls++;
+        }
+      };
+      undo.push(() => delete obj[key]);
+    }
+  }
+  return {
+    reset: () => stats.forEach((st) => ((st.calls = 0), (st.ms = 0))),
+    report: (frames) =>
+      [...stats]
+        .filter(([, st]) => st.calls > 0)
+        .sort((a, b) => b[1].ms - a[1].ms)
+        .slice(0, 30)
+        .map(([name, st]) => ({
+          name,
+          msPerFrame: +(st.ms / Math.max(1, frames)).toFixed(3),
+          callsPerFrame: +(st.calls / Math.max(1, frames)).toFixed(1),
+          usPerCall: +((st.ms / st.calls) * 1000).toFixed(1),
+        })),
+    undo: () => undo.forEach((f) => f()),
+  };
+}
+
 export async function runBench(O, api) {
   const params = new URLSearchParams(location.search);
   const quick = params.get("bench") === "quick";
@@ -71,6 +125,11 @@ export async function runBench(O, api) {
   // stepped by hand, so it also runs in a hidden page (which gets no
   // animation frames).
   const gpuOnly = params.get("bench") === "gpu";
+  // bench=cpu: only the scenes where the dolphin's physics is busy, played
+  // live with the JavaScript time of every method of the game's main
+  // objects recorded (profile=1 adds that to any run).
+  const cpuOnly = params.get("bench") === "cpu";
+  const profileFns = cpuOnly || params.get("profile") === "1";
   const frame = gpuOnly
     ? () => {
         api.step();
@@ -84,7 +143,7 @@ export async function runBench(O, api) {
   const minBatchMs = params.has("batch") ? Math.max(0, Number(params.get("batch")) || 0) : quick ? 60 : 150;
   const maxReps = Math.max(1, Number(params.get("reps")) || 400);
   const label = params.get("label") || "";
-  const pick = params.get("scenes") ? params.get("scenes").split(",") : null;
+  const pick = params.get("scenes") ? params.get("scenes").split(",") : cpuOnly ? ["surface", "breach", "surf"] : null;
   const features = params.get("features") !== "0";
 
   const { renderer, scene, camera, post, ocean, dolphin, seabed, tuning } = O;
@@ -552,6 +611,33 @@ export async function runBench(O, api) {
     },
   ].filter((s) => !pick || pick.includes(s.id));
 
+  // What the CPU profile times: the physics and effects objects, and the
+  // class instances they own (one level down).
+  const profileRoots = () => {
+    const roots = [
+      ["dolphin", dolphin],
+      ["hull", dolphin.hull],
+      ["ocean", ocean],
+      ["water", ocean.water],
+      ["effects", O.effects],
+      ["seabed", seabed],
+      ["cameraRig", O.cameraRig],
+    ];
+    const seen = new Set(roots.map(([, o]) => o));
+    for (const [name, owner] of roots.slice()) {
+      if (!owner) continue;
+      for (const [key, v] of Object.entries(owner)) {
+        if (!v || typeof v !== "object" || seen.has(v) || Array.isArray(v) || ArrayBuffer.isView(v)) continue;
+        const proto = Object.getPrototypeOf(v);
+        if (!proto || proto === Object.prototype || v.isObject3D || v.isMaterial || v.isBufferGeometry || v.isTexture || v.isVector3 || v.isQuaternion || v.isMatrix4 || v.isColor || v.isVector2 || v.isWebGLRenderTarget || v.isEuler) continue;
+        if (proto.constructor && /^(WebGL|Map|Set|Promise|Float|Uint|Int)/.test(proto.constructor.name)) continue;
+        seen.add(v);
+        roots.push([`${name}.${key}`, v]);
+      }
+    }
+    return roots;
+  };
+
   const results = [];
   const t0 = now();
   for (let si = 0; si < scenes.length; si++) {
@@ -573,6 +659,39 @@ export async function runBench(O, api) {
       if (!gpuOnly) {
         status(`[${si + 1}/${scenes.length}] ${sc.label}: playing ${liveSeconds} s`);
         res.live = analyse(await record(liveSeconds, onFrame));
+      }
+      if (profileFns && !gpuOnly) {
+        // Played again with every method timed, so the plain numbers above
+        // are not slowed by the wrappers.
+        status(`[${si + 1}/${scenes.length}] ${sc.label}: profiling ${liveSeconds} s`);
+        const prof = instrument(profileRoots());
+        try {
+          const rows = await record(liveSeconds, onFrame);
+          res.profile = { live: analyse(rows), functions: prof.report(rows.length) };
+        } finally {
+          prof.undo();
+        }
+        // The dolphin's update alone, called back to back at 60 Hz steps in
+        // the scene's state (physics frozen in between, so nothing else runs).
+        O.freeze(true);
+        await frame();
+        const held = instrument(profileRoots());
+        try {
+          const n = 120;
+          const t = now();
+          for (let i = 0; i < n; i++) dolphin.update(1 / 60, O.input, ocean, seabed, O.effects);
+          res.profile.held = { dolphinUpdateMs: +((now() - t) / n).toFixed(3), functions: held.report(n) };
+        } finally {
+          held.undo();
+        }
+        O.freeze(false);
+      }
+      if (cpuOnly) {
+        results.push(res);
+        say(`${sc.id.padEnd(9)} ${res.live.fps} fps · dolphin ${res.live.parts.dolphin.mean} ms · held update ${res.profile.held.dolphinUpdateMs} ms`);
+        keys.clear();
+        await frame();
+        continue;
       }
       status(`[${si + 1}/${scenes.length}] ${sc.label}: timing the GPU`);
       O.freeze(true);
