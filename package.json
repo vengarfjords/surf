@@ -1,7 +1,7 @@
 {
   "name": "ocean",
   "version": "1.0.0",
-  "description": "A 3 km neritic drift — a low-fi underwater dolphin simulator.",
+  "description": "A 3 km neritic drift — a photoreal dolphin surfing simulator.",
   "type": "module",
   "scripts": {
     "dev": "vite",

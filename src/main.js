@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import { Ocean } from "./ocean.js";
 import { Seabed } from "./sand.js";
-import { Reefs, Seagrass, SunShafts, sharedShader } from "./habitat.js";
+import { Reefs, Seagrass, sharedShader } from "./habitat.js";
 import { Dolphin } from "./dolphin.js";
 import { CameraRig } from "./camera.js";
 import { ParticleFX, MarineSnow, NearMotes } from "./particles.js";
@@ -82,7 +82,6 @@ async function boot() {
   };
   const snow = new MarineSnow(scene, 3400);
   const motes = new NearMotes(scene, 240);
-  const shafts = new SunShafts(scene);
   const spindrift = new Spindrift(scene, ocean);
   const audio = new OceanAudio();
   audio.prepare();
@@ -135,7 +134,6 @@ async function boot() {
   let lastImpactSound = 0;
   let wasSurge = false;
   let ventClock = 0;
-  let cullClock = 0;
   let surfSprayAccumulator = 0;
   let surfRoar = 0;
   const surfRoarSample = {};
@@ -257,11 +255,18 @@ async function boot() {
     console.warn("warm-up frame failed", error);
   }
   try {
-    await Promise.race([
-      renderer.compileAsync(scene, camera),
-      new Promise((resolve) => setTimeout(resolve, 3200)),
-    ]);
-  } catch (e) {}
+    // Compile every material, including those hidden at the start (the sky
+    // above water, spray, spindrift, surface particles), for the target the
+    // scene really draws into. Compiled for the canvas instead, the
+    // programs differ (output colour space) and each of these compiled the
+    // first time it appeared in play, a visible hitch.
+    renderer.setRenderTarget(post.sceneTarget);
+    const compiling = renderer.compileAsync(scene, camera);
+    renderer.setRenderTarget(null);
+    await Promise.race([compiling, new Promise((resolve) => setTimeout(resolve, 3200))]);
+  } catch (e) {
+    renderer.setRenderTarget(null);
+  }
   await frame();
   hud.setLoading(true);
   hud.setSound(true);
@@ -410,7 +415,51 @@ async function boot() {
       emitted++;
     }
   }
-  function animate(now = performance.now()) {
+  // Draws one frame from the state the update left: the dolphin alone into
+  // the refraction target (when the water should show it), then the scene
+  // and the post chain. The benchmark calls this repeatedly on a held frame.
+  let lastCamState = null;
+  function drawFrame(camState, dt) {
+    // The lens gets wet when it breaks the surface, or when it is close
+    // enough to the dolphin to be caught by its spray; a breach seen from a
+    // few body lengths away leaves the lens dry, as it would a real camera.
+    const lensSpray = 1 - THREE.MathUtils.smoothstep(camera.position.distanceTo(dolphin.position), 2.5, 6);
+    // Seen from the air, the water shows the dolphin under its surface
+    // until it is too deep to make out.
+    const dolphinDepth = dolphin.tailUniforms.waterLevel.value - dolphin.position.y;
+    const refractionOn = camState.underwater < 0.5 && dolphinDepth > -1.5 && dolphinDepth < 14;
+    if (refractionOn) {
+      const t = post.composer.renderTarget1;
+      refraction.setSize(t.width * 0.5, t.height * 0.5);
+      // Under the water the skin reflects the water around it, not the sky.
+      for (const m of dolphinMaterials) {
+        m.envMap = envMaps.below;
+        m.envMapIntensity = 0.12;
+      }
+      refraction.render(scene, camera);
+      for (const m of dolphinMaterials) {
+        m.envMap = envMaps.above;
+        m.envMapIntensity = 0.8;
+      }
+    }
+    ocean.setRefraction(refraction, refractionOn, camera);
+    post.render(dt, {
+      underwater: camState.underwater,
+      wetness: Math.max(camState.wetness, dolphin.wetness * 0.6 * lensSpray),
+      speedNorm: camState.speedNorm,
+      waterLevel: camState.waterHeight,
+    });
+  }
+
+  // Per-frame timings for the benchmark (?bench, src/bench.js).
+  let frameHook = null;
+
+  // One frame: update and draw. The benchmark's GPU mode calls it directly,
+  // since a hidden page gets no animation frames.
+  function frameStep(now = performance.now()) {
+    const cpuStart = performance.now();
+    // The tuning panel (or the governor) changed the render scale.
+    if (TUNING.visuals.renderScale !== post.appliedScale) resizePending = true;
     if (resizePending) {
       resizePending = false;
       resize();
@@ -451,20 +500,23 @@ async function boot() {
       camState.wetness = 0;
     }
 
-    // Reef and seagrass chunks are submitted only when they are still inside
-    // the readable fog envelope. A slow cadence is enough at swim speeds and
-    // keeps the culling loop off the hot path.
-    cullClock -= dt;
-    if (cullClock <= 0) {
-      cullClock = 0.2;
-      reefs.updateCulling(camera);
-      seagrass.updateCulling(camera);
-    }
+    // Reef and seagrass chunks are submitted only when they can still be
+    // seen: inside the readable fog envelope and, with the camera fully
+    // under water, nearer than where the water column replaces the scene.
+    // Every frame, so the exact limit holds while the camera moves (a few
+    // hundred distance checks).
+    const fullyUnderwater = camState.underwater >= 0.998;
+    reefs.updateCulling(camera, fullyUnderwater);
+    seagrass.updateCulling(camera, fullyUnderwater);
 
-    const camDepth = Math.max(
-      0,
-      ocean.getWaterHeight(camera.position.x, camera.position.z) - camera.position.y
-    );
+    const camWaterY = ocean.getWaterHeight(camera.position.x, camera.position.z);
+    const camDepth = Math.max(0, camWaterY - camera.position.y);
+    // Opaque things are drawn nearest first, so the depth test turns away
+    // the pixels behind them before they are shaded. From above, the water
+    // surface hides everything under it, so it goes first; from below, the
+    // seabed, reef and dolphin stand in front of it, so it goes last. The
+    // picture is the same either way.
+    ocean.mesh.renderOrder = camera.position.y > camWaterY ? -1 : 1;
     const waterFade = smoothstep(0, 31, camDepth);
     fogColor.copy(fogShallow).lerp(fogDeep, waterFade);
     fogColor.lerp(fogAbove, 1 - camState.underwater);
@@ -550,7 +602,6 @@ async function boot() {
     speckLight.setRGB(1 - 0.9 * depthLoss, 1 - 0.78 * depthLoss, 1 - 0.6 * depthLoss);
     snow.update(dt, camera, fogColor, fogDensity, camState.underwater, speckLight);
     motes.update(dt, camera, fogColor, fogDensity, camState.underwater, speckLight);
-    shafts.update(camera, total, camState.underwater);
     spindrift.update(dt, camera, camState.underwater);
     effects.updateWindSpray(dt, camera, camState.underwater);
     const effectsMs = performance.now() - effectsStart;
@@ -612,35 +663,10 @@ async function boot() {
       pendingGpuQuery = gl.createQuery();
       gl.beginQuery(timerExt.TIME_ELAPSED_EXT, pendingGpuQuery);
     }
-    // The lens gets wet when it breaks the surface, or when it is close
-    // enough to the dolphin to be caught by its spray; a breach seen from a
-    // few body lengths away leaves the lens dry, as it would a real camera.
-    const lensSpray = 1 - THREE.MathUtils.smoothstep(camera.position.distanceTo(dolphin.position), 2.5, 6);
-    // Seen from the air, the water shows the dolphin under its surface
-    // until it is too deep to make out.
-    const dolphinDepth = dolphin.tailUniforms.waterLevel.value - dolphin.position.y;
-    const refractionOn = camState.underwater < 0.5 && dolphinDepth > -1.5 && dolphinDepth < 14;
-    if (refractionOn) {
-      const t = post.composer.renderTarget1;
-      refraction.setSize(t.width * 0.5, t.height * 0.5);
-      // Under the water the skin reflects the water around it, not the sky.
-      for (const m of dolphinMaterials) {
-        m.envMap = envMaps.below;
-        m.envMapIntensity = 0.12;
-      }
-      refraction.render(scene, camera);
-      for (const m of dolphinMaterials) {
-        m.envMap = envMaps.above;
-        m.envMapIntensity = 0.8;
-      }
-    }
-    ocean.setRefraction(refraction, refractionOn, camera);
-    post.render(dt, {
-      underwater: camState.underwater,
-      wetness: Math.max(camState.wetness, dolphin.wetness * 0.6 * lensSpray),
-      speedNorm: camState.speedNorm,
-      waterLevel: camState.waterHeight,
-    });
+    const renderStart = performance.now();
+    lastCamState = camState;
+    drawFrame(camState, dt);
+    const renderMs = performance.now() - renderStart;
     if (startGpuQuery) {
       gl.endQuery(timerExt.TIME_ELAPSED_EXT);
     } else if (pendingGpuQuery) {
@@ -691,20 +717,28 @@ async function boot() {
       perfFrames = 0;
     }
 
-    // Conservative quality governor. It only steps the composer scale down
-    // after sustained >18.5 ms frames, with a cooldown, so it cannot oscillate
-    // or fight the player's tuning panel.
+    // Quality governor. After sustained slow frames it lowers the render
+    // scale in proportion to how slow they were, so one step usually lands
+    // it, with a cooldown so it cannot oscillate or fight the tuning panel.
+    // When the GPU timer shows the GPU is not what is slow (physics or the
+    // browser is), it leaves the resolution alone.
     qualityCooldown -= dt;
     if (TUNING.visuals.dynamicQuality && qualityCooldown <= 0) {
       if (rawDt > 0.0185) slowQualityTime += dt;
       else slowQualityTime = Math.max(0, slowQualityTime - dt * 0.5);
-      if (slowQualityTime > 1.1) {
+      const gpuBound = !(perf.gpuMs > 0) || perf.gpuMs > 11;
+      if (slowQualityTime > 1.1 && gpuBound) {
+        // Pixel cost goes with the square of the scale; aim for ~15 ms.
+        // Step from the scale actually rendered: a setting above the pixel
+        // budget or the display's density is already capped.
+        const ratio = Math.sqrt(15 / Math.max(15, frameMsAvg));
+        const current = post.composerScale();
         const next = Math.max(
           TUNING.visuals.dynamicQualityMinScale,
-          TUNING.visuals.renderScale - 0.05
+          Math.min(current - 0.05, current * ratio)
         );
-        if (next < TUNING.visuals.renderScale - 1e-4) {
-          TUNING.visuals.renderScale = next;
+        if (next < current - 1e-4) {
+          TUNING.visuals.renderScale = Math.round(next * 100) / 100;
           // Applied before the next render, not now: see resizePending.
           resizePending = true;
           slowQualityTime = 0;
@@ -715,6 +749,26 @@ async function boot() {
       slowQualityTime = 0;
     }
 
+    if (frameHook) {
+      frameHook({
+        t: now,
+        dt: rawDt * 1000,
+        cpu: performance.now() - cpuStart,
+        dolphin: dolphinMs,
+        seabed: seabedMs,
+        ocean: oceanMs,
+        effects: effectsMs,
+        render: renderMs,
+        programs: renderer.info.programs.length,
+        textures: renderer.info.memory.textures,
+        geometries: renderer.info.memory.geometries,
+        calls: renderer.info.render.calls,
+        triangles: renderer.info.render.triangles,
+      });
+    }
+  }
+  function animate(now) {
+    frameStep(now);
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
@@ -782,7 +836,6 @@ async function boot() {
     effects,
     motes,
     snow,
-    shafts,
     audio,
     hud,
     input,
@@ -841,6 +894,26 @@ async function boot() {
       };
     },
   };
+
+  // ?bench: play a fixed set of scenes and measure every frame.
+  if (captureParams.has("bench")) {
+    const benchApi = {
+      setFrameHook: (fn) => {
+        frameHook = fn;
+      },
+      drawFrame: () => {
+        if (lastCamState) drawFrame(lastCamState, 1 / 60);
+      },
+      // Advance the game one frame by hand (the GPU mode, for hidden pages).
+      step: (ms = 1000 / 60) => frameStep(lastFrameTime + ms),
+      resize,
+      refraction,
+      spindrift,
+    };
+    import("./bench.js")
+      .then((m) => m.runBench(window.OCEAN, benchApi))
+      .catch((error) => console.error("benchmark failed", error));
+  }
 }
 
 function createLights(scene) {

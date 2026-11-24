@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
+import { TUNING, PALETTE, WATER_OPAQUE_DISTANCE } from "./config.js";
 import {
   clamp,
   fbm,
@@ -12,7 +12,6 @@ import {
   seabedHeight,
   smoothstep,
 } from "./utils.js";
-import { buildMeadowTexture } from "./atmosphere.js";
 
 export const sharedShader = {
   time: { value: 0 },
@@ -181,9 +180,16 @@ function instanced(geometry, material, transforms, colors, chunkSize = 0) {
  * Hide whole fogged/out-of-range instanced chunks. Frustum culling does the
  * rest; this rejects the geometry that is technically in front of the camera
  * but beyond the point where water fog can resolve it.
+ *
+ * `reach` is an exact limit on top of that: a chunk whose bounding sphere is
+ * wholly farther than it from the camera (in 3D) draws nothing that can show,
+ * so it is skipped. With the camera fully under water that is
+ * WATER_OPAQUE_DISTANCE (past it along a ray the water column replaces the
+ * scene outright); seagrass has a shorter one of its own, GRASS_SHRINK_END.
  */
-function cullInstancedChunks(group, camera, distance) {
+function cullInstancedChunks(group, camera, distance, reach = Infinity) {
   const cx = camera.position.x;
+  const cy = camera.position.y;
   const cz = camera.position.z;
   group.traverse((object) => {
     if (!object.isInstancedMesh || !object.boundingSphere) return;
@@ -191,7 +197,12 @@ function cullInstancedChunks(group, camera, distance) {
     const dx = sphere.center.x - cx;
     const dz = sphere.center.z - cz;
     const nearest = Math.sqrt(dx * dx + dz * dz) - sphere.radius;
-    object.visible = nearest < distance;
+    let visible = nearest < distance;
+    if (visible && reach < Infinity) {
+      const dy = sphere.center.y - cy;
+      visible = Math.sqrt(dx * dx + dy * dy + dz * dz) - sphere.radius < reach;
+    }
+    object.visible = visible;
   });
 }
 
@@ -203,8 +214,11 @@ export class Reefs {
     this.scene.add(this.group);
   }
 
-  updateCulling(camera) {
-    cullInstancedChunks(this.group, camera, TUNING.visuals.reefCullDistance);
+  updateCulling(camera, fullyUnderwater = false) {
+    // (The metre past the limit is only a safety margin: the sphere holds
+    // the whole coral, so all of it is farther than that.)
+    const reach = fullyUnderwater ? WATER_OPAQUE_DISTANCE + 1 : Infinity;
+    cullInstancedChunks(this.group, camera, TUNING.visuals.reefCullDistance, reach);
   }
 
   async loadReferenceCorals() {
@@ -277,14 +291,17 @@ export class Reefs {
           }
           mat.emissive = new THREE.Color(0x061714);
           mat.emissiveIntensity = 0.22;
-          if (mat.map) mat.map.anisotropy = 4;
-          if (mat.normalMap) mat.normalMap.anisotropy = 4;
-          if (mat.aoMap) mat.aoMap.anisotropy = 4;
+          if (mat.map) mat.map.anisotropy = 16;
+          if (mat.normalMap) mat.normalMap.anisotropy = 16;
+          if (mat.aoMap) mat.aoMap.anisotropy = 16;
           injectCaustics(mat, 0.05, 0xffedc7);
           mat.customProgramCacheKey = () => `reference-coral-${def.id}`;
 
           const maxDim = Math.max(size.x, size.y, size.z);
-          const mesh = new THREE.InstancedMesh(geo, mat, def.placements.length);
+          // One mesh per placement (each a 100k-triangle scan), so the
+          // renderer can skip each coral that is out of view or past the
+          // water's visibility on its own, not all of a kind together.
+          const meshes = def.placements.map(() => new THREE.InstancedMesh(geo, mat, 1));
           const shadowMesh = new THREE.InstancedMesh(
             shadowGeo,
             shadowMat,
@@ -310,9 +327,9 @@ export class Reefs {
             position.set(p.x, ground + size.y * s * 0.5 - 0.14, p.z);
             scale.set(s, s, s);
             matrix.compose(position, quaternion, scale);
-            mesh.setMatrixAt(i, matrix);
+            meshes[i].setMatrixAt(0, matrix);
             color.setHex(0xffffff).offsetHSL((rnd() - 0.5) * 0.02, 0.02, (rnd() - 0.5) * 0.05);
-            mesh.setColorAt(i, color);
+            meshes[i].setColorAt(0, color);
 
             position.set(p.x, ground + 0.035, p.z);
             quaternion.setFromEuler(new THREE.Euler(0, p.yaw, 0));
@@ -324,18 +341,20 @@ export class Reefs {
             matrix.compose(position, quaternion, scale);
             shadowMesh.setMatrixAt(i, matrix);
           }
-          mesh.instanceMatrix.needsUpdate = true;
-          if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-          mesh.computeBoundingSphere();
-          mesh.frustumCulled = true;
-          mesh.castShadow = false;
-          mesh.receiveShadow = false;
           shadowMesh.instanceMatrix.needsUpdate = true;
           shadowMesh.computeBoundingSphere();
           shadowMesh.frustumCulled = true;
           this.group.add(shadowMesh);
-          this.group.add(mesh);
-          this.referenceCorals.push(mesh);
+          for (const mesh of meshes) {
+            mesh.instanceMatrix.needsUpdate = true;
+            if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+            mesh.computeBoundingSphere();
+            mesh.frustumCulled = true;
+            mesh.castShadow = false;
+            mesh.receiveShadow = false;
+            this.group.add(mesh);
+            this.referenceCorals.push(mesh);
+          }
         } catch (err) {
           console.warn("Reference coral failed to load", def.id, err);
         }
@@ -471,9 +490,14 @@ function makeSeagrassTexture() {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.anisotropy = 4;
+  tex.anisotropy = 16;
   return tex;
 }
+
+// Seagrass tufts shrink away between these distances from the camera
+// (metres, from the tuft's root): past the far one a tuft is a point.
+const GRASS_SHRINK_START = 14;
+const GRASS_SHRINK_END = 28;
 
 function makeSeagrassMaterial() {
   const grassTexture = makeSeagrassTexture();
@@ -519,9 +543,11 @@ function makeSeagrassMaterial() {
           transformed.z += cos(uOceanTime * 0.71 + phase * 1.2) * bend * 0.09;
           // Blades thinner than a pixel only alias into specks: past a
           // few tens of metres they shrink away and the meadow colour on
-          // the sand carries the field.
+          // the sand carries the field. Past the far distance a tuft is a
+          // point and draws nothing, so whole chunks beyond it are not
+          // drawn at all (Seagrass.updateCulling).
           float grassDist = distance(rootWorld, cameraPosition);
-          transformed *= 1.0 - smoothstep(14.0, 28.0, grassDist);
+          transformed *= 1.0 - smoothstep(${GRASS_SHRINK_START.toFixed(1)}, ${GRASS_SHRINK_END.toFixed(1)}, grassDist);
         `
       );
     shader.fragmentShader =
@@ -599,17 +625,6 @@ export class Seagrass {
       if (depth < 2.8 || depth > 13.5) continue;
       meadows.push({ x, z, r: 10 + rnd() * 24, n: 80 + rnd() * 220 });
     }
-    // The carpet under every meadow (seabed shader) uses the same depth
-    // window and patch noise as the blades below.
-    for (const meadow of meadows) {
-      meadow.density = meadow.n / (Math.PI * meadow.r * meadow.r) / 1.5;
-    }
-    buildMeadowTexture(meadows, (x, z) => {
-      const depth = -seabedHeight(x, z);
-      const window = smoothstep(1.6, 2.6, depth) * (1 - smoothstep(14.5, 16, depth));
-      const patch = fbm(x * 0.042 + 4.3, z * 0.042 - 8.7, 2);
-      return window * (0.25 + 0.75 * smoothstep(0.26, 0.42, patch));
-    });
     // Denser blades in the meadows the player starts among.
     for (let i = 0; i < nearMeadows.length; i++) meadows[i] = { ...meadows[i], n: Math.round(meadows[i].n * 3.0) };
 
@@ -651,8 +666,14 @@ export class Seagrass {
     this.count = transforms.length;
   }
 
-  updateCulling(camera) {
-    cullInstancedChunks(this.group, camera, TUNING.visuals.grassCullDistance);
+  updateCulling(camera, fullyUnderwater = false) {
+    // Every tuft past GRASS_SHRINK_END has shrunk to a point (see the
+    // material), above water or below, so a chunk wholly beyond it draws
+    // nothing. The metre past it covers a tuft's root lying up to ~0.3 m
+    // outside the chunk's bounding sphere. (Under water the opaque distance
+    // is farther, so this limit is the one that counts.)
+    const reach = Math.min(GRASS_SHRINK_END + 1, fullyUnderwater ? WATER_OPAQUE_DISTANCE + 1 : Infinity);
+    cullInstancedChunks(this.group, camera, TUNING.visuals.grassCullDistance, reach);
   }
 }
 
@@ -947,7 +968,7 @@ function makeJellyArmTexture() {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.anisotropy = 4;
+  tex.anisotropy = 16;
   return tex;
 }
 
@@ -1142,105 +1163,5 @@ export class Jellyfish {
       const floor = seabedHeight(j.position.x, j.position.z);
       if (j.position.y < floor + 0.8) j.position.y = floor + 0.8;
     }
-  }
-}
-
-export class SunShafts {
-  constructor(scene) {
-    this.scene = scene;
-    this.group = new THREE.Group();
-    this.group.frustumCulled = false;
-    this.scene.add(this.group);
-    this.material = new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: sharedShader.time,
-        uColor: { value: new THREE.Color(0xffe6bd) },
-        uOpacity: { value: 0.15 },
-        uFogDensity: { value: TUNING.visuals.underwaterDensity },
-      },
-      vertexShader: /* glsl */ `
-        varying vec2 vUv;
-        varying vec3 vWorld;
-        varying vec3 vNormal;
-        varying float vDepth;
-        void main() {
-          vUv = uv;
-          vec4 world = modelMatrix * vec4(position, 1.0);
-          vWorld = world.xyz;
-          vNormal = normalize(mat3(modelMatrix) * normal);
-          vec4 mv = viewMatrix * world;
-          vDepth = -mv.z;
-          gl_Position = projectionMatrix * mv;
-        }
-      `,
-      fragmentShader: /* glsl */ `
-        precision highp float;
-        uniform float uTime;
-        uniform vec3 uColor;
-        uniform float uOpacity;
-        uniform float uFogDensity;
-        varying vec2 vUv;
-        varying vec3 vWorld;
-        varying vec3 vNormal;
-        varying float vDepth;
-        ${glslNoise}
-        void main() {
-          float endFade = smoothstep(0.0, 0.18, vUv.y) * smoothstep(1.0, 0.6, vUv.y);
-          float edge = 0.45 + 0.55 * pow(1.0 - abs(vNormal.y), 0.6);
-          float bands = vnoise(vec2(vUv.x * 11.0 + vWorld.z * 0.03, vUv.y * 2.2 + uTime * 0.07));
-          bands = smoothstep(0.36, 0.8, bands);
-          float shimmer = 0.55 + 0.45 * sin(vWorld.x * 0.35 + vWorld.z * 0.27 + uTime * 0.5);
-          float nearFade = smoothstep(2.5, 13.0, vDepth);
-          float farFade = smoothstep(85.0, 25.0, vDepth);
-          // A beam is a volume of lit water, thickest through its middle:
-          // it fades to nothing at its outline. The cone's skin used to stop
-          // dead at its silhouette, and read as a pale pane of glass with
-          // straight edges hanging in the water.
-          float through = abs(dot(normalize(vNormal), normalize(cameraPosition - vWorld)));
-          float soft = smoothstep(0.02, 0.6, through);
-          float alpha = uOpacity * endFade * edge * soft * (0.25 + bands * 0.9) * shimmer * nearFade * farFade;
-          float fog = exp(-uFogDensity * uFogDensity * vDepth * vDepth);
-          gl_FragColor = vec4(uColor, alpha * fog);
-        }
-      `,
-      transparent: true,
-      depthWrite: false,
-      depthTest: true,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
-      fog: false,
-    });
-    this.beams = [];
-    const sunDir = new THREE.Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
-    this.axis = sunDir.clone().multiplyScalar(-1);
-    this.quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), this.axis);
-    for (let i = 0; i < 15; i++) {
-      const geo = new THREE.CylinderGeometry(1.4 + Math.random() * 3.5, 6 + Math.random() * 11, 30 + Math.random() * 26, 12, 7, true);
-      const mesh = new THREE.Mesh(geo, this.material);
-      mesh.frustumCulled = false;
-      mesh.renderOrder = 2;
-      mesh.userData.anchor = new THREE.Vector3(
-        (Math.random() - 0.5) * 190,
-        -12 - Math.random() * 11,
-        (Math.random() - 0.5) * 190
-      );
-      this.group.add(mesh);
-      this.beams.push(mesh);
-    }
-  }
-
-  update(camera, time, underwater) {
-    this.group.visible = underwater > 0.4;
-    if (!this.group.visible) return;
-    for (let i = 0; i < this.beams.length; i++) {
-      const beam = this.beams[i];
-      const anchor = beam.userData.anchor;
-      const x = camera.position.x + anchor.x + Math.sin(time * 0.014 + i) * 10;
-      const z = camera.position.z + anchor.z + Math.cos(time * 0.011 + i * 1.9) * 10;
-      beam.position.set(x, anchor.y, z);
-      beam.quaternion.copy(this.quat);
-      beam.rotateY(Math.sin(time * 0.01 + i) * 0.12);
-    }
-    this.material.uniforms.uOpacity.value = 0.05;
   }
 }

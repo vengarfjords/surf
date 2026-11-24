@@ -20,7 +20,9 @@ const POINT_VERT = /* glsl */ `
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * mv;
     float perspective = uScale / max(0.1, -mv.z);
-    gl_PointSize = clamp(aSize * perspective, 1.0, 110.0);
+    // uPixelRatio: rendered pixels per pixel of the frame these sizes were
+    // tuned at, so the sprites keep their size on screen at any render scale.
+    gl_PointSize = clamp(aSize * perspective, 1.0, 110.0 * uPixelRatio);
     // Fade sprites that drift right up to the lens instead of letting them
     // fill the frame as soft white blobs (spray behind a surfing dolphin).
     vAlpha = aAlpha * smoothstep(0.5, 2.2, -mv.z);
@@ -232,7 +234,7 @@ export class CPUParticles {
     this.material.uniforms.uFogDensity.value = fogDensity;
     const h = this.scene.userData.renderHeight || 900;
     this.material.uniforms.uScale.value = h * 0.65;
-    this.material.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio || 1, 1.5);
+    this.material.uniforms.uPixelRatio.value = this.scene.userData.pointPxScale || 1;
     this.points.visible = any;
   }
 }
@@ -999,8 +1001,6 @@ export class ParticleFX {
   }
 
   update(dt, camera, fogColor, fogDensity, current) {
-    this.scene.userData.renderHeight =
-      window.innerHeight * Math.min(window.devicePixelRatio || 1, 1.5);
     this.sediment.update(dt, camera, fogColor, fogDensity, current);
 
     const env = this.env;
@@ -1105,6 +1105,7 @@ export class NearMotes {
       uBox: { value: box },
       uTime: { value: 0 },
       uScale: { value: 800 },
+      uPxScale: { value: 1 },
       uUnderwater: { value: 1 },
       uLight: { value: new THREE.Color(1, 1, 1) },
       uFogColor: { value: new THREE.Color(0x17585b) },
@@ -1124,6 +1125,7 @@ export class NearMotes {
         uniform vec3 uBox;
         uniform float uTime;
         uniform float uScale;
+        uniform float uPxScale;
         varying vec3 vColor;
         varying float vAlpha;
         varying float vDepth;
@@ -1140,7 +1142,7 @@ export class NearMotes {
           vec4 mv = viewMatrix * vec4(world, 1.0);
           gl_Position = projectionMatrix * mv;
           float dist = length(mv.xyz);
-          gl_PointSize = clamp(aSize * uScale / max(0.2, dist), 2.0, 54.0);
+          gl_PointSize = clamp(aSize * uScale / max(0.2, dist), 2.0 * uPxScale, 54.0 * uPxScale);
           vColor = aColor;
           vDepth = dist;
           vSeed = aSeed;
@@ -1187,7 +1189,8 @@ export class NearMotes {
     this.uniforms.uFogDensity.value = fogDensity;
     this.uniforms.uUnderwater.value = underwater;
     if (light) this.uniforms.uLight.value.copy(light);
-    this.uniforms.uScale.value = window.innerHeight * Math.min(window.devicePixelRatio || 1, 1.5) * 0.9;
+    this.uniforms.uScale.value = (this.scene.userData.renderHeight || 900) * 0.9;
+    this.uniforms.uPxScale.value = this.scene.userData.pointPxScale || 1;
     this.points.visible = underwater > 0.05;
   }
 }
@@ -1224,6 +1227,7 @@ export class MarineSnow {
       uBox: { value: box },
       uTime: { value: 0 },
       uScale: { value: 700 },
+      uPxScale: { value: 1 },
       uUnderwater: { value: 1 },
       uLight: { value: new THREE.Color(1, 1, 1) },
       uFogColor: { value: new THREE.Color(0x17585b) },
@@ -1242,6 +1246,7 @@ export class MarineSnow {
         uniform vec3 uBox;
         uniform float uTime;
         uniform float uScale;
+        uniform float uPxScale;
         varying vec3 vColor;
         varying float vAlpha;
         varying float vDepth;
@@ -1259,7 +1264,7 @@ export class MarineSnow {
           vec4 mv = viewMatrix * vec4(world, 1.0);
           gl_Position = projectionMatrix * mv;
           float dist = length(mv.xyz);
-          gl_PointSize = clamp(aSize * uScale / max(0.2, dist), 0.5, 12.0);
+          gl_PointSize = clamp(aSize * uScale / max(0.2, dist), 0.5 * uPxScale, 12.0 * uPxScale);
           vColor = aColor;
           vDepth = dist;
           vSeed = aSeed;
@@ -1306,7 +1311,8 @@ export class MarineSnow {
     this.uniforms.uFogDensity.value = fogDensity;
     this.uniforms.uUnderwater.value = underwater;
     if (light) this.uniforms.uLight.value.copy(light);
-    this.uniforms.uScale.value = window.innerHeight * Math.min(window.devicePixelRatio || 1, 1.5) * 0.55;
+    this.uniforms.uScale.value = (this.scene.userData.renderHeight || 900) * 0.55;
+    this.uniforms.uPxScale.value = this.scene.userData.pointPxScale || 1;
     this.points.visible = underwater > 0.05;
   }
 }

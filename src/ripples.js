@@ -2,8 +2,8 @@ import * as THREE from "three";
 
 /**
  * Live short-wave detail for the sea surface: three cascades of a wind-wave
- * spectrum, evolved with the real dispersion relation and inverse-FFT'd on
- * the GPU every frame (Tessendorf). Each cascade is a tileable patch that
+ * spectrum, evolved with the real dispersion relation and inverse-transformed
+ * on the GPU every frame (Tessendorf). Each cascade is a tileable patch that
  * holds slope x, slope z, height and curvature for one band of wavelengths:
  *
  *   cascade 0: 12 m to 0.9 m   (wind chop riding on the swell)
@@ -14,6 +14,16 @@ import * as THREE from "three";
  * so the surface evolves rather than slides. Purely visual: the ocean
  * fragment shader reads these for its shading normal; the geometry and the
  * physics never see them.
+ *
+ * The three cascades are evolved side by side in one 3N x N texture and
+ * transformed together, three draws a frame: the spectrum at time t, the
+ * inverse transform along rows, then along columns straight into the three
+ * cascade textures (one target with three colour attachments). Each output
+ * texel sums its whole row or column, which is the same inverse DFT the
+ * radix-2 FFT computed in 14 passes per cascade (42 draws, plus a spectrum
+ * and a copy pass each): the result is the same to float precision, and
+ * the 45 extra render passes a frame, each with its own GPU pass and
+ * three.js render call, are gone.
  */
 
 const VERT = /* glsl */ `
@@ -22,19 +32,23 @@ const VERT = /* glsl */ `
 
 // h(k, t) from the initial spectrum, packed as two complex fields whose
 // inverse transforms are real: (slope x + i slope z, height + i curvature).
+// One N x N tile per cascade, side by side.
 const SPECTRUM_FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D uH0;
   uniform float uN;
-  uniform float uL;
+  uniform vec3 uL;
   uniform float uTime;
   vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
   void main() {
-    vec2 c = floor(gl_FragCoord.xy);
+    vec2 px = floor(gl_FragCoord.xy);
+    float tile = floor(px.x / uN);
+    vec2 c = vec2(px.x - tile * uN, px.y);
+    float L = tile < 0.5 ? uL.x : (tile < 1.5 ? uL.y : uL.z);
     vec2 nm = vec2(c.x < uN * 0.5 ? c.x : c.x - uN, c.y < uN * 0.5 ? c.y : c.y - uN);
-    vec2 k = 6.28318530718 * nm / uL;
+    vec2 k = 6.28318530718 * nm / L;
     float kl = length(k);
-    vec4 h0 = texture2D(uH0, (c + 0.5) / uN);
+    vec4 h0 = texelFetch(uH0, ivec2(px), 0);
     // Gravity-capillary dispersion.
     float w = sqrt(9.81 * kl * (1.0 + kl * kl / (370.0 * 370.0)));
     float ph = w * uTime;
@@ -47,36 +61,62 @@ const SPECTRUM_FRAG = /* glsl */ `
   }
 `;
 
-// One radix-2 Stockham pass of an inverse FFT, on two complex numbers per
-// texel at once.
-const FFT_FRAG = /* glsl */ `
+// Inverse DFT along each row of a tile, two complex numbers per texel:
+// X[n] = sum_k x[k] e^(+2 pi i k n / N). uTw holds e^(2 pi i m / N).
+const ROWS_FRAG = (N) => /* glsl */ `
   precision highp float;
+  #define N ${N}
   uniform sampler2D uInput;
-  uniform float uN;
-  uniform float uSub;
-  uniform float uHoriz;
-  vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+  uniform vec2 uTw[N];
   void main() {
-    vec2 c = floor(gl_FragCoord.xy);
-    float index = uHoriz > 0.5 ? c.x : c.y;
-    float halfSub = uSub * 0.5;
-    float evenIndex = floor(index / uSub) * halfSub + mod(index, halfSub);
-    vec2 ce = uHoriz > 0.5 ? vec2(evenIndex, c.y) : vec2(c.x, evenIndex);
-    vec2 co = uHoriz > 0.5 ? vec2(evenIndex + uN * 0.5, c.y) : vec2(c.x, evenIndex + uN * 0.5);
-    vec4 ev = texture2D(uInput, (ce + 0.5) / uN);
-    vec4 od = texture2D(uInput, (co + 0.5) / uN);
-    float a = 6.28318530718 * index / uSub;
-    vec2 tw = vec2(cos(a), sin(a));
-    gl_FragColor = vec4(ev.xy + cmul(tw, od.xy), ev.zw + cmul(tw, od.zw));
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    int tile = px.x / N;
+    int n = px.x - tile * N;
+    int base = tile * N;
+    vec4 acc = vec4(0.0);
+    for (int k = 0; k < N; k++) {
+      vec4 v = texelFetch(uInput, ivec2(base + k, px.y), 0);
+      vec2 w = uTw[(k * n) & (N - 1)];
+      acc += vec4(
+        v.x * w.x - v.y * w.y, v.x * w.y + v.y * w.x,
+        v.z * w.x - v.w * w.y, v.z * w.y + v.w * w.x
+      );
+    }
+    gl_FragColor = acc;
   }
 `;
 
-const COPY_FRAG = /* glsl */ `
+// The same along each column, for all three tiles at once, written to the
+// three cascade textures.
+const COLUMNS_FRAG = (N) => /* glsl */ `
   precision highp float;
+  #define N ${N}
   uniform sampler2D uInput;
-  uniform float uN;
+  uniform vec2 uTw[N];
+  layout(location = 0) out vec4 outCascade0;
+  layout(location = 1) out vec4 outCascade1;
+  layout(location = 2) out vec4 outCascade2;
+  vec4 twiddle(vec4 v, vec2 w) {
+    return vec4(
+      v.x * w.x - v.y * w.y, v.x * w.y + v.y * w.x,
+      v.z * w.x - v.w * w.y, v.z * w.y + v.w * w.x
+    );
+  }
   void main() {
-    gl_FragColor = texture2D(uInput, (floor(gl_FragCoord.xy) + 0.5) / uN);
+    ivec2 px = ivec2(gl_FragCoord.xy);
+    int m = px.y;
+    vec4 a0 = vec4(0.0);
+    vec4 a1 = vec4(0.0);
+    vec4 a2 = vec4(0.0);
+    for (int l = 0; l < N; l++) {
+      vec2 w = uTw[(l * m) & (N - 1)];
+      a0 += twiddle(texelFetch(uInput, ivec2(px.x, l), 0), w);
+      a1 += twiddle(texelFetch(uInput, ivec2(px.x + N, l), 0), w);
+      a2 += twiddle(texelFetch(uInput, ivec2(px.x + 2 * N, l), 0), w);
+    }
+    outCascade0 = a0;
+    outCascade1 = a1;
+    outCascade2 = a2;
   }
 `;
 
@@ -103,7 +143,8 @@ export class OceanRipples {
   constructor(renderer, { size = 128, seed = 9127 } = {}) {
     this.renderer = renderer;
     this.size = size;
-    this.passes = Math.round(Math.log2(size));
+    const N = size;
+    const count = RIPPLE_CASCADES.length;
     const gl = renderer.getContext();
     const floatOk = !!gl.getExtension("EXT_color_buffer_float");
     const workType = floatOk ? THREE.FloatType : THREE.HalfFloatType;
@@ -118,8 +159,9 @@ export class OceanRipples {
       stencilBuffer: false,
       generateMipmaps: false,
     };
-    this.ping = new THREE.WebGLRenderTarget(size, size, work);
-    this.pong = new THREE.WebGLRenderTarget(size, size, work);
+    // The cascades side by side: spectrum, then rows transformed.
+    this.spectrumTarget = new THREE.WebGLRenderTarget(N * count, N, work);
+    this.rowsTarget = new THREE.WebGLRenderTarget(N * count, N, work);
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -127,11 +169,17 @@ export class OceanRipples {
     this.quad.frustumCulled = false;
     this.scene.add(this.quad);
 
+    // e^(2 pi i m / N), exact to float precision.
+    const twiddles = Array.from({ length: N }, (_, m) => {
+      const a = (2 * Math.PI * m) / N;
+      return new THREE.Vector2(Math.cos(a), Math.sin(a));
+    });
+
     this.spectrumMat = new THREE.ShaderMaterial({
       uniforms: {
         uH0: { value: null },
-        uN: { value: size },
-        uL: { value: 1 },
+        uN: { value: N },
+        uL: { value: new THREE.Vector3(...RIPPLE_CASCADES.map((c) => c.L)) },
         uTime: { value: 0 },
       },
       vertexShader: VERT,
@@ -139,44 +187,59 @@ export class OceanRipples {
       depthTest: false,
       depthWrite: false,
     });
-    this.fftMat = new THREE.ShaderMaterial({
-      uniforms: {
-        uInput: { value: null },
-        uN: { value: size },
-        uSub: { value: 2 },
-        uHoriz: { value: 1 },
-      },
+    this.rowsMat = new THREE.ShaderMaterial({
+      uniforms: { uInput: { value: this.spectrumTarget.texture }, uTw: { value: twiddles } },
       vertexShader: VERT,
-      fragmentShader: FFT_FRAG,
+      fragmentShader: ROWS_FRAG(N),
       depthTest: false,
       depthWrite: false,
     });
-    this.copyMat = new THREE.ShaderMaterial({
-      uniforms: { uInput: { value: null }, uN: { value: size } },
+    this.columnsMat = new THREE.ShaderMaterial({
+      uniforms: { uInput: { value: this.rowsTarget.texture }, uTw: { value: twiddles } },
       vertexShader: VERT,
-      fragmentShader: COPY_FRAG,
+      fragmentShader: COLUMNS_FRAG(N),
+      glslVersion: THREE.GLSL3,
       depthTest: false,
       depthWrite: false,
     });
 
-    const rnd = mulberry32(seed);
-    this.cascades = RIPPLE_CASCADES.map((spec) => {
-      const target = new THREE.WebGLRenderTarget(size, size, {
-        type: THREE.HalfFloatType,
-        format: THREE.RGBAFormat,
-        minFilter: THREE.LinearMipmapLinearFilter,
-        magFilter: THREE.LinearFilter,
-        wrapS: THREE.RepeatWrapping,
-        wrapT: THREE.RepeatWrapping,
-        depthBuffer: false,
-        stencilBuffer: false,
-        generateMipmaps: true,
-        anisotropy: 4,
-      });
-      target.texture.colorSpace = THREE.NoColorSpace;
-      return { ...spec, h0: this._initialSpectrum(spec, rnd), target };
+    // The three cascades, mip-filtered and tiling, as the ocean reads them.
+    this.output = new THREE.WebGLRenderTarget(N, N, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      minFilter: THREE.LinearMipmapLinearFilter,
+      magFilter: THREE.LinearFilter,
+      wrapS: THREE.RepeatWrapping,
+      wrapT: THREE.RepeatWrapping,
+      depthBuffer: false,
+      stencilBuffer: false,
+      generateMipmaps: true,
+      anisotropy: 16,
+      count,
     });
-    this.textures = this.cascades.map((c) => c.target.texture);
+    for (const t of this.output.textures) t.colorSpace = THREE.NoColorSpace;
+
+    const rnd = mulberry32(seed);
+    this.cascades = RIPPLE_CASCADES.map((spec, i) => ({
+      ...spec,
+      h0: this._initialSpectrum(spec, rnd),
+      target: this.output,
+      texture: this.output.textures[i],
+    }));
+    // All initial spectra in one texture, in the same layout as the work
+    // targets.
+    const h0 = new Float32Array(N * count * N * 4);
+    this.cascades.forEach((c, i) => {
+      const src = c.h0.image.data;
+      for (let y = 0; y < N; y++) {
+        h0.set(src.subarray(y * N * 4, (y + 1) * N * 4), (y * N * count + i * N) * 4);
+      }
+    });
+    this.h0 = new THREE.DataTexture(h0, N * count, N, THREE.RGBAFormat, THREE.FloatType);
+    this.h0.minFilter = this.h0.magFilter = THREE.NearestFilter;
+    this.h0.needsUpdate = true;
+    this.spectrumMat.uniforms.uH0.value = this.h0;
+    this.textures = this.output.textures;
     this.time = -1;
   }
 
@@ -225,7 +288,6 @@ export class OceanRipples {
     for (let y = 0; y < N; y++) {
       for (let x = 0; x < N; x++) {
         const n = x < N / 2 ? x : x - N;
-        const m = y < N / 2 ? y : y - N;
         const kx = (2 * Math.PI * n) / spec.L;
         // conj(h0(-k)) lives at the mirrored index.
         const mx = (N - x) % N;
@@ -244,7 +306,6 @@ export class OceanRipples {
     for (let i = 0; i < data.length; i++) data[i] *= scale;
     const tex = new THREE.DataTexture(data, N, N, THREE.RGBAFormat, THREE.FloatType);
     tex.minFilter = tex.magFilter = THREE.NearestFilter;
-    tex.needsUpdate = true;
     return tex;
   }
 
@@ -263,29 +324,10 @@ export class OceanRipples {
     const prevXr = r.xr.enabled;
     r.xr.enabled = false;
     r.autoClear = false;
-    for (const c of this.cascades) {
-      const su = this.spectrumMat.uniforms;
-      su.uH0.value = c.h0;
-      su.uL.value = c.L;
-      su.uTime.value = time;
-      this._pass(this.spectrumMat, this.ping);
-      let src = this.ping;
-      let dst = this.pong;
-      const fu = this.fftMat.uniforms;
-      for (let dir = 0; dir < 2; dir++) {
-        fu.uHoriz.value = dir === 0 ? 1 : 0;
-        for (let p = 0; p < this.passes; p++) {
-          fu.uSub.value = 2 ** (p + 1);
-          fu.uInput.value = src.texture;
-          this._pass(this.fftMat, dst);
-          const t = src;
-          src = dst;
-          dst = t;
-        }
-      }
-      this.copyMat.uniforms.uInput.value = src.texture;
-      this._pass(this.copyMat, c.target);
-    }
+    this.spectrumMat.uniforms.uTime.value = time;
+    this._pass(this.spectrumMat, this.spectrumTarget);
+    this._pass(this.rowsMat, this.rowsTarget);
+    this._pass(this.columnsMat, this.output);
     r.setRenderTarget(prevTarget);
     r.autoClear = prevAutoClear;
     r.xr.enabled = prevXr;

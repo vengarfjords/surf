@@ -4,10 +4,28 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { PALETTE, SUN_DIRECTION, TUNING } from "./config.js";
+import { Pass } from "three/addons/postprocessing/Pass.js";
+import { PALETTE, SUN_DIRECTION, TUNING, WATER_OPAQUE_DISTANCE } from "./config.js";
 import { glslCaustics, glslNoise } from "./utils.js";
 import { glslSky } from "./atmosphere.js";
 
+/**
+ * The last pass: from the rendered frame to the screen.
+ *
+ * The frame is rendered at (up to) one pixel per CSS pixel and drawn here at
+ * the display's own resolution, with a Catmull-Rom (bicubic) filter so the
+ * upscale stays crisp instead of going soft the way a bilinear stretch does.
+ *
+ * Everything that only imitated a camcorder is gone from the default look:
+ * film grain, colour fringing that grew with speed, a two-tap "speed blur"
+ * and an underwater "halo" (both drew double images), a sine wobble over
+ * the whole frame underwater, a barrel warp that resampled (softened) every
+ * pixel, and a grade that lifted the blacks and split-toned the image. The
+ * light, haze and colour now come only from the scene and its atmosphere.
+ * What a real lens does is kept: a gentle natural vignette, and water drops
+ * on the port after it breaks the surface. `uLegacy` brings the old film
+ * look back for side-by-side comparison (tuning panel: "legacy film look").
+ */
 const FilmShader = {
   uniforms: {
     tDiffuse: { value: null },
@@ -16,14 +34,16 @@ const FilmShader = {
     uUnderwater: { value: 1 },
     uWetness: { value: 0 },
     uSpeed: { value: 0 },
-    uGrain: { value: TUNING.visuals.grain },
-    uAberration: { value: TUNING.visuals.aberration },
+    uGrain: { value: 0 },
+    uAberration: { value: 0 },
     uVignette: { value: TUNING.visuals.vignette },
     uPixelRatio: { value: 1 },
     uSunScreen: { value: new THREE.Vector2(0.5, 1.1) },
     uSunPower: { value: 0 },
     uDropSeed: { value: 0 },
-    uEdgeSmooth: { value: 1 },
+    uEdgeSmooth: { value: 0 },
+    uLensDrops: { value: 1 },
+    uLegacy: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -49,6 +69,8 @@ const FilmShader = {
     uniform float uSunPower;
     uniform float uDropSeed;
     uniform float uEdgeSmooth;
+    uniform float uLensDrops;
+    uniform float uLegacy;
 
     float hash12(vec2 p) {
       vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -58,6 +80,35 @@ const FilmShader = {
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+    }
+
+    // Catmull-Rom bicubic in nine bilinear taps. Draws the rendered frame at
+    // the display's resolution without the blur of a bilinear stretch; at a
+    // 1:1 scale it returns the source pixel unchanged.
+    vec3 sampleBicubic(vec2 uv) {
+      vec2 samplePos = uv * uResolution;
+      vec2 texPos1 = floor(samplePos - 0.5) + 0.5;
+      vec2 f = samplePos - texPos1;
+      vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+      vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+      vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+      vec2 w3 = f * f * (-0.5 + 0.5 * f);
+      vec2 w12 = w1 + w2;
+      vec2 offset12 = w2 / w12;
+      vec2 p0 = (texPos1 - 1.0) / uResolution;
+      vec2 p3 = (texPos1 + 2.0) / uResolution;
+      vec2 p12 = (texPos1 + offset12) / uResolution;
+      vec3 c = vec3(0.0);
+      c += texture2D(tDiffuse, vec2(p0.x, p0.y)).rgb * (w0.x * w0.y);
+      c += texture2D(tDiffuse, vec2(p12.x, p0.y)).rgb * (w12.x * w0.y);
+      c += texture2D(tDiffuse, vec2(p3.x, p0.y)).rgb * (w3.x * w0.y);
+      c += texture2D(tDiffuse, vec2(p0.x, p12.y)).rgb * (w0.x * w12.y);
+      c += texture2D(tDiffuse, vec2(p12.x, p12.y)).rgb * (w12.x * w12.y);
+      c += texture2D(tDiffuse, vec2(p3.x, p12.y)).rgb * (w3.x * w12.y);
+      c += texture2D(tDiffuse, vec2(p0.x, p3.y)).rgb * (w0.x * w3.y);
+      c += texture2D(tDiffuse, vec2(p12.x, p3.y)).rgb * (w12.x * w3.y);
+      c += texture2D(tDiffuse, vec2(p3.x, p3.y)).rgb * (w3.x * w3.y);
+      return max(c, vec3(0.0));
     }
 
     vec3 sampleChroma(vec2 uv, float amount) {
@@ -71,16 +122,19 @@ const FilmShader = {
       return col;
     }
 
-    // Edge anti-aliasing (FXAA). The scene is rendered below screen
-    // resolution with no multisampling, so every silhouette (a fin against
-    // open water, a blade of grass, a foam edge) came out as a staircase,
-    // which no photograph has. This looks along each edge in the finished
-    // image and blends across it; flat areas are left untouched.
-    vec3 sampleSmooth(vec2 uv) {
+    // Edge anti-aliasing (FXAA). Multisampling smooths the edges as they are
+    // rasterised, but the water's colour along each ray is applied after
+    // that, from one depth per pixel, which steps an edge pixel to one side
+    // or the other again. This looks along each edge in the finished image
+    // and blends across it. Returns alpha 0 where the neighbourhood is flat
+    // (the sharp upscale is used there).
+    vec4 sampleSmooth(vec2 uv) {
       vec2 px = 1.0 / uResolution;
       vec3 cM = texture2D(tDiffuse, uv).rgb;
-      if (uEdgeSmooth < 0.5) return cM;
-      const vec3 W = vec3(0.299, 0.587, 0.114);
+      // Edges are found on a red-weighted luma: under water a grey body and
+      // the teal water around it have almost the same brightness, and only
+      // the red channel tells them apart.
+      const vec3 W = vec3(0.45, 0.45, 0.1);
       float lNW = dot(texture2D(tDiffuse, uv + vec2(-1.0, -1.0) * px).rgb, W);
       float lNE = dot(texture2D(tDiffuse, uv + vec2(1.0, -1.0) * px).rgb, W);
       float lSW = dot(texture2D(tDiffuse, uv + vec2(-1.0, 1.0) * px).rgb, W);
@@ -89,7 +143,7 @@ const FilmShader = {
       float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
       float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
       // Nothing to do where the neighbourhood is flat.
-      if (lMax - lMin < max(0.02, lMax * 0.09)) return cM;
+      if (lMax - lMin < max(0.012, lMax * 0.06)) return vec4(0.0);
       vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));
       float dirReduce = max((lNW + lNE + lSW + lSE) * 0.03125, 0.0078125);
       float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
@@ -103,7 +157,7 @@ const FilmShader = {
         texture2D(tDiffuse, uv + dir * 0.5).rgb
       );
       float lB = dot(cB, W);
-      return (lB < lMin || lB > lMax) ? cA : cB;
+      return vec4((lB < lMin || lB > lMax) ? cA : cB, 1.0);
     }
 
     // Water left on the lens port after the camera comes up: drops of
@@ -152,80 +206,79 @@ const FilmShader = {
       float under = uUnderwater;
       float wet = uWetness;
       vec2 uv = vUv;
-
-      // A slight lens curvature, and under water the faint wobble of
-      // looking through a moving medium.
       vec2 centered = uv * 2.0 - 1.0;
       float r2 = dot(centered, centered);
-      // Barrel curvature, zoomed in just enough that the corners never
-      // sample outside the frame (which smears the edge pixels into bands).
-      float curve = 0.003 + under * 0.008;
-      vec2 lens = 0.5 + (uv + centered * curve * r2 - 0.5) / (1.0 + curve * 2.0 + 0.006);
-      if (under > 0.01) {
-        lens.x += sin(uv.y * 31.0 + uTime * 1.1) * 0.0005 * under;
-        lens.y += cos(uv.x * 27.0 + uTime * 0.9) * 0.0004 * under;
+      vec2 lens = uv;
+
+      if (uLegacy > 0.5) {
+        // Old look: barrel curvature (zoomed so the corners stay inside the
+        // frame) and, under water, a sine wobble over the whole frame.
+        float curve = 0.003 + under * 0.008;
+        lens = 0.5 + (uv + centered * curve * r2 - 0.5) / (1.0 + curve * 2.0 + 0.006);
+        if (under > 0.01) {
+          lens.x += sin(uv.y * 31.0 + uTime * 1.1) * 0.0005 * under;
+          lens.y += cos(uv.x * 27.0 + uTime * 0.9) * 0.0004 * under;
+        }
       }
 
       // Water on the lens after the camera comes up.
       float dropMask = 0.0;
-      if (wet > 0.01 && under < 0.5) {
+      if (uLensDrops > 0.5 && wet > 0.01 && under < 0.5) {
         vec3 lw = lensWater(uv, wet);
         dropMask = lw.z;
         lens += lw.xy;
-        // Right out of the water a film runs down the port and ripples
-        // the whole view for a moment.
+        // Right out of the water a sheet of water runs off the port and
+        // bends the whole view for a moment.
         float film = smoothstep(0.75, 1.0, wet);
         lens.x += sin(uv.y * 23.0 + uTime * 4.0 + sin(uv.x * 9.0) * 2.0) * 0.004 * film;
         lens.y += sin(uv.x * 17.0 - uTime * 3.0) * 0.002 * film + film * 0.004;
       }
 
-      vec2 uvA = clamp(lens, vec2(0.001), vec2(0.999));
-      // Lateral chromatic aberration, only toward the frame edges.
-      float aberration = uAberration * r2 * (0.6 + under * 0.6) * (1.0 + uSpeed * 0.3);
-      // The smoothed image, plus the colour fringe the lens adds toward
-      // the frame edges (as a difference, so the fringe keeps the smoothing).
-      vec3 color = sampleSmooth(uvA);
-      color += sampleChroma(uvA, aberration) - texture2D(tDiffuse, uvA).rgb;
-
-      // Gentle speed blur toward the edges at a sprint.
-      if (uSpeed > 0.25) {
-        vec2 blurDir = (uvA - 0.5) * 0.004 * (uSpeed - 0.25);
-        vec3 blur = texture2D(tDiffuse, uvA + blurDir).rgb * 0.5 + texture2D(tDiffuse, uvA - blurDir).rgb * 0.5;
-        color = mix(color, blur, clamp(r2, 0.0, 1.0) * 0.6);
+      vec2 uvA = clamp(lens, vec2(0.0), vec2(1.0));
+      vec3 color = sampleBicubic(uvA);
+      if (uEdgeSmooth > 0.5) {
+        vec4 smoothEdge = sampleSmooth(uvA);
+        if (smoothEdge.a > 0.5) color = smoothEdge.rgb;
+      }
+      if (uAberration > 0.0) {
+        // Lateral colour fringe toward the frame edges (legacy look only).
+        float aberration = uAberration * r2 * (0.6 + under * 0.6) * (1.0 + uSpeed * 0.3);
+        color += sampleChroma(uvA, aberration) - texture2D(tDiffuse, uvA).rgb;
       }
 
-      float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
-      if (under > 0.01) {
-        // Photographic underwater grade: warm wavelengths gone, blue-teal
-        // shadows, green-cyan midtones, and a little softness.
-        vec3 shadowTint = vec3(0.78, 0.96, 1.1);
-        vec3 midTint = vec3(0.94, 1.02, 1.0);
-        vec3 graded = color * mix(shadowTint, midTint, smoothstep(0.05, 0.45, lum));
-        graded = mix(vec3(lum), graded, 1.08);
-        graded = (graded - 0.4) * 1.04 + 0.4;
-        color = mix(color, graded, under);
-        // Soft scatter around the bright parts (water is never crisp).
-        vec2 haloOff = vec2(0.003, 0.002);
-        vec3 halo = texture2D(tDiffuse, clamp(uvA + haloOff, 0.001, 0.999)).rgb;
-        halo += texture2D(tDiffuse, clamp(uvA - haloOff, 0.001, 0.999)).rgb;
-        halo *= 0.5;
-        color = mix(color, halo, 0.12 * under);
-        vec2 sunDelta = (uv - uSunScreen) * vec2(1.0, 0.8);
-        float scatter = exp(-length(sunDelta) * 3.2);
-        color += uSunPower * under * vec3(0.12, 0.26, 0.3) * scatter * 0.35;
-      }
-      if (under < 0.99) {
-        // Photographic air: lifted, hazy blacks, cool shadows and warm
-        // highlights, a touch of desaturation like a long-lens sea shot.
-        vec3 aboveC = color;
-        vec3 cool = aboveC * vec3(0.93, 1.0, 1.06);
-        vec3 warm = aboveC * vec3(1.02, 1.0, 0.97);
-        aboveC = mix(cool, warm, smoothstep(0.25, 0.8, lum));
-        aboveC = mix(vec3(lum), aboveC, 0.9);
-        // Rain haze and lens flare fill the shadows: nothing in a storm
-        // photograph is black.
-        aboveC = aboveC * 0.93 + vec3(0.034, 0.038, 0.042);
-        color = mix(aboveC, color, under);
+      if (uLegacy > 0.5) {
+        // Old look: a two-tap edge blur at speed, and the camcorder grades.
+        if (uSpeed > 0.25) {
+          vec2 blurDir = (uvA - 0.5) * 0.004 * (uSpeed - 0.25);
+          vec3 blur = texture2D(tDiffuse, uvA + blurDir).rgb * 0.5 + texture2D(tDiffuse, uvA - blurDir).rgb * 0.5;
+          color = mix(color, blur, clamp(r2, 0.0, 1.0) * 0.6);
+        }
+        float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        if (under > 0.01) {
+          vec3 shadowTint = vec3(0.78, 0.96, 1.1);
+          vec3 midTint = vec3(0.94, 1.02, 1.0);
+          vec3 graded = color * mix(shadowTint, midTint, smoothstep(0.05, 0.45, lum));
+          graded = mix(vec3(lum), graded, 1.08);
+          graded = (graded - 0.4) * 1.04 + 0.4;
+          color = mix(color, graded, under);
+          vec2 haloOff = vec2(0.003, 0.002);
+          vec3 halo = texture2D(tDiffuse, clamp(uvA + haloOff, 0.001, 0.999)).rgb;
+          halo += texture2D(tDiffuse, clamp(uvA - haloOff, 0.001, 0.999)).rgb;
+          halo *= 0.5;
+          color = mix(color, halo, 0.12 * under);
+          vec2 sunDelta = (uv - uSunScreen) * vec2(1.0, 0.8);
+          float scatter = exp(-length(sunDelta) * 3.2);
+          color += uSunPower * under * vec3(0.12, 0.26, 0.3) * scatter * 0.35;
+        }
+        if (under < 0.99) {
+          vec3 aboveC = color;
+          vec3 cool = aboveC * vec3(0.93, 1.0, 1.06);
+          vec3 warm = aboveC * vec3(1.02, 1.0, 0.97);
+          aboveC = mix(cool, warm, smoothstep(0.25, 0.8, lum));
+          aboveC = mix(vec3(lum), aboveC, 0.9);
+          aboveC = aboveC * 0.93 + vec3(0.034, 0.038, 0.042);
+          color = mix(aboveC, color, under);
+        }
       }
 
       // Lens drops are out of focus: what they show is soft, and their
@@ -241,12 +294,14 @@ const FilmShader = {
         color *= 1.0 - edge * 0.03;
       }
 
-      // Fine film grain, mostly in the shadows.
-      float grainSeed = hash12(gl_FragCoord.xy * 0.71 + floor(uTime * 30.0) * 17.13);
-      float lum2 = dot(color, vec3(0.2126, 0.7152, 0.0722));
-      color += (grainSeed - 0.5) * uGrain * (1.0 - lum2 * 0.6);
+      if (uGrain > 0.0) {
+        // Film grain, mostly in the shadows (legacy look only).
+        float grainSeed = hash12(gl_FragCoord.xy * 0.71 + floor(uTime * 30.0) * 17.13);
+        float lum2 = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        color += (grainSeed - 0.5) * uGrain * (1.0 - lum2 * 0.6);
+      }
 
-      // Soft natural vignette.
+      // Natural lens vignetting: a fraction of a stop in the corners.
       float vig = smoothstep(1.35, 0.25, length(centered * vec2(0.92, 0.75)));
       color *= mix(1.0, vig, uVignette);
 
@@ -260,9 +315,10 @@ const FilmShader = {
 
 /**
  * Scene-depth aware atmosphere. This is the part that makes the water read as
- * a volume instead of a flat fog wall: screen-space sun shafts are occluded by
- * real geometry through the depth buffer, caustics land on surfaces using a
- * reconstructed normal, and the air above the surface gets warm horizon haze.
+ * a volume instead of a flat fog wall: the water column takes its colour
+ * along each ray, sun shafts are marched through the water in world space,
+ * caustics land on surfaces using a reconstructed normal, and the air above
+ * the surface gets horizon haze and a low sea mist.
  */
 const VolumetricShader = {
   uniforms: {
@@ -290,6 +346,8 @@ const VolumetricShader = {
     uScatter: { value: 0.7 },
     uShaft: { value: 0.42 },
     uShaftSteps: { value: 16 },
+    tShaftNoise: { value: null },
+    uSunRefr: { value: new THREE.Vector3(0.3, -0.85, 0.35) },
     uCaustic: { value: 0.55 },
     uCausticNet: { value: 0.45 },
     uHaze: { value: 0.65 },
@@ -331,6 +389,8 @@ const VolumetricShader = {
     uniform float uScatter;
     uniform float uShaft;
     uniform int uShaftSteps;
+    uniform sampler2D tShaftNoise;
+    uniform vec3 uSunRefr;
     uniform float uCaustic;
     uniform float uCausticNet;
     uniform float uHaze;
@@ -375,64 +435,83 @@ const VolumetricShader = {
       return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
     }
 
-    // A screen-space march toward the sun. Visibility is resolved against the
-    // scene depth buffer, so a passing dolphin or a coral head carves a soft
-    // shadow out of the shafts. The spoke term keeps open water from becoming
-    // a flat radial gradient.
-    float shaftField(vec2 uv, float sceneDepth) {
-      vec2 aspectVec = vec2(uResolution.x / max(uResolution.y, 1.0), 1.0);
-      vec2 toSun = (uSunScreen - uv) * aspectVec;
-      float sunDistance = length(toSun);
-      if (sunDistance < 0.0001) return 0.0;
+    // The scene's world position at a screen position, and its depth.
+    vec4 sceneAt(vec2 p) {
+      float d = linearizeDepth(texture2D(tDepth, p).r);
+      vec2 n = p * 2.0 - 1.0;
+      vec3 dir = normalize(uCamForward + uCamRight * n.x * uTanHalfFov * uAspect + uCamUp * n.y * uTanHalfFov);
+      return vec4(uCameraPos + dir * (d / max(dot(dir, uCamForward), 0.12)), d);
+    }
 
-      vec2 stepUV = (uSunScreen - uv) / float(uShaftSteps);
-      float jitter = hash12(gl_FragCoord.xy + floor(uTime * 24.0) * 0.37);
-      vec2 coord = uv + stepUV * jitter;
-      float decay = 1.0;
-      float illum = 0.0;
-      float weight = 0.0;
-      float angle = atan(toSun.y, toSun.x);
-      // Relative thickness: deeper pixels need a larger depth separation
-      // before they count as a blocker.
-      float thickness = 0.7 + sceneDepth * 0.05;
+    // Interleaved gradient noise: a fixed, fine per-pixel offset for the
+    // shaft march, so its steps never show as bands and never flicker.
+    float ign(vec2 p) {
+      return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+    }
 
-      // Irregular, slow radial bands with a soft edge. Noise on the angle
-      // breaks up the "searchlight" look of a pure sine.
-      float spokeA = vnoise(vec2(angle * 18.0 + uTime * 0.022, 0.7));
-      float spokeB = vnoise(vec2(angle * 37.0 - uTime * 0.016, 4.9));
-      float spokes = 0.38 + 0.62 * (spokeA * 0.6 + spokeB * 0.4);
+    // How much sun reaches the water under surface point s. The short waves
+    // focus it into a slowly moving network of bright lines; two drifting
+    // layers of a tiling ridge pattern stand in for that focusing. Deeper
+    // down each focus has spread, so the pattern is read blurrier (a coarser
+    // mip) as well as fainter.
+    float shaftLight(vec2 s, float below) {
+      float blur = log2(1.0 + below * 0.22) * 1.6;
+      vec2 w1 = s * (1.0 / 12.0) + vec2(uTime * 0.055, uTime * 0.021);
+      vec2 w2 = s * (1.0 / 7.7) + vec2(-uTime * 0.043, uTime * 0.061) + 0.37;
+      float a = texture2D(tShaftNoise, w1, blur).r;
+      float b = texture2D(tShaftNoise, w2, blur).r;
+      float f = a * 0.62 + b * 0.38;
+      return smoothstep(0.46 - below * 0.004, 0.92, f);
+    }
 
-      for (int i = 0; i < 22; i++) {
+    // Sun shafts as light scattered by the water itself, in world space.
+    // Every point of the view ray is lit through the patch of surface the
+    // refracted sun crossed to reach it, so the shafts hang in the water
+    // along the light: they slant with the sun, keep their place in the
+    // water as the camera moves, waver with the waves above, and are
+    // brightest looking toward the sun (forward scattering). They used to be
+    // a screen-space smear toward the sun's position on screen plus cones
+    // that travelled with the camera.
+    float shaftsWorld(vec3 ro, vec3 rd, float rayLen) {
+      float maxLen = min(rayLen, 48.0);
+      if (maxLen <= 0.05) return 0.0;
+      float n = float(uShaftSteps);
+      float stepLen = maxLen / n;
+      float t = stepLen * ign(gl_FragCoord.xy);
+      float sunDown = max(0.25, -uSunRefr.y);
+      // Henyey-Greenstein about the light's travel direction, 1 looking
+      // straight into it, plus a floor for the wide-angle scatter.
+      float g = 0.6;
+      float cosT = dot(uSunRefr, -rd);
+      float phase = 0.12 + pow((1.0 - g) * (1.0 - g) / (1.0 + g * g - 2.0 * g * cosT), 1.5);
+      // Along the ray, three things change in straight lines: the depth
+      // below the surface, the surface point the light came in through, and
+      // the exponent of what the light loses on the way (fading with depth,
+      // exp(-0.04 * below), and absorbed along its path down and then along
+      // the view ray, exp(-0.055 * (up + t))). So each step adds a fixed
+      // amount to the first two and multiplies the loss by a fixed factor,
+      // which gives the same values as working each one out again, without
+      // two exp() a step.
+      float invSunDown = 1.0 / sunDown;
+      float below = uWaterLevel - (ro.y + rd.y * t);
+      float belowStep = -rd.y * stepLen;
+      vec2 s = ro.xz + rd.xz * t - uSunRefr.xz * (below * invSunDown);
+      vec2 sStep = (rd.xz + uSunRefr.xz * (rd.y * invSunDown)) * stepLen;
+      float lossRate = 0.04 + 0.055 * invSunDown;
+      float loss = exp(-lossRate * below - 0.055 * t);
+      float lossStep = exp((lossRate * rd.y - 0.055) * stepLen);
+      float acc = 0.0;
+      for (int i = 0; i < 32; i++) {
         if (i >= uShaftSteps) break;
-        coord += stepUV;
-        vec2 sampleUV = clamp(coord, vec2(0.002), vec2(0.998));
-        float sampleDepth = linearizeDepth(texture2D(tDepth, sampleUV).r);
-        float visibility = smoothstep(
-          sceneDepth - thickness,
-          sceneDepth + thickness * 1.6,
-          sampleDepth
-        );
-        // Sample the scene toward the sun as well as the depth. Bright
-        // surface patches become the actual shafts; dark water does not.
-        // Every other step is enough at this soft focus and halves the
-        // colour-texture traffic.
-        float sampleLight = 0.18;
-        if (i % 2 == 0) {
-          vec3 sampleColor = texture2D(tDiffuse, sampleUV).rgb;
-          float luma = dot(sampleColor, vec3(0.2126, 0.7152, 0.0722));
-          sampleLight = clamp(0.18 + luma * 0.9, 0.0, 1.6);
+        if (below > 0.05) {
+          // In from the surface over the first metre.
+          acc += shaftLight(s, below) * smoothstep(0.05, 1.4, below) * loss;
         }
-        float flicker = 0.78 + 0.22 * sin(float(i) * 1.93 + angle * 7.0 + uTime * 0.5);
-        illum += visibility * decay * flicker * sampleLight;
-        weight += decay;
-        decay *= 0.958;
+        below += belowStep;
+        s += sStep;
+        loss *= lossStep;
       }
-
-      illum /= max(weight, 0.0001);
-      // Keep the shafts concentrated around the projected sun instead of
-      // adding a flat screen-wide wash.
-      float sunFalloff = mix(0.16, 1.0, exp(-sunDistance * 1.55));
-      return illum * (0.55 + 0.45 * spokes) * sunFalloff;
+      return acc * stepLen * phase;
     }
 
     // NaN / infinity test on the raw bits. Safari compiles shaders to Metal
@@ -465,25 +544,7 @@ const VolumetricShader = {
       float belowSurface = max(0.0, uWaterLevel - worldPos.y);
 
       if (uUnderwater > 0.01) {
-        float sunAlign = pow(max(dot(rayDir, uSunDir), 0.0), 5.0);
-        float sunDrive = max(uSunPower, 0.16);
 
-        // Volumetric shafts, occluded by scene depth. Away from the sun the
-        // screen-space march has nothing useful to add, so skip its fetches.
-        float shaft = 0.0;
-        if (uSunPower > 0.01 && uShaft > 0.001) {
-          shaft = shaftField(uv, sceneDepth);
-        }
-        float shaftDepth = exp(-belowSurface * 0.06);
-        vec3 shaftTint = mix(uWaterShallow, uSunColor, 0.58);
-        color +=
-          shaftTint *
-          shaft *
-          (0.32 + 0.68 * sunAlign) *
-          shaftDepth *
-          uShaft *
-          sunDrive *
-          uUnderwater;
 
         // Directional water medium. The materials fog toward one flat
         // colour; here distant water takes the colour of the column in that
@@ -493,10 +554,17 @@ const VolumetricShader = {
         float mediumAmount = 1.0 - exp(-pow(rayLength * mediumDensity, 1.6));
         // Past the visibility limit everything is the water itself, so the
         // far seabed melts into the water instead of meeting it in a line.
-        mediumAmount = max(mediumAmount, smoothstep(35.0, 80.0, rayLength));
+        mediumAmount = max(mediumAmount, smoothstep(35.0, ${WATER_OPAQUE_DISTANCE.toFixed(1)}, rayLength));
         vec3 medium = waterMedium(rayDir, camDepthNow);
         medium += uSunColor * 0.05 * pow(max(dot(rayDir, uSunDir), 0.0), 4.0) * exp(-camDepthNow * 0.04);
         color = mix(color, medium, clamp(mediumAmount, 0.0, 1.0) * uUnderwater);
+
+        // Light shafts: the water lit unevenly by the focusing surface.
+        if (uShaft > 0.001) {
+          float shafts = shaftsWorld(uCameraPos, rayDir, rayLength);
+          vec3 shaftTint = mix(uWaterShallow, uSunColor, 0.58);
+          color += shaftTint * shafts * uShaft * 0.03 * uUnderwater * exp(-camDepthNow * 0.03);
+        }
 
         // Broad solar halo in the water column, plus the brighter ceiling.
         float halo = pow(max(dot(rayDir, uSunDir), 0.0), 18.0);
@@ -507,7 +575,20 @@ const VolumetricShader = {
         // Reconstruct a surface normal from depth derivatives and lay moving
         // caustic filaments over anything facing up. This is what ties the
         // dolphin, coral and sand into the same light field.
-        vec3 normalRaw = cross(dFdx(worldPos), dFdy(worldPos));
+        // On each screen axis, step to the neighbour on the same surface
+        // (the smaller jump in depth). Screen derivatives take a 2x2 block
+        // of pixels, so along the dolphin's outline they mixed its depth
+        // with the sand's behind it: the normal came out wrong, the light on
+        // the sand there was missed and the outline got a ring of dark,
+        // blocky pixels.
+        vec2 texel = 1.0 / uResolution;
+        vec4 sL = sceneAt(uv - vec2(texel.x, 0.0));
+        vec4 sR = sceneAt(uv + vec2(texel.x, 0.0));
+        vec4 sD = sceneAt(uv - vec2(0.0, texel.y));
+        vec4 sU = sceneAt(uv + vec2(0.0, texel.y));
+        vec3 stepX = abs(sR.w - sceneDepth) < abs(sceneDepth - sL.w) ? sR.xyz - worldPos : worldPos - sL.xyz;
+        vec3 stepY = abs(sU.w - sceneDepth) < abs(sceneDepth - sD.w) ? sU.xyz - worldPos : worldPos - sD.xyz;
+        vec3 normalRaw = cross(stepX, stepY);
         float normalLength = length(normalRaw);
         vec3 surfaceNormal = normalLength > 1e-6
           ? normalRaw / normalLength
@@ -592,23 +673,116 @@ const VolumetricShader = {
   `,
 };
 
+/**
+ * Draws the scene into its own target, multisampled where the GPU allows it.
+ * Real edges (a fin against the sky, a blade of seagrass, the line of a
+ * wave against the haze) are resolved from four samples a pixel instead of
+ * one, so they come out smooth the way a camera sees them, not as a
+ * staircase smeared afterwards by an edge filter. The depth is resolved with
+ * the colour, for the volumetric pass.
+ */
+class ScenePass extends Pass {
+  constructor(scene, camera, target) {
+    super();
+    this.scene = scene;
+    this.camera = camera;
+    this.target = target;
+    this.needsSwap = false;
+  }
+
+  render(renderer) {
+    renderer.setRenderTarget(this.target);
+    renderer.render(this.scene, this.camera);
+  }
+}
+
+/**
+ * A tiling ridge-noise texture for the sun shafts: a soft network of bright
+ * lines, like sunlight focused by a wavy surface. Seeded, so it is the same
+ * every run.
+ */
+function makeShaftNoise(size = 128) {
+  let seed = 0x5eaf00d;
+  const rand = () => {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const octaves = [
+    { period: 4, amp: 0.55 },
+    { period: 8, amp: 0.3 },
+    { period: 16, amp: 0.15 },
+  ].map((o) => {
+    const lattice = new Float32Array(o.period * o.period);
+    for (let i = 0; i < lattice.length; i++) lattice[i] = rand();
+    return { ...o, lattice };
+  });
+  const fade = (t) => t * t * (3 - 2 * t);
+  const data = new Uint8Array(size * size);
+  let min = Infinity;
+  let max = -Infinity;
+  const raw = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let sum = 0;
+      for (const o of octaves) {
+        const gx = (x / size) * o.period;
+        const gy = (y / size) * o.period;
+        const ix = Math.floor(gx);
+        const iy = Math.floor(gy);
+        const fx = fade(gx - ix);
+        const fy = fade(gy - iy);
+        const P = o.period;
+        const at = (i, j) => o.lattice[((j + P) % P) * P + ((i + P) % P)];
+        const v =
+          (at(ix, iy) * (1 - fx) + at(ix + 1, iy) * fx) * (1 - fy) +
+          (at(ix, iy + 1) * (1 - fx) + at(ix + 1, iy + 1) * fx) * fy;
+        // Folded into ridges: bright lines where the noise crosses its middle.
+        sum += (1 - Math.abs(2 * v - 1)) * o.amp;
+      }
+      raw[y * size + x] = sum;
+      if (sum < min) min = sum;
+      if (sum > max) max = sum;
+    }
+  }
+  for (let i = 0; i < raw.length; i++) data[i] = Math.round(((raw[i] - min) / (max - min)) * 255);
+  const texture = new THREE.DataTexture(data, size, size, THREE.RedFormat, THREE.UnsignedByteType);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.generateMipmaps = true;
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
 export class Post {
   constructor(renderer, scene, camera) {
     this.renderer = renderer;
     this.scene = scene;
     this.camera = camera;
     this.composer = new EffectComposer(renderer);
-    this.renderPass = new RenderPass(scene, camera);
-    this.composer.addPass(this.renderPass);
 
-    // Scene depth needs to survive the composer's buffer swaps. Each target
-    // gets its own depth texture: RenderPass always writes whichever target
-    // is the current read buffer, and the volumetric pass samples that target
-    // while writing into the other one, so there is never a feedback loop.
-    this.composer.renderTarget1.depthTexture = this._makeDepthTexture("depth-a");
-    this.composer.renderTarget2.depthTexture = this._makeDepthTexture("depth-b");
+    // The scene gets its own (multisampled) target; the composer's two
+    // buffers only carry the fullscreen passes after it.
+    this.maxSamples = renderer.capabilities.isWebGL2 ? Math.min(4, renderer.capabilities.maxSamples || 0) : 0;
+    this.sceneTarget = new THREE.WebGLRenderTarget(2, 2, {
+      type: THREE.HalfFloatType,
+      depthBuffer: true,
+      stencilBuffer: false,
+      samples: this._wantedSamples(),
+    });
+    this.sceneTarget.texture.name = "scene";
+    this.sceneTarget.depthTexture = this._makeDepthTexture("scene-depth");
+    this.scenePass = new ScenePass(scene, camera, this.sceneTarget);
+    this.composer.addPass(this.scenePass);
 
     this.volumetric = new ShaderPass(VolumetricShader);
+    // The volumetric pass reads the scene target directly (colour and
+    // depth), not the composer's read buffer.
+    this.volumetric.textureID = "__scene";
     this.volumetric.material.depthTest = false;
     this.volumetric.material.depthWrite = false;
     this.volumetric.material.blending = THREE.NoBlending;
@@ -616,6 +790,7 @@ export class Post {
     this.volumetric.material.uniforms.uWaterDeep.value.set(PALETTE.waterDeep);
     this.volumetric.material.uniforms.uSkyHorizon.value.set(PALETTE.skyHorizon);
     this.volumetric.material.uniforms.uSunColor.value.set(PALETTE.sunColor);
+    this.volumetric.material.uniforms.tShaftNoise.value = makeShaftNoise(128);
     this.composer.addPass(this.volumetric);
 
     this.bloom = new UnrealBloomPass(
@@ -635,14 +810,10 @@ export class Post {
     this.film = new ShaderPass(FilmShader);
     this.composer.addPass(this.film);
 
-    this.film.material.uniforms.uGrain.value = TUNING.visuals.grain;
-    this.film.material.uniforms.uAberration.value = TUNING.visuals.aberration;
-    this.film.material.uniforms.uVignette.value = TUNING.visuals.vignette;
-
-    // "Post off" still needs the output transform (ACES + sRGB), otherwise
-    // raw shader values are written straight to an sRGB framebuffer and the
-    // water looks unnaturally dark. This chain has no grade, grain, bloom,
-    // volumetric haze or downsampling.
+    // "Post off" still needs the output transform (tone mapping + sRGB),
+    // otherwise raw shader values are written straight to an sRGB
+    // framebuffer and the water looks unnaturally dark. This chain has no
+    // bloom, volumetric haze or downsampling.
     this.rawComposer = new EffectComposer(renderer);
     this.rawComposer.addPass(new RenderPass(scene, camera));
     this.rawComposer.addPass(new OutputPass());
@@ -652,18 +823,24 @@ export class Post {
     this.setSize(window.innerWidth, window.innerHeight);
     this._frame = 0;
     this.sunDir = new THREE.Vector3(SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z).normalize();
+    // The sun's light after it refracts into the water (Snell's law, n =
+    // 1.333): steeper than in the air, so the shafts below lean less.
+    const eta = 1 / 1.333;
+    const cosI = this.sunDir.y;
+    const k = Math.max(0, 1 - eta * eta * (1 - cosI * cosI));
+    this.sunRefr = new THREE.Vector3(-this.sunDir.x * eta, -Math.sqrt(k), -this.sunDir.z * eta).normalize();
     this._forward = new THREE.Vector3();
     this._right = new THREE.Vector3();
     this._up = new THREE.Vector3();
     this._sunPoint = new THREE.Vector3();
   }
 
+  _wantedSamples() {
+    return TUNING.visuals.msaa ? this.maxSamples : 0;
+  }
+
   _makeDepthTexture(name) {
-    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
-    const texture = new THREE.DepthTexture(
-      Math.max(1, size.x),
-      Math.max(1, size.y)
-    );
+    const texture = new THREE.DepthTexture(2, 2);
     texture.name = name;
     texture.format = THREE.DepthFormat;
     texture.type = THREE.UnsignedIntType;
@@ -674,36 +851,47 @@ export class Post {
   }
 
   /** Toggle the whole post chain. Raw mode renders at native resolution so
-   *  the water can be judged without grain, bloom, grade or volumetric haze. */
+   *  the water can be judged without bloom or volumetric haze. */
   setEnabled(enabled) {
     this.enabled = enabled;
     this.setSize(window.innerWidth, window.innerHeight);
   }
 
-  setSize(w, h) {
+  /** The composer's scale (rendered pixels per CSS pixel). */
+  composerScale(w = window.innerWidth, h = window.innerHeight) {
+    // Cap the total pixel count so a very large display cannot quietly
+    // multiply the cost; the quality governor in main.js lowers
+    // renderScale further if frames run slow.
+    const scaleByBudget = Math.sqrt(TUNING.visuals.maxPostPixels / Math.max(1, w * h));
+    // Never more rendered pixels than the canvas has: above that, extra
+    // pixels only cost time (the multisampling already smooths edges).
     const dpr = Math.min(window.devicePixelRatio || 1, TUNING.visuals.maxPixelRatio);
-    if (this.enabled) {
-      this.renderer.setPixelRatio(dpr * TUNING.visuals.renderScale);
-    } else {
-      // Clean-judging mode: native pixels, no composer downsample.
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-    }
+    return Math.min(TUNING.visuals.renderScale, scaleByBudget, dpr);
+  }
+
+  setSize(w, h) {
+    // The canvas always runs at the display's own resolution (capped), so
+    // the last pass can upscale the frame with a sharp filter.
+    const dpr = Math.min(window.devicePixelRatio || 1, TUNING.visuals.maxPixelRatio);
+    this.renderer.setPixelRatio(this.enabled ? dpr : Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.setSize(w, h, false);
-    // The composer is the real render budget. Keep its internal buffers at a
-    // fixed fraction of CSS pixels regardless of devicePixelRatio, and cap the
-    // total pixel count so a large display cannot quietly double the cost.
-    const scaleByBudget = Math.sqrt(
-      TUNING.visuals.maxPostPixels / Math.max(1, w * h)
-    );
-    const composerScale = Math.min(TUNING.visuals.renderScale, scaleByBudget);
-    this.composer.setPixelRatio(composerScale);
-    this.composer.setSize(w, h);
+    const composerScale = this.composerScale(w, h);
+    // Whole pixels: a fractional target size is truncated by WebGL, and the
+    // last pass would then sample the frame a fraction of a texel off.
+    this.composer.setPixelRatio(1);
+    this.composer.setSize(Math.max(1, Math.round(w * composerScale)), Math.max(1, Math.round(h * composerScale)));
     const target = this.composer.renderTarget1;
+    this.sceneTarget.setSize(target.width, target.height);
     this.film.material.uniforms.uResolution.value.set(target.width, target.height);
     this.film.material.uniforms.uPixelRatio.value = composerScale;
-    // Bloom is a soft effect; half resolution is indistinguishable in motion
-    // and removes several full-screen Gaussian passes from the frame.
-    this.bloom.setSize(target.width * 0.25, target.height * 0.25);
+    // Bloom is soft; half resolution is enough and keeps small highlights
+    // (glitter, spray) from shimmering as they cross coarse texels.
+    this.bloom.setSize(Math.round(target.width * 0.5), Math.round(target.height * 0.5));
+    this.appliedScale = TUNING.visuals.renderScale;
+    // Point sprites are sized in rendered pixels; this keeps them the same
+    // size on screen at any render scale.
+    this.scene.userData.renderHeight = target.height * 2.5;
+    this.scene.userData.pointPxScale = target.height / Math.max(1, h * 0.6);
 
     this.rawComposer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.rawComposer.setSize(w, h);
@@ -711,23 +899,35 @@ export class Post {
 
   render(dt, state) {
     if (!this.enabled) {
-      // The film grade normally pulls exposure down; without it, use a
-      // slightly lower exposure so raw-mode highlights do not clip.
+      // Without the post chain, use a slightly lower exposure so raw-mode
+      // highlights do not clip.
       this.renderer.toneMappingExposure = TUNING.visuals.exposure * 0.72;
       this.rawComposer.render(dt);
       return;
     }
+    const samples = this._wantedSamples();
+    if (this.sceneTarget.samples !== samples) {
+      this.sceneTarget.samples = samples;
+      this.sceneTarget.dispose();
+    }
     this._frame++;
     const time = performance.now() * 0.001;
-    this.film.material.uniforms.uTime.value = time;
-    this.film.material.uniforms.uUnderwater.value = state.underwater;
+    const legacy = !!TUNING.visuals.legacyFilm;
+    const fu = this.film.material.uniforms;
+    fu.uTime.value = time;
+    fu.uUnderwater.value = state.underwater;
     // A fresh soaking leaves a fresh pattern of drops.
     const wetNow = Math.max(state.wetness, 0);
-    if (wetNow > (this._lastWet ?? 0) + 0.25) this.film.material.uniforms.uDropSeed.value = Math.floor(Math.random() * 97);
+    if (wetNow > (this._lastWet ?? 0) + 0.25) fu.uDropSeed.value = Math.floor(Math.random() * 97);
     this._lastWet = wetNow;
-    this.film.material.uniforms.uWetness.value = wetNow;
-    this.film.material.uniforms.uSpeed.value = state.speedNorm;
-    this.film.material.uniforms.uEdgeSmooth.value = TUNING.visuals.edgeSmoothing ? 1 : 0;
+    fu.uWetness.value = wetNow;
+    fu.uSpeed.value = state.speedNorm;
+    fu.uLensDrops.value = TUNING.visuals.lensDrops ? 1 : 0;
+    fu.uLegacy.value = legacy ? 1 : 0;
+    fu.uGrain.value = legacy ? 0.028 : TUNING.visuals.grain;
+    fu.uAberration.value = legacy ? 0.0012 : TUNING.visuals.aberration;
+    fu.uVignette.value = legacy ? 0.24 : TUNING.visuals.vignette;
+    fu.uEdgeSmooth.value = TUNING.visuals.edgeSmoothing ? 1 : 0;
 
     this.camera.getWorldDirection(this._forward);
     const facing = this._forward.dot(this.sunDir);
@@ -737,21 +937,21 @@ export class Post {
       .project(this.camera);
     const sx = this._sunPoint.x * 0.5 + 0.5;
     const sy = this._sunPoint.y * 0.5 + 0.5;
-    this.film.material.uniforms.uSunScreen.value.set(
+    fu.uSunScreen.value.set(
       Math.max(-0.08, Math.min(1.08, sx)),
       Math.max(0.08, Math.min(1.09, sy))
     );
     const sunPower = Math.max(0, Math.min(1, (facing + 0.12) * 1.4)) * 0.8;
-    this.film.material.uniforms.uSunPower.value = sunPower;
+    fu.uSunPower.value = sunPower;
 
     this.camera.updateMatrixWorld();
     this._right.setFromMatrixColumn(this.camera.matrixWorld, 0);
     this._up.setFromMatrixColumn(this.camera.matrixWorld, 1);
 
     const vu = this.volumetric.material.uniforms;
-    const sceneTarget = this.composer.readBuffer;
-    vu.tDepth.value = sceneTarget.depthTexture;
-    vu.uResolution.value.set(sceneTarget.width, sceneTarget.height);
+    vu.tDiffuse.value = this.sceneTarget.texture;
+    vu.tDepth.value = this.sceneTarget.depthTexture;
+    vu.uResolution.value.set(this.sceneTarget.width, this.sceneTarget.height);
     vu.uTime.value = time;
     vu.uUnderwater.value = state.underwater;
     vu.uCameraPos.value.copy(this.camera.position);
@@ -763,6 +963,7 @@ export class Post {
     vu.uNear.value = this.camera.near;
     vu.uFar.value = this.camera.far;
     vu.uSunDir.value.copy(this.sunDir);
+    vu.uSunRefr.value.copy(this.sunRefr);
     vu.uSunScreen.value.set(
       Math.max(-0.6, Math.min(1.6, sx)),
       Math.max(-0.5, Math.min(1.6, sy))

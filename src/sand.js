@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
-import { meadowMap } from "./atmosphere.js";
 import {
   clamp,
   glslFog,
@@ -40,6 +39,10 @@ export class SandSimulation {
     this.erase = new Float32Array(this.n * this.n);
     this.visualErase = new Float32Array(this.n * this.n);
     this.texData = new Float32Array(this.n * this.n * 2);
+    // Rows changed since the texture was last sent to the GPU (texLo >
+    // texHi: none); see flushTexture.
+    this.texLo = this.n;
+    this.texHi = -1;
     this.swell = null;
     this.smoothClock = 0;
     // Rows [rowMin, rowMax] that hold any dug, piled or wiped sand (rowMin >
@@ -113,19 +116,22 @@ export class SandSimulation {
     const cx = Math.round(shiftX / this.cell);
     const cz = Math.round(shiftZ / this.cell);
     const n = this.n;
+    // The centre moved (cx, cz) cells: new cell (x, y) is old cell
+    // (x + cx, y + cz). Each kept row moves as one block copy.
+    const xa = Math.max(0, -cx);
+    const xb = Math.min(n, n - cx);
+    const ya = Math.max(0, -cz);
+    const yb = Math.min(n, n - cz);
     const shiftField = (field) => {
-      this.scratch.fill(0);
-      for (let y = 0; y < n; y++) {
-        // The centre moved cz cells: new row y is old row y + cz.
-        const sy = y + cz;
-        if (sy < 0 || sy >= n) continue;
-        for (let x0 = 0; x0 < n; x0++) {
-          const sx = x0 + cx;
-          if (sx < 0 || sx >= n) continue;
-          this.scratch[y * n + x0] = field[sy * n + sx];
+      const s = this.scratch;
+      s.fill(0);
+      if (xb > xa) {
+        for (let y = ya; y < yb; y++) {
+          const from = (y + cz) * n + cx;
+          s.set(field.subarray(from + xa, from + xb), y * n + xa);
         }
       }
-      field.set(this.scratch);
+      field.set(s);
     };
     shiftField(this.heights);
     shiftField(this.erase);
@@ -412,7 +418,7 @@ export class SandSimulation {
     // Ripples flatten over about a third of a second where sand is pushed,
     // instead of vanishing in a frame.
     const alphaErase = 1 - Math.exp(-3 * dt);
-    let changed = false;
+    const n = this.n;
     const h = this.heights;
     const v = this.visualHeights;
     const e = this.erase;
@@ -420,23 +426,65 @@ export class SandSimulation {
     const tex = this.texData;
     // Outside the marked rows height and erase are zero and so is the
     // visual copy (recentering and reset sync them).
-    const iA = this.rowMin <= this.rowMax ? this.rowMin * this.n : 0;
-    const iB = this.rowMin <= this.rowMax ? (this.rowMax + 1) * this.n : 0;
-    for (let i = iA; i < iB; i++) {
-      const diff = h[i] - v[i];
-      if (diff > 1e-7 || diff < -1e-7) {
-        v[i] += diff * alpha;
-        tex[i * 2] = v[i];
-        changed = true;
+    let lo = n;
+    let hi = -1;
+    for (let y = this.rowMin; y <= this.rowMax; y++) {
+      let changed = false;
+      for (let i = y * n, end = i + n; i < end; i++) {
+        const diff = h[i] - v[i];
+        if (diff > 1e-7 || diff < -1e-7) {
+          v[i] += diff * alpha;
+          tex[i * 2] = v[i];
+          changed = true;
+        }
+        const de = e[i] - ve[i];
+        if (de > 1e-5 || de < -1e-5) {
+          ve[i] += de * alphaErase;
+          tex[i * 2 + 1] = ve[i];
+          changed = true;
+        }
       }
-      const de = e[i] - ve[i];
-      if (de > 1e-5 || de < -1e-5) {
-        ve[i] += de * alphaErase;
-        tex[i * 2 + 1] = ve[i];
-        changed = true;
+      if (changed) {
+        if (y < lo) lo = y;
+        hi = y;
       }
     }
-    if (changed) this.texture.needsUpdate = true;
+    if (hi >= lo) {
+      this.texLo = Math.min(this.texLo, lo);
+      this.texHi = Math.max(this.texHi, hi);
+    }
+  }
+
+  /**
+   * Sends the rows of the texture that changed since the last upload to the
+   * GPU, as one block, instead of the whole 1.2 MB texture every frame. The
+   * sand meshes call it just before they draw.
+   */
+  flushTexture(renderer) {
+    if (this.texHi < this.texLo) return;
+    const lo = this.texLo;
+    const hi = this.texHi;
+    this.texLo = this.n;
+    this.texHi = -1;
+    const texture = this.texture;
+    const props = renderer.properties.get(texture);
+    // Not on the GPU yet, or a whole upload is due anyway (it reads the
+    // same array, so it carries these rows too).
+    if (!props.__webglTexture || props.__version !== texture.version) {
+      texture.needsUpdate = true;
+      return;
+    }
+    const gl = renderer.getContext();
+    const state = renderer.state;
+    state.bindTexture(gl.TEXTURE_2D, props.__webglTexture);
+    state.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    state.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    state.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    state.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    state.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+    state.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    const n = this.n;
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, lo, n, hi - lo + 1, gl.RG, gl.FLOAT, this.texData, lo * n * 2);
   }
 
   /**
@@ -630,8 +678,6 @@ const SAND_FRAG = /* glsl */ `
   uniform vec2 uHoleCenter;
   uniform float uHoleRadius;
   uniform float uHasHole;
-  uniform sampler2D uMeadow;
-  uniform float uMeadowExtent;
   varying vec3 vWorld;
   varying vec3 vNormal;
   varying vec3 vColor;
@@ -651,8 +697,13 @@ const SAND_FRAG = /* glsl */ `
     // The hole is the dense mesh's square less a 3 m overlap, where the dense
     // mesh's ripple relief has already faded to nothing; a round hole left
     // its corners drawn twice, a few centimetres apart.
+    // Only the coarse mesh is compiled with the hole: a shader that can
+    // discard cannot have its hidden pixels skipped before shading (Apple's
+    // GPUs shade every such pixel, even one the water covers later).
+#ifdef SAND_HOLE
     vec2 holeD = abs(vWorld.xz - uHoleCenter);
     if (uHasHole > 0.5 && max(holeD.x, holeD.y) < uHoleRadius) discard;
+#endif
     vec3 n = normalize(vNormal);
     float dist = length(vWorld - uCameraPos);
     float height = vWorld.y;
@@ -706,7 +757,6 @@ const SAND_FRAG = /* glsl */ `
     vec3 causticTint = uSunColor * caustics * uCausticStrength * causticMask * 0.72;
 
     float patches = fbmR(vWorld.xz * 0.27 + 4.1);
-    float siltStain = smoothstep(0.55, 0.82, patches);
     vec3 sand = vColor;
     sand *= 0.29 + ndl * 0.52 + ambient * 0.18;
     sand += causticTint * vec3(0.82, 0.98, 0.76);
@@ -726,50 +776,6 @@ const SAND_FRAG = /* glsl */ `
     sand *= 1.0 + speckA * 0.3 + speckB * 0.14 + speckC * 0.05;
     // Clean, sorted sand: only a faint broad shift in tone across the bed.
     sand *= 0.92 + patches * 0.16;
-    sand = mix(sand, sand * vec3(0.8, 0.86, 0.74), siltStain * 0.12);
-
-    // Seagrass carpet. Under a meadow the floor is a mat of short blades:
-    // strands in a few crossing directions, bright yellow-green where the
-    // tips catch the light, dark between them, with sand showing through
-    // thin patches. The instanced blades stand up out of it near the lens.
-    float meadow = texture2D(uMeadow, vWorld.xz / uMeadowExtent + 0.5).r;
-    if (meadow > 0.01) {
-      vec2 q = vWorld.xz;
-      // Leaves lying over in the surge, combed two ways that take turns
-      // across the meadow: streaks a couple of centimetres wide and a hand
-      // long, bright where a leaf faces the light and dark in the gaps
-      // between leaves. They fade to their mean before they are finer than
-      // a pixel; the clumps and the patchwork of the meadow carry it on.
-      float fineFade = (1.0 - smoothstep(2.5, 11.0, dist)) * (1.0 - smoothstep(0.006, 0.02, footprint));
-      float tuftFade = (1.0 - smoothstep(12.0, 46.0, dist)) * (1.0 - smoothstep(0.08, 0.2, footprint));
-      vec2 qa = vec2(q.x * 0.8 + q.y * 0.6, -q.x * 0.6 + q.y * 0.8);
-      vec2 qb = vec2(q.x * 0.97 - q.y * 0.24, q.x * 0.24 + q.y * 0.97);
-      float sway = sin(uTime * 0.86 + q.x * 0.115 + q.y * 0.09) * 0.02;
-      float wA = smoothstep(0.38, 0.62, fbm2(q * 0.4 + 1.0));
-      float sA = vnoise(qa * vec2(8.0, 47.0) + vec2(sway * 8.0, 0.0)) * 0.6 + vnoise(qa * vec2(15.0, 90.0) + 4.0) * 0.4;
-      float sB = vnoise(qb * vec2(8.0, 47.0) + vec2(sway * 8.0, 8.0)) * 0.6 + vnoise(qb * vec2(15.0, 90.0) - 2.0) * 0.4;
-      float leaf = mix(sB, sA, wA);
-      float clump = fbm2(q * 2.6 + 3.0);
-      float tufts = fbm2(q * 0.9 + 2.0);
-      float strands = mix(0.5, leaf, fineFade) * 0.62 + mix(0.5, clump, tuftFade) * 0.4 + (tufts - 0.5) * 0.3;
-      float lit = 0.34 + ndl * 0.66;
-      vec3 grassDark = vec3(0.01, 0.026, 0.012);
-      vec3 grassMid = vec3(0.036, 0.1, 0.034);
-      vec3 grassLit = vec3(0.12, 0.25, 0.07);
-      vec3 carpet = mix(grassDark, grassMid, smoothstep(0.26, 0.52, strands));
-      carpet = mix(carpet, grassLit, smoothstep(0.52, 0.86, strands));
-      // Old leaves and epiphytes: a scatter of straw and brown.
-      float old = smoothstep(0.62, 0.9, fbm2(q * 5.5 + 13.0));
-      carpet = mix(carpet, vec3(0.16, 0.14, 0.06) * (0.4 + strands), old * 0.2);
-      carpet *= lit * (0.8 + 0.4 * tufts);
-      carpet += causticTint * vec3(0.5, 0.95, 0.48) * 0.36 * (0.4 + strands);
-      // A meadow is nearly closed cover, with a few blow-outs of bare sand
-      // and a ragged edge.
-      float thinPatch = smoothstep(0.66, 0.8, fbm2(q * 0.18 + 9.0)) * 0.75;
-      float edge = smoothstep(0.03, 0.3, meadow + (clump - 0.5) * 0.12);
-      float cover = edge * (1.0 - thinPatch) * (0.86 + 0.14 * clump);
-      sand = mix(sand, carpet, clamp(cover, 0.0, 1.0));
-    }
 
     // Sand hanging in the water over the bed veils it: a little paler and
     // flatter, lit like the bed under it (applied before the depth loss, so
@@ -823,6 +829,13 @@ class SandSurface {
     this.workerBusy = false;
     this.workerRequestId = 0;
     this.pendingCenter = null;
+    this.targetCenter = this.center.clone();
+    // The new window goes into a second, hidden copy of the mesh, a slice of
+    // its 5 MB of vertex data per frame, and takes over once all of it is on
+    // the GPU: sending it in one frame cost that frame several milliseconds.
+    this.spare = null;
+    this.uploadSteps = null;
+    this.swapCenter = null;
     if (useDelta) this._initWorker();
   }
 
@@ -836,6 +849,8 @@ class SandSurface {
         console.warn("sand recenter worker failed; using synchronous rebuild", error);
         this.worker = null;
         this.workerBusy = false;
+        this.uploadSteps = null;
+        this.swapCenter = null;
       };
       const positions = this.mesh.geometry.attributes.position.array.slice();
       const index = this.mesh.geometry.index.array.slice();
@@ -849,15 +864,50 @@ class SandSurface {
         },
         [positions.buffer, index.buffer]
       );
+      this.spare = this._makeSpare();
     } catch (error) {
       console.warn("sand recenter worker unavailable; using synchronous rebuild", error);
       this.worker = null;
     }
   }
 
+  // A second mesh over the same index and uv buffers, with its own position,
+  // colour and normal buffers. Its material is invisible, but the renderer
+  // still sends its changed buffers to the GPU every frame it is in the scene.
+  _makeSpare() {
+    const geo = this.mesh.geometry;
+    const spareGeo = new THREE.BufferGeometry();
+    spareGeo.setIndex(geo.index);
+    for (const name of Object.keys(geo.attributes)) {
+      const attr = geo.attributes[name];
+      if (name === "position" || name === "color" || name === "normal") {
+        const copy = new THREE.BufferAttribute(attr.array.slice(), attr.itemSize);
+        copy.setUsage(THREE.DynamicDrawUsage);
+        spareGeo.setAttribute(name, copy);
+      } else {
+        spareGeo.setAttribute(name, attr);
+      }
+    }
+    this.hiddenMaterial = new THREE.MeshBasicMaterial({ visible: false });
+    const spare = new THREE.Mesh(spareGeo, this.hiddenMaterial);
+    spare.onBeforeRender = this.mesh.onBeforeRender;
+    spare.matrixAutoUpdate = false;
+    spare.frustumCulled = false;
+    spare.receiveShadow = false;
+    spare.renderOrder = this.mesh.renderOrder;
+    this.scene.add(spare);
+    return spare;
+  }
+
   requestRecenter(x, z) {
     if (!this.worker) {
       this.recenter(x, z);
+      return;
+    }
+    // Asked every frame until the new window is shown: ignore repeats of
+    // the window already on its way.
+    if (x === this.targetCenter.x && z === this.targetCenter.y) {
+      this.pendingCenter = null;
       return;
     }
     this.pendingCenter = { x, z };
@@ -870,6 +920,7 @@ class SandSurface {
     this.pendingCenter = null;
     this.workerBusy = true;
     this.workerRequestId++;
+    this.targetCenter.set(target.x, target.z);
     this.worker.postMessage({
       type: "recenter",
       id: this.workerRequestId,
@@ -880,24 +931,51 @@ class SandSurface {
 
   _onWorkerMessage(message) {
     if (!message || message.type !== "recenter") return;
-    if (message.id !== this.workerRequestId) return;
-    this.workerBusy = false;
-    const positions = this.mesh.geometry.attributes.position;
-    const colors = this.mesh.geometry.attributes.color;
-    const normals = this.mesh.geometry.attributes.normal;
-    const positionArray = positions.array;
-    for (let i = 0; i < message.heights.length; i++) {
-      positionArray[i * 3 + 1] = message.heights[i];
+    if (message.id !== this.workerRequestId || !this.spare) return;
+    const geo = this.spare.geometry;
+    const attrs = [geo.attributes.position, geo.attributes.normal, geo.attributes.color];
+    // The spare's old buffers go back to the worker for the next window.
+    const old = {
+      type: "recycle",
+      positions: attrs[0].array,
+      normals: attrs[1].array,
+      colors: attrs[2].array,
+    };
+    attrs[0].array = message.positions;
+    attrs[1].array = message.normals;
+    attrs[2].array = message.colors;
+    this.worker.postMessage(old, [old.positions.buffer, old.normals.buffer, old.colors.buffer]);
+    // Two slices per buffer, one slice per frame.
+    this.uploadSteps = [];
+    for (const attr of attrs) {
+      const half = Math.ceil(attr.count / 2) * attr.itemSize;
+      this.uploadSteps.push([attr, 0, half], [attr, half, attr.array.length - half]);
     }
-    positions.needsUpdate = true;
-    colors.array.set(message.colors);
-    colors.needsUpdate = true;
-    normals.array.set(message.normals);
-    normals.needsUpdate = true;
+    this.swapCenter = { x: message.centerX, z: message.centerZ };
+  }
 
-    this.center.set(message.centerX, message.centerZ);
+  // One step of a pending window change per frame, before the frame renders.
+  _advanceUpload() {
+    if (!this.uploadSteps) return;
+    const step = this.uploadSteps.shift();
+    if (step) {
+      const [attr, start, count] = step;
+      attr.addUpdateRange(start, count);
+      attr.needsUpdate = true;
+      return;
+    }
+    // Every slice went out with an earlier frame: show the new window.
+    const shown = this.mesh;
+    this.mesh = this.spare;
+    this.spare = shown;
+    this.mesh.material = this.material;
+    this.spare.material = this.hiddenMaterial;
+    this.center.set(this.swapCenter.x, this.swapCenter.z);
     this.mesh.position.set(this.center.x, this.useDelta ? 0.025 : 0, this.center.y);
     this.mesh.updateMatrix();
+    this.uploadSteps = null;
+    this.swapCenter = null;
+    this.workerBusy = false;
     if (this.pendingCenter) this._dispatchRecenter();
   }
 
@@ -919,8 +997,6 @@ class SandSurface {
         uHoleCenter: { value: new THREE.Vector2() },
         uHoleRadius: { value: 0 },
         uHasHole: { value: 0 },
-        uMeadow: meadowMap.uniforms.uMeadow,
-        uMeadowExtent: meadowMap.uniforms.uMeadowExtent,
         ...this.sim.swell.uniforms(),
       },
       vertexShader: SAND_VERT,
@@ -956,6 +1032,8 @@ class SandSurface {
       }
     }
     const mesh = new THREE.Mesh(geo, this.material);
+    // The first sand mesh drawn in a frame sends the texture's changed rows.
+    mesh.onBeforeRender = (renderer) => this.sim.flushTexture(renderer);
     mesh.position.set(this.center.x, 0, this.center.y);
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
@@ -985,6 +1063,7 @@ class SandSurface {
   }
 
   update(camera, fogColor, fogDensity, time) {
+    this._advanceUpload();
     const u = this.material.uniforms;
     u.uTime.value = time;
     u.uCameraPos.value.copy(camera.position);
@@ -1015,6 +1094,7 @@ export class Seabed {
     this.base = new SandSurface(scene, this.sim, false, TUNING.world.size, 260, new THREE.Vector2(0, 0));
     this.base.mesh.position.set(0, 0, 0);
     this.base.mesh.updateMatrix();
+    this.base.material.defines = { ...(this.base.material.defines || {}), SAND_HOLE: 1 };
     this.base.material.uniforms.uHasHole.value = 1;
     this.base.material.uniforms.uHoleRadius.value =
       TUNING.sand.nearMeshExtent * 0.5 - 3;

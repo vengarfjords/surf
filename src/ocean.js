@@ -676,9 +676,13 @@ export class Ocean {
               float mB = 0.86 + 0.11 * fillB;
               float mM = 0.86 + 0.11 * fillM;
               float mF = 0.86 + 0.11 * 0.85;
-              float big = mix(mB, bubbleLayer(bq * 48.0 + 7.0, fillB), 1.0 - smoothstep(0.003, 0.0055, foot));
-              float mid = mix(mM, bubbleLayer(bq * 130.0 - 3.0, fillM), 1.0 - smoothstep(0.0011, 0.002, foot));
-              float fine = mix(mF, bubbleLayer(bq * 330.0 + 11.0, 0.85), 1.0 - smoothstep(0.00045, 0.0008, foot));
+              // (A size that has faded to its mean is not worked out.)
+              float wB = 1.0 - smoothstep(0.003, 0.0055, foot);
+              float wM = 1.0 - smoothstep(0.0011, 0.002, foot);
+              float wF = 1.0 - smoothstep(0.00045, 0.0008, foot);
+              float big = wB > 0.0 ? mix(mB, bubbleLayer(bq * 48.0 + 7.0, fillB), wB) : mB;
+              float mid = wM > 0.0 ? mix(mM, bubbleLayer(bq * 130.0 - 3.0, fillM), wM) : mM;
+              float fine = wF > 0.0 ? mix(mF, bubbleLayer(bq * 330.0 + 11.0, 0.85), wF) : mF;
               float bub = (big / mB) * (mid / mM) * (fine / mF);
               pattern *= mix(1.0, bub, 1.0 - smoothstep(4.0, 10.0, dist));
             }
@@ -833,11 +837,14 @@ export class Ocean {
           // A whitecap is not a round raft. Its downwind edge is the active
           // crest, dense and white; behind it the foam is already spent, a
           // thin patch that the lace below draws out into strings and webs.
-          vec2 capAhead = vec2(perpA + 3.5, perpB);
-          float capSumAhead = vnoise(vec2(capAhead.x * 0.045 - uTime * 0.11, capAhead.y * 0.09) + 3.1) * 0.6
-            + vnoise(vec2(capAhead.x * 0.11, capAhead.y * 0.11) + uTime * 0.21) * 0.55 + slopeEnergy * 0.25;
-          float capFront = smoothstep(0.0, 0.035, capSum - capSumAhead);
-          windCaps *= 0.3 + 0.7 * capFront;
+          // (Only where there is a cap: the scale cannot make a zero one.)
+          if (windCaps > 0.0) {
+            vec2 capAhead = vec2(perpA + 3.5, perpB);
+            float capSumAhead = vnoise(vec2(capAhead.x * 0.045 - uTime * 0.11, capAhead.y * 0.09) + 3.1) * 0.6
+              + vnoise(vec2(capAhead.x * 0.11, capAhead.y * 0.11) + uTime * 0.21) * 0.55 + slopeEnergy * 0.25;
+            float capFront = smoothstep(0.0, 0.035, capSum - capSumAhead);
+            windCaps *= 0.3 + 0.7 * capFront;
+          }
           // A mega face is swept clean by its own flow; keep its caps sparse.
           windCaps *= 1.0 - 0.75 * smoothstep(0.05, 0.3, megaRise);
           foam = max(foam, windCaps * 0.85 * clamp(uWhitecaps - 0.4, 0.0, 1.0));
@@ -872,24 +879,30 @@ export class Ocean {
           // The foam field is coarse (two-metre cells) and on its own draws
           // soft round rafts. Tear it into ragged pieces and connected
           // strands a few metres apart, as spent foam lies on the water.
-          vec2 fw = p + (vec2(fbm2(p * 0.13 + 3.0), fbm2(p * 0.13 - 9.0)) - 0.5) * 14.0;
-          float tearN = fbm2(fw * 0.19 + vec2(uTime * 0.01, 0.0));
-          float strand = 1.0 - abs(2.0 * vnoise(fw * 0.42 + 5.0) - 1.0);
-          float fieldShape = smoothstep(0.3, 0.75, tearN) * 0.7 + smoothstep(0.6, 0.96, strand) * 0.5;
-          foam = max(foam, vFoamField * fieldMask * (0.3 + 0.95 * fieldShape));
+          // (Skipped where there is no field foam: it would add nothing.)
+          if (vFoamField * fieldMask > 0.0) {
+            vec2 fw = p + (vec2(fbm2(p * 0.13 + 3.0), fbm2(p * 0.13 - 9.0)) - 0.5) * 14.0;
+            float tearN = fbm2(fw * 0.19 + vec2(uTime * 0.01, 0.0));
+            float strand = 1.0 - abs(2.0 * vnoise(fw * 0.42 + 5.0) - 1.0);
+            float fieldShape = smoothstep(0.3, 0.75, tearN) * 0.7 + smoothstep(0.6, 0.96, strand) * 0.5;
+            foam = max(foam, vFoamField * fieldMask * (0.3 + 0.95 * fieldShape));
+          }
           // Residual foam: across a surf zone every bore leaves a sheet of
           // foam behind it that thins into patches and lace until the next
           // one comes through. age is 0 just behind a crest, 1 at the next.
           float foamAge = vFacePhase < 0.0 ? -vFacePhase / 6.2832 : 1.0 - vFacePhase / 6.2832;
           float residual = smoothstep(0.35, 0.9, vBreakZone) * (1.0 - 0.65 * foamAge);
           // Rafts and patches tens of metres across, not lined up with the wind.
-          float resPat = fbm2(p * 0.06 + vec2(foamNoise * 0.8, uTime * 0.008)) * 0.65 + foamNoise * 0.35;
-          // Dense only just behind the bore. The rest is thin enough that
-          // the bubble lace shows it as webs and strings with open water
-          // between them, the way spent foam lies in an aerial photograph.
-          residual *= smoothstep(0.3 + 0.14 * foamAge, 0.78 + 0.14 * foamAge, resPat);
-          residual *= 0.42 + 0.5 * (1.0 - smoothstep(0.0, 0.3, foamAge));
-          foam = max(foam, residual * 0.75 * clamp(0.4 + uFoamAmount * 0.5, 0.0, 1.0));
+          // (Only inside a surf zone: elsewhere residual is zero.)
+          if (residual > 0.0) {
+            float resPat = fbm2(p * 0.06 + vec2(foamNoise * 0.8, uTime * 0.008)) * 0.65 + foamNoise * 0.35;
+            // Dense only just behind the bore. The rest is thin enough that
+            // the bubble lace shows it as webs and strings with open water
+            // between them, the way spent foam lies in an aerial photograph.
+            residual *= smoothstep(0.3 + 0.14 * foamAge, 0.78 + 0.14 * foamAge, resPat);
+            residual *= 0.42 + 0.5 * (1.0 - smoothstep(0.0, 0.3, foamAge));
+            foam = max(foam, residual * 0.75 * clamp(0.4 + uFoamAmount * 0.5, 0.0, 1.0));
+          }
 
           // Foam streaks: old whitecap foam stretched into long lines along
           // the wind, lying over the backs of the waves, and on a mega face
@@ -897,16 +910,20 @@ export class Ocean {
           // The lines wander a few metres across the wind and break up along
           // it into flecks and patches, so they read as foam, not as ruled
           // lines.
-          float streakB0 = perpB + (fbm2(vec2(perpA * 0.05, perpB * 0.11) + 4.0) - 0.5) * 9.0;
-          // Short, curving threads a few metres long, many of them and
-          // faint: from the air they are a soft grain along the wind, never
-          // ruled lines or bright dashes.
-          float streakA = vnoise(vec2(perpA * 0.11 + uTime * 0.03, streakB0 * 0.95));
-          float streakB = vnoise(vec2(perpA * 0.28 - uTime * 0.02, streakB0 * 2.4) + 7.0);
-          float streaks = smoothstep(0.52, 0.95, streakA * 0.6 + streakB * 0.45);
-          streaks *= smoothstep(0.25, 0.7, vnoise(vec2(perpA * 0.22, streakB0 * 0.7) + 21.0));
-          streaks *= smoothstep(0.35, 0.75, vnoise(p * 0.02 + 11.0));
-          streaks *= 1.0 - smoothstep(250.0, 1400.0, vDistance);
+          // (They fade out completely by 1400 m, so past it they are skipped.)
+          float streaks = 0.0;
+          if (vDistance < 1400.0) {
+            float streakB0 = perpB + (fbm2(vec2(perpA * 0.05, perpB * 0.11) + 4.0) - 0.5) * 9.0;
+            // Short, curving threads a few metres long, many of them and
+            // faint: from the air they are a soft grain along the wind, never
+            // ruled lines or bright dashes.
+            float streakA = vnoise(vec2(perpA * 0.11 + uTime * 0.03, streakB0 * 0.95));
+            float streakB = vnoise(vec2(perpA * 0.28 - uTime * 0.02, streakB0 * 2.4) + 7.0);
+            streaks = smoothstep(0.52, 0.95, streakA * 0.6 + streakB * 0.45);
+            streaks *= smoothstep(0.25, 0.7, vnoise(vec2(perpA * 0.22, streakB0 * 0.7) + 21.0));
+            streaks *= smoothstep(0.35, 0.75, vnoise(p * 0.02 + 11.0));
+            streaks *= 1.0 - smoothstep(250.0, 1400.0, vDistance);
+          }
           if (megaRise > 0.02) {
             float along = dot(p, megaDir);
             float across = dot(p, vec2(-megaDir.y, megaDir.x));
@@ -1164,8 +1181,14 @@ export class Ocean {
             vec3 calmN = normalize(mix(microN, n, churn));
             vec3 microN = calmN;
             float cosI = clamp(dot(I, microN), 0.0, 1.0);
-            float window = smoothstep(0.654 - 0.12 * churn, 0.69 + 0.12 * churn, cosI);
-            float rim = exp(-pow((cosI - 0.6614) / 0.014, 2.0)) * (1.0 - churn);
+            // The window's edge and its bright rim are filtered over what one
+            // pixel covers: the ripples swing cosI across the critical angle
+            // many times within a few pixels far off, and a hard threshold
+            // there drew the edge as a crawling staircase of pixels.
+            float cosW = min(fwidth(cosI), 0.25);
+            float window = smoothstep(0.654 - 0.12 * churn - cosW, 0.69 + 0.12 * churn + cosW, cosI);
+            float rimW = max(0.014, cosW * 1.2);
+            float rim = exp(-pow((cosI - 0.6614) / rimW, 2.0)) * (0.014 / rimW) * (1.0 - churn);
             vec3 refr = refract(I, -microN, 1.0 / 1.333);
             vec3 winDir = length(refr) > 0.5 ? normalize(refr) : normalize(I);
 
@@ -1195,8 +1218,10 @@ export class Ocean {
             below = mix(below, vec3(0.45, 0.62, 0.58), aeration * 0.45);
             // Whitewater seen from below glows with the light it diffuses:
             // brightest where it is thickest, with soft, uneven density.
-            float glowN = 0.8 + 0.4 * fbm2(p * 1.3 + uTime * 0.05);
-            below = mix(below, vec3(0.6, 0.76, 0.74) * glowN, freshCover * 0.55);
+            if (freshCover > 0.0) {
+              float glowN = 0.8 + 0.4 * fbm2(p * 1.3 + uTime * 0.05);
+              below = mix(below, vec3(0.6, 0.76, 0.74) * glowN, freshCover * 0.55);
+            }
             below = applyWaterFog(below, vDistance, uFogColor, uFogDensity * 0.72);
           }
 
