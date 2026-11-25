@@ -28,7 +28,7 @@ export function detectTouchMode() {
 
 const BUTTONS = [
   { act: "rise", cls: "surf", label: "surf", sub: "let go · leap" },
-  { act: "boost", cls: "surge", label: "surge", sub: "in the air · tuck" },
+  { act: "boost", cls: "surge", label: "surge", sub: "air · tuck" },
   { act: "dive", cls: "down", label: "down", sub: "" },
 ];
 
