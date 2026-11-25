@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
 import {
   clamp,
+  filterableFloat,
   glslFog,
   glslNoise,
   lerp,
@@ -68,6 +69,7 @@ export class SandSimulation {
     );
     this.texture.minFilter = THREE.LinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
+    filterableFloat(this.texture);
     this.texture.wrapS = THREE.ClampToEdgeWrapping;
     this.texture.wrapT = THREE.ClampToEdgeWrapping;
     this.texture.needsUpdate = true;

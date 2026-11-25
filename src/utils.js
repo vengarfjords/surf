@@ -6,6 +6,25 @@ import { PALETTE } from "./config.js";
 // the body drift apart on a long frame.
 export const MAX_FRAME_DT = 1 / 25;
 
+// What the GPU can do, filled in by main.js once the renderer exists.
+// floatLinear: 32-bit float textures can be sampled with linear filtering
+// (OES_texture_float_linear). Many phone GPUs cannot; such a texture then
+// reads as black.
+export const GPU = { floatLinear: true };
+
+/**
+ * A float data texture that is sampled with linear filtering. Where the GPU
+ * cannot filter 32-bit floats, the same Float32Array data is uploaded into a
+ * half-float texture instead (WebGL2 converts it), which every GPU filters.
+ */
+export function filterableFloat(texture) {
+  if (!GPU.floatLinear && texture.type === THREE.FloatType) {
+    const half = { [THREE.RGBAFormat]: "RGBA16F", [THREE.RGFormat]: "RG16F", [THREE.RedFormat]: "R16F" };
+    texture.internalFormat = half[texture.format] ?? null;
+  }
+  return texture;
+}
+
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
 export const invLerp = (a, b, v) => clamp((v - a) / (b - a), 0, 1);

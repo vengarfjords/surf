@@ -32,6 +32,32 @@ Open the URL Vite prints, click **enter the water**, and use:
 
 Press `Esc` to release the pointer. Clicking the canvas re-acquires it.
 
+### On a phone (iPhone, iPad, Android)
+
+Serve the game on your local network from the computer, then open it on the phone:
+
+```bash
+npm run phone          # vite --host: also prints a "Network" URL
+```
+
+1. Phone and computer on the same Wi-Fi. On a Mac, allow incoming connections for `node` if the firewall asks.
+2. On the phone, open the **Network** URL Vite printed (for example `http://192.168.1.23:5173`).
+3. For full screen without the browser bars, use Share → **Add to Home Screen** and start it from the icon. Hold the phone sideways.
+4. Turn off Low Power Mode: it caps the browser at 30 fps.
+
+Touch controls (they map one to one onto the keys above, so the swim feel is the same):
+
+| touch | action |
+| --- | --- |
+| left thumb (anywhere on the left side) | a stick appears under it: push up to swim (`W`), sideways to turn (`A`/`D`, gentle push = wide carve), pull back to brake (`S`) |
+| right thumb drag (anywhere else) | steer the snout, like the mouse |
+| **SURF** (hold) | rise to the surface and ride it (`Space`); let go to leap |
+| **SURGE** (hold) | surge (`Shift`); pressed fresh in the air, tuck into a dive |
+| **DOWN** (hold) | dive (`C`) |
+| `snd` / `hud` / `tune` | sound, readouts, tuning panel |
+
+A thumb on a button can still drag to steer. The tuning panel has touch rows at the top: look speed, a stick mode for the right thumb, invert up/down, the stick's size and turn curve, and the fps readout. Phones start with the quality governor on (it lowers the render scale, never below 0.7, only if frames run slow). Open any page with `?touch` to get the touch controls on a computer, or `?touch=0` to turn them off.
+
 ## Tuning
 
 Every feeling number lives in [`src/config.js`](src/config.js) and is exposed live as `window.OCEAN.tuning`. Press `T` for the live panel: sea-state preset and swell/wind parameters (height, wavelength, direction, spread, chop, time scale, whitecaps), hull buoyancy/lung/added-mass/drag/fin/slam/trim parameters, depth-response/shoaling/breaking/aeration/breaker-jet/foam-persistence parameters, advected-foam source/decay, breaker-mist and surf-plume rates, surf-roar level, speed, acceleration, turn response, mouse look, pitch response, pitch self-level, bank intensity, lateral drift, vertical thrust, air control (lift), air lift max, air gravity, breach kick, tail beat, acceleration beat, tail stroke, tail heave, acceleration heave, wave travel, wave start, fluke pitch, segment follow, neck/spine bend limits, sand disturbance, sand cut depth, contact cut depth, glide scoop, water scatter, god rays, caustic light, surface haze, sea mist, camera distance, shoulder and look response, the surf camera toggle with its distance and height, plus the water/debug toggles. Pitch self-level is off by default, so a held look holds its attitude.

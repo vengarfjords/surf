@@ -572,6 +572,29 @@ export const TUNING = {
     splashThreshold: 1.4,
   },
 
+  // On-screen controls for phones and tablets (touch.js).
+  touch: {
+    // Right-thumb drag, as a multiple of movement.mouseSensitivity per CSS
+    // pixel: a phone screen is short, so a drag across most of its height
+    // turns the snout about 90 degrees.
+    lookSensitivity: 1.7,
+    // Right thumb as a second stick instead of a drag: the snout keeps
+    // turning while the thumb is held off-centre (this many CSS px/s of
+    // "drag" at full push).
+    lookStick: false,
+    lookStickRate: 520,
+    invertLook: false,
+    // Left stick: radius in CSS px, centre dead zone, and how far up it
+    // must be pushed to swim / down to brake (fractions of the radius).
+    stickRadius: 58,
+    stickDeadZone: 0.14,
+    swimPush: 0.3,
+    brakePull: 0.6,
+    // Sideways push to turn: >1 makes small pushes gentler for fine carving.
+    turnCurve: 1.4,
+    showFps: true,
+  },
+
   debug: {
     probe: false,
     // The parity probe is a synchronous 1x1 readback. It is a diagnostic, not
@@ -815,6 +838,13 @@ export const WATER_OPAQUE_DISTANCE = 80;
  * emotional range, not physical limits. Add a row and it appears in the panel.
  */
 export const TUNE_CONTROLS = [
+  // Shown only with the on-screen controls (touch: true).
+  { path: "touch.lookSensitivity", label: "touch look", min: 0.6, max: 4, step: 0.05, touch: true },
+  { path: "touch.lookStick", label: "right thumb is a stick", type: "toggle", touch: true },
+  { path: "touch.invertLook", label: "invert up / down", type: "toggle", touch: true },
+  { path: "touch.turnCurve", label: "stick turn curve", min: 1, max: 2.5, step: 0.05, touch: true },
+  { path: "touch.stickRadius", label: "stick size (px)", min: 40, max: 90, step: 1, touch: true },
+  { path: "touch.showFps", label: "show fps", type: "toggle", touch: true },
   { path: "movement.cruiseSpeed", label: "cruise speed", min: 2, max: 14, step: 0.1 },
   { path: "movement.boostSpeed", label: "surge speed", min: 8, max: 24, step: 0.1 },
   { path: "movement.acceleration", label: "acceleration", min: 1, max: 12, step: 0.1 },
@@ -968,3 +998,16 @@ export const TUNE_CONTROLS = [
   { path: "camera.diveCam", label: "dive camera", type: "toggle" },
   { path: "camera.diveFovDrop", label: "dive dolly zoom (deg)", min: -15, max: 20, step: 0.5 },
 ];
+
+/**
+ * Starting settings for phones and tablets, applied before anything is
+ * built. A phone GPU has a fraction of a laptop's, so the quality governor
+ * is on: it lowers the render scale only if frames run slow, never below
+ * the floor here. The water readout is a debugging aid and would sit under
+ * the thumbs.
+ */
+export function applyTouchDefaults() {
+  TUNING.visuals.dynamicQuality = true;
+  TUNING.visuals.dynamicQualityMinScale = 0.7;
+  TUNING.debug.readout = false;
+}

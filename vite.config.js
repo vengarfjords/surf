@@ -52,5 +52,8 @@ export default defineConfig({
   server: {
     // Saving a result must not reload the page that is benchmarking.
     watch: { ignored: ["**/bench-results/**"] },
+    // `npm run phone` serves on the local network so a phone can open the
+    // game; this also lets it use the Mac's name (e.g. my-mac.local:5173).
+    allowedHosts: [".local"],
   },
 });

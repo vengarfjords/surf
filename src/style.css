@@ -850,3 +850,364 @@ button {
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Phones and tablets: on-screen controls (src/touch.js). Everything keeps
+   clear of the notch and the home indicator (viewport-fit=cover).
+   ------------------------------------------------------------------------ */
+
+body.touch {
+  --safe-t: max(10px, env(safe-area-inset-top));
+  --safe-r: max(14px, env(safe-area-inset-right));
+  --safe-b: max(10px, env(safe-area-inset-bottom));
+  --safe-l: max(14px, env(safe-area-inset-left));
+  --stick-r: 58px;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body.touch .hud-top {
+  top: var(--safe-t);
+  left: var(--safe-l);
+  right: var(--safe-r);
+}
+
+/* The readouts move to the top corners, out from under the thumbs. */
+body.touch .hud-bottom {
+  top: calc(var(--safe-t) + 22px);
+  bottom: auto;
+  left: var(--safe-l);
+  right: var(--safe-r);
+  align-items: flex-start;
+}
+
+body.touch .compass {
+  margin-top: 26px;
+}
+
+body.touch .hint,
+body.touch .site-mark,
+body.touch .tape,
+body.touch .bar {
+  display: none;
+}
+
+body.touch .telemetry {
+  min-width: 0;
+  gap: 16px;
+}
+
+body.touch .toast {
+  bottom: auto;
+  top: 30%;
+}
+
+body.touch .title-lockup {
+  left: calc(var(--safe-l) + 8px);
+}
+
+body.touch #enterButton {
+  min-width: 250px;
+  padding: 16px 20px 17px;
+}
+
+body.touch .tuner {
+  top: calc(var(--safe-t) + 38px);
+  right: var(--safe-r);
+  width: min(290px, calc(100vw - 28px));
+  max-height: calc(100% - var(--safe-t) - var(--safe-b) - 44px);
+}
+
+body.touch .tuner-body {
+  max-height: calc(100vh - var(--safe-t) - var(--safe-b) - 120px);
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+body.touch .tuner-row input[type="range"] {
+  touch-action: none;
+  min-height: 22px;
+}
+
+.touch-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: none;
+  touch-action: none;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.touch-layer.is-active {
+  display: block;
+}
+
+/* Left thumb: the stick rests here and jumps to wherever the thumb lands. */
+.touch-stick {
+  position: absolute;
+  left: calc(var(--safe-l) + 30px);
+  bottom: calc(var(--safe-b) + 22px);
+  width: calc(var(--stick-r) * 2 + 44px);
+  height: calc(var(--stick-r) * 2 + 44px);
+  pointer-events: none;
+  opacity: 0.38;
+  transition: opacity 0.25s ease;
+}
+
+.touch-stick.is-held {
+  opacity: 0.92;
+  transition: none;
+}
+
+.stick-base,
+.stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 50%;
+}
+
+.stick-base {
+  width: calc(var(--stick-r) * 2);
+  height: calc(var(--stick-r) * 2);
+  margin: calc(var(--stick-r) * -1) 0 0 calc(var(--stick-r) * -1);
+  border: 1px solid rgba(205, 255, 243, 0.32);
+  background: radial-gradient(circle, rgba(3, 40, 44, 0.05) 40%, rgba(3, 40, 44, 0.32));
+}
+
+/* The swim sector: push into it to swim. */
+.stick-base::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  border-top: 2px solid rgba(157, 235, 212, 0.4);
+  transition: border-color 0.15s ease;
+}
+
+.touch-stick.is-swim .stick-base::before {
+  border-top-color: rgba(157, 235, 212, 0.95);
+}
+
+.touch-stick.is-brake .stick-base {
+  border-bottom-color: rgba(232, 225, 191, 0.9);
+}
+
+.stick-knob {
+  width: calc(var(--stick-r) * 0.86);
+  height: calc(var(--stick-r) * 0.86);
+  margin: calc(var(--stick-r) * -0.43) 0 0 calc(var(--stick-r) * -0.43);
+  border: 1px solid rgba(225, 255, 248, 0.6);
+  background: rgba(200, 255, 240, 0.16);
+  box-shadow: 0 0 18px rgba(0, 20, 22, 0.35);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.stick-tag,
+.touch-look-tag,
+.touch-btn small {
+  color: rgba(222, 255, 247, 0.62);
+  font-size: 7px;
+  letter-spacing: 0.2em;
+  text-shadow: 0 1px 6px rgba(0, 20, 20, 0.8);
+  opacity: 0;
+  transition: opacity 1.2s ease;
+}
+
+.stick-tag {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  white-space: nowrap;
+}
+
+.stick-up {
+  transform: translate(-50%, calc(var(--stick-r) * -1 - 16px));
+}
+
+.stick-down {
+  transform: translate(-50%, calc(var(--stick-r) + 7px));
+}
+
+.stick-left {
+  transform: translate(calc(-100% - var(--stick-r) - 6px), -50%);
+}
+
+.stick-right {
+  transform: translate(calc(var(--stick-r) + 6px), -50%);
+}
+
+.touch-look-tag {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  padding-left: 30px;
+  white-space: nowrap;
+}
+
+.touch-look-tag::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 20px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(222, 255, 247, 0.6));
+}
+
+.touch-layer.is-learning .stick-tag,
+.touch-layer.is-learning .touch-look-tag,
+.touch-layer.is-learning .touch-btn small,
+.touch-btn.touch-surf small {
+  opacity: 1;
+}
+
+/* Right thumb: the action buttons, in an arc around where it rests. */
+.touch-pad {
+  position: absolute;
+  right: var(--safe-r);
+  bottom: var(--safe-b);
+  width: 230px;
+  height: 200px;
+  pointer-events: none;
+}
+
+.touch-btn {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0;
+  border: 1px solid rgba(205, 255, 243, 0.34);
+  border-radius: 50%;
+  background: rgba(3, 38, 42, 0.26);
+  color: rgba(232, 255, 249, 0.82);
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  pointer-events: auto;
+  touch-action: none;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+}
+
+.touch-btn small {
+  font-size: 6px;
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+}
+
+.touch-btn.is-down {
+  border-color: rgba(157, 235, 212, 0.95);
+  background: rgba(120, 220, 196, 0.3);
+  transform: scale(0.94);
+}
+
+.touch-surf {
+  right: 12px;
+  bottom: 22px;
+  width: 98px;
+  height: 98px;
+  font-size: 10px;
+}
+
+.touch-surge {
+  right: 112px;
+  bottom: 112px;
+  width: 72px;
+  height: 72px;
+}
+
+.touch-down {
+  right: 124px;
+  bottom: 10px;
+  width: 62px;
+  height: 62px;
+}
+
+.touch-menu {
+  position: absolute;
+  top: var(--safe-t);
+  right: var(--safe-r);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.touch-menu button {
+  min-width: 40px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid rgba(205, 255, 243, 0.24);
+  border-radius: 15px;
+  background: rgba(3, 35, 39, 0.3);
+  color: rgba(230, 255, 249, 0.72);
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  touch-action: manipulation;
+}
+
+.touch-menu button.is-off {
+  color: rgba(230, 255, 249, 0.32);
+  text-decoration: line-through;
+}
+
+.touch-fps {
+  margin-right: 4px;
+  color: rgba(218, 255, 245, 0.5);
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Upright phone: the game wants the wide view. */
+.rotate-hint {
+  display: none;
+}
+
+@media (orientation: portrait) {
+  body.touch .rotate-hint {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    background: rgba(3, 29, 34, 0.86);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: rgba(230, 255, 249, 0.78);
+    font-size: 9px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+  }
+}
+
+.rotate-phone {
+  width: 30px;
+  height: 52px;
+  border: 1px solid rgba(220, 255, 245, 0.6);
+  border-radius: 6px;
+  animation: rotate-phone 2.4s ease-in-out infinite;
+}
+
+@keyframes rotate-phone {
+  0%,
+  25% {
+    transform: rotate(0deg);
+  }
+  55%,
+  100% {
+    transform: rotate(-90deg);
+  }
+}

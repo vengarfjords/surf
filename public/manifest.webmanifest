@@ -1,0 +1,13 @@
+{
+  "name": "ocean — a neritic drift",
+  "short_name": "ocean",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#031d22",
+  "theme_color": "#062d33",
+  "icons": [
+    { "src": "/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

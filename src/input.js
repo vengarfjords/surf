@@ -1,7 +1,9 @@
 /**
  * An intentionally tiny input layer. Keyboard is always available; pointer
- * lock adds snout-led mouse look/steering. The mouse deltas are consumed once
- * per simulation step so the swim feel is independent of frame ordering.
+ * lock adds snout-led mouse look/steering, and on phones the on-screen
+ * controls (touch.js) write the same inputs into `touch`. The mouse deltas
+ * are consumed once per simulation step so the swim feel is independent of
+ * frame ordering.
  */
 export class Input {
   constructor(canvas) {
@@ -15,9 +17,9 @@ export class Input {
     this.lastY = 0;
     this.enabled = false;
     this.onEscape = null;
-    this.touchActive = false;
-    this.touchX = 0;
-    this.touchY = 0;
+    // Written by the on-screen controls (touch.js) on phones and tablets.
+    // `turn` is analog (-1 left .. +1 right); the rest are held buttons.
+    this.touch = { forward: false, brake: false, turn: 0, rise: false, dive: false, boost: false };
     this._bind();
   }
 
@@ -34,6 +36,7 @@ export class Input {
     window.addEventListener("blur", () => {
       this.keys.clear();
       this.dragging = false;
+      this.releaseTouch();
     });
 
     document.addEventListener("pointerlockchange", () => {
@@ -68,27 +71,6 @@ export class Input {
         this.mouseDY += dy;
       }
     });
-
-    // Mobile fallback: dragging steers; a held double-tap/HUD button is outside
-    // this prototype's scope, but the world remains inspectable on touch.
-    this.canvas.addEventListener("touchstart", (e) => {
-      if (!this.enabled) return;
-      const t = e.touches[0];
-      this.touchActive = true;
-      this.lastX = t.clientX;
-      this.lastY = t.clientY;
-    }, { passive: true });
-    this.canvas.addEventListener("touchmove", (e) => {
-      if (!this.enabled || !this.touchActive) return;
-      const t = e.touches[0];
-      this.mouseDX += (t.clientX - this.lastX) * 1.2;
-      this.mouseDY += (t.clientY - this.lastY) * 1.2;
-      this.lastX = t.clientX;
-      this.lastY = t.clientY;
-    }, { passive: true });
-    this.canvas.addEventListener("touchend", () => {
-      this.touchActive = false;
-    });
   }
 
   requestPointerLock() {
@@ -102,6 +84,12 @@ export class Input {
     }
   }
 
+  releaseTouch() {
+    const t = this.touch;
+    t.forward = t.brake = t.rise = t.dive = t.boost = false;
+    t.turn = 0;
+  }
+
   consumeMouse() {
     const dx = this.mouseDX;
     const dy = this.mouseDY;
@@ -111,13 +99,18 @@ export class Input {
   }
 
   get forward() {
-    // On touch devices, keeping a finger down keeps the dolphin gliding;
-    // horizontal/vertical drag steers the body.
-    return this.keys.has("KeyW") || this.touchActive;
+    return this.keys.has("KeyW") || this.touch.forward;
   }
 
   get brake() {
-    return this.keys.has("KeyS");
+    return this.keys.has("KeyS") || this.touch.brake;
+  }
+
+  /** Turn input, -1 (left) .. +1 (right): A/D, or the touch stick's analog
+   *  sideways push, so a light push carves a wide arc. */
+  get turnAxis() {
+    const keys = (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0);
+    return Math.max(-1, Math.min(1, keys + this.touch.turn));
   }
 
   get left() {
@@ -129,15 +122,15 @@ export class Input {
   }
 
   get rise() {
-    return this.keys.has("Space");
+    return this.keys.has("Space") || this.touch.rise;
   }
 
   get dive() {
-    return this.keys.has("KeyC");
+    return this.keys.has("KeyC") || this.touch.dive;
   }
 
   get boost() {
-    return this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    return this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") || this.touch.boost;
   }
 
   get pitchUpKeys() {

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { TUNING } from "./config.js";
-import { clamp, seabedHeight, smoothstep } from "./utils.js";
+import { clamp, filterableFloat, seabedHeight, smoothstep } from "./utils.js";
 
 /**
  * What the swell does to the sand.
@@ -189,6 +189,7 @@ export class SandSwell {
     this.lutBreak = new Float32Array(LUT_SIZE);
     this.lutTexture = new THREE.DataTexture(this.lut, LUT_SIZE, 1, THREE.RGBAFormat, THREE.FloatType);
     this.lutTexture.minFilter = this.lutTexture.magFilter = THREE.LinearFilter;
+    filterableFloat(this.lutTexture);
     this.lutTexture.wrapS = this.lutTexture.wrapT = THREE.ClampToEdgeWrapping;
     this.lutKey = "";
 
@@ -220,6 +221,7 @@ export class SandSwell {
     this.flowData = new Float32Array(n * n * 4);
     this.flowTexture = new THREE.DataTexture(this.flowData, n, n, THREE.RGBAFormat, THREE.FloatType);
     this.flowTexture.minFilter = this.flowTexture.magFilter = THREE.LinearFilter;
+    filterableFloat(this.flowTexture);
     this.flowTexture.wrapS = this.flowTexture.wrapT = THREE.ClampToEdgeWrapping;
     this.rowCursor = 0;
     this.bakedCenter = null;

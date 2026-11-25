@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { TUNING, PALETTE, SUN_DIRECTION } from "./config.js";
+import { TUNING, PALETTE, SUN_DIRECTION, applyTouchDefaults } from "./config.js";
 import { Ocean } from "./ocean.js";
 import { Seabed } from "./sand.js";
 import { Reefs, Seagrass, sharedShader } from "./habitat.js";
@@ -7,6 +7,7 @@ import { Dolphin } from "./dolphin.js";
 import { CameraRig } from "./camera.js";
 import { ParticleFX, MarineSnow, NearMotes } from "./particles.js";
 import { Input } from "./input.js";
+import { TouchControls, detectTouchMode } from "./touch.js";
 import { OceanAudio } from "./audio.js";
 import { HUD } from "./hud.js";
 import { Post } from "./post.js";
@@ -15,12 +16,16 @@ import { buildEnvironments } from "./environment.js";
 import { WaterRefraction, REFRACTION_LAYER } from "./refraction.js";
 import { WaterDebug } from "./water/debug.js";
 import { createScenarios } from "./water/scenarios.js";
-import { clamp, damp, lerp, MAX_FRAME_DT, smoothstep } from "./utils.js";
+import { clamp, damp, GPU, lerp, MAX_FRAME_DT, smoothstep } from "./utils.js";
 
 const frame = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 async function boot() {
   const canvas = document.getElementById("scene");
+  // Phones and tablets get on-screen controls and their own starting
+  // quality (applied before anything reads TUNING).
+  const touchMode = detectTouchMode();
+  if (touchMode) applyTouchDefaults();
   const renderer = new THREE.WebGLRenderer({
     canvas,
     antialias: false,
@@ -37,6 +42,10 @@ async function boot() {
   // the renderer's counters accumulated across those passes so the perf
   // readout reports the whole frame, not just the last pass.
   renderer.info.autoReset = false;
+  // ?nofloatlinear simulates a GPU without float filtering, for testing.
+  GPU.floatLinear =
+    !!renderer.getContext().getExtension("OES_texture_float_linear") &&
+    !new URLSearchParams(window.location.search).has("nofloatlinear");
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(PALETTE.fogDeep);
@@ -172,13 +181,23 @@ async function boot() {
       started = true;
       elapsed = 0;
       input.enabled = true;
+      // iOS mutes Web Audio with the ring/silent switch unless the page
+      // says it is playing media.
+      try {
+        if (navigator.audioSession) navigator.audioSession.type = "playback";
+      } catch (e) {
+        // Older Safari: sound follows the switch.
+      }
       audio.start();
-      input.requestPointerLock();
+      if (touch) touch.setActive(true);
+      else input.requestPointerLock();
     },
     onRelock: () => {
-      input.requestPointerLock();
+      if (!touch) input.requestPointerLock();
     },
+    touchMode,
   });
+  const touch = touchMode ? new TouchControls({ input, hud }) : null;
 
   const fogAbove = new THREE.Color(PALETTE.skyHorizonAway);
   const fogShallow = new THREE.Color(PALETTE.fogShallow);
@@ -218,7 +237,7 @@ async function boot() {
   });
 
   canvas.addEventListener("click", () => {
-    if (started && !hud.tunerOpen && !document.pointerLockElement) input.requestPointerLock();
+    if (started && !touch && !hud.tunerOpen && !document.pointerLockElement) input.requestPointerLock();
   });
 
   // Warm the shader cache behind the loading card. If this fails, the first
@@ -473,6 +492,7 @@ async function boot() {
     }
     sharedShader.time.value = total;
 
+    if (touch) touch.update(dt);
     const stepInput = started ? input : idleInput;
     const dolphinStart = performance.now();
     const telemetry = frozen

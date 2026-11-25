@@ -13,8 +13,9 @@ function setPath(obj, path, value) {
 }
 
 export class HUD {
-  constructor({ tuning, input, audio, onStart, onRelock }) {
+  constructor({ tuning, input, audio, onStart, onRelock, touchMode = false }) {
     this.tuning = tuning;
+    this.touchMode = touchMode;
     this.input = input;
     this.audio = audio;
     this.onStart = onStart;
@@ -76,14 +77,8 @@ export class HUD {
         e.preventDefault();
         this.toggleTuner();
       }
-      if (e.code === "KeyH" && this.started) {
-        this.hudHidden = !this.hudHidden;
-        this.el.hud.classList.toggle("is-hidden", this.hudHidden);
-      }
-      if (e.code === "KeyM" && this.started) {
-        const on = this.audio?.toggle();
-        this.el.soundState.textContent = on ? "SND—ON" : "SND—OFF";
-      }
+      if (e.code === "KeyH" && this.started) this.toggleHud();
+      if (e.code === "KeyM" && this.started) this.toggleSound();
       if (e.code === "KeyP" && this.started) {
         TUNING.debug.postProcessing = !TUNING.debug.postProcessing;
         this.toast(
@@ -121,6 +116,18 @@ export class HUD {
     this.el.soundState.textContent = on ? "SND—ON" : "SND—OFF";
   }
 
+  toggleSound() {
+    const on = this.audio?.toggle();
+    this.setSound(on);
+    return on;
+  }
+
+  toggleHud(force) {
+    this.hudHidden = force ?? !this.hudHidden;
+    this.el.hud.classList.toggle("is-hidden", this.hudHidden);
+    return !this.hudHidden;
+  }
+
   toggleTuner(force) {
     this.tunerOpen = force ?? !this.tunerOpen;
     this.el.tuner.classList.toggle("is-open", this.tunerOpen);
@@ -134,6 +141,7 @@ export class HUD {
 
   _buildTuner() {
     for (const control of TUNE_CONTROLS) {
+      if (control.touch && !this.touchMode) continue;
       const row = document.createElement("div");
       row.className = "tuner-row";
       const label = document.createElement("label");

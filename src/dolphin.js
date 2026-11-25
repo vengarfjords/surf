@@ -1553,7 +1553,9 @@ export class Dolphin {
       -movement.maxPitch,
       movement.maxPitch
     );
-    const keyTurn = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+    // A/D, or the touch stick's analog push (scripted inputs only have
+    // left/right).
+    const keyTurn = input.turnAxis ?? (input.right ? 1 : 0) - (input.left ? 1 : 0);
     // On the surface (Space) the dolphin turns like a skier on an edge.
     const skiing = this.surfLock || 0;
     let keyTurnRate = lerp(movement.maxTurnRate * 1.15, TUNING.hydro.surfaceTurnRate, skiing);
